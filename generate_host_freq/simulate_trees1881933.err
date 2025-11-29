@@ -1,0 +1,107 @@
+/var/spool/slurmd/job1881933/slurm_script: line 20: cd: /lustre/fswork/projects/rech/vcu/commun/Co-phyloformer/generate_host_freq/: No such file or directory
++ rm -rf 'generated_trees/Datasets/*'
++ rm -rf generated_trees/frequencies/host_tree_10_frequencies.csv generated_trees/frequencies/host_tree_11_frequencies.csv generated_trees/frequencies/host_tree_12_frequencies.csv generated_trees/frequencies/host_tree_13_frequencies.csv generated_trees/frequencies/host_tree_14_frequencies.csv generated_trees/frequencies/host_tree_15_frequencies.csv generated_trees/frequencies/host_tree_16_frequencies.csv generated_trees/frequencies/host_tree_17_frequencies.csv generated_trees/frequencies/host_tree_18_frequencies.csv generated_trees/frequencies/host_tree_19_frequencies.csv generated_trees/frequencies/host_tree_1_frequencies.csv generated_trees/frequencies/host_tree_20_frequencies.csv generated_trees/frequencies/host_tree_21_frequencies.csv generated_trees/frequencies/host_tree_22_frequencies.csv generated_trees/frequencies/host_tree_23_frequencies.csv generated_trees/frequencies/host_tree_24_frequencies.csv generated_trees/frequencies/host_tree_25_frequencies.csv generated_trees/frequencies/host_tree_26_frequencies.csv generated_trees/frequencies/host_tree_27_frequencies.csv generated_trees/frequencies/host_tree_28_frequencies.csv generated_trees/frequencies/host_tree_29_frequencies.csv generated_trees/frequencies/host_tree_2_frequencies.csv generated_trees/frequencies/host_tree_30_frequencies.csv generated_trees/frequencies/host_tree_31_frequencies.csv generated_trees/frequencies/host_tree_32_frequencies.csv generated_trees/frequencies/host_tree_33_frequencies.csv generated_trees/frequencies/host_tree_34_frequencies.csv generated_trees/frequencies/host_tree_35_frequencies.csv generated_trees/frequencies/host_tree_36_frequencies.csv generated_trees/frequencies/host_tree_37_frequencies.csv generated_trees/frequencies/host_tree_38_frequencies.csv generated_trees/frequencies/host_tree_39_frequencies.csv generated_trees/frequencies/host_tree_3_frequencies.csv generated_trees/frequencies/host_tree_40_frequencies.csv generated_trees/frequencies/host_tree_41_frequencies.csv generated_trees/frequencies/host_tree_42_frequencies.csv generated_trees/frequencies/host_tree_43_frequencies.csv generated_trees/frequencies/host_tree_44_frequencies.csv generated_trees/frequencies/host_tree_45_frequencies.csv generated_trees/frequencies/host_tree_46_frequencies.csv generated_trees/frequencies/host_tree_47_frequencies.csv generated_trees/frequencies/host_tree_48_frequencies.csv generated_trees/frequencies/host_tree_49_frequencies.csv generated_trees/frequencies/host_tree_4_frequencies.csv generated_trees/frequencies/host_tree_50_frequencies.csv generated_trees/frequencies/host_tree_5_frequencies.csv generated_trees/frequencies/host_tree_6_frequencies.csv generated_trees/frequencies/host_tree_7_frequencies.csv generated_trees/frequencies/host_tree_8_frequencies.csv generated_trees/frequencies/host_tree_9_frequencies.csv
++ rm -rf generated_trees/host_trees/host_tree_10.nwk generated_trees/host_trees/host_tree_11.nwk generated_trees/host_trees/host_tree_12.nwk generated_trees/host_trees/host_tree_13.nwk generated_trees/host_trees/host_tree_14.nwk generated_trees/host_trees/host_tree_15.nwk generated_trees/host_trees/host_tree_16.nwk generated_trees/host_trees/host_tree_17.nwk generated_trees/host_trees/host_tree_18.nwk generated_trees/host_trees/host_tree_19.nwk generated_trees/host_trees/host_tree_1.nwk generated_trees/host_trees/host_tree_20.nwk generated_trees/host_trees/host_tree_21.nwk generated_trees/host_trees/host_tree_22.nwk generated_trees/host_trees/host_tree_23.nwk generated_trees/host_trees/host_tree_24.nwk generated_trees/host_trees/host_tree_25.nwk generated_trees/host_trees/host_tree_26.nwk generated_trees/host_trees/host_tree_27.nwk generated_trees/host_trees/host_tree_28.nwk generated_trees/host_trees/host_tree_29.nwk generated_trees/host_trees/host_tree_2.nwk generated_trees/host_trees/host_tree_30.nwk generated_trees/host_trees/host_tree_31.nwk generated_trees/host_trees/host_tree_32.nwk generated_trees/host_trees/host_tree_33.nwk generated_trees/host_trees/host_tree_34.nwk generated_trees/host_trees/host_tree_35.nwk generated_trees/host_trees/host_tree_36.nwk generated_trees/host_trees/host_tree_37.nwk generated_trees/host_trees/host_tree_38.nwk generated_trees/host_trees/host_tree_39.nwk generated_trees/host_trees/host_tree_3.nwk generated_trees/host_trees/host_tree_40.nwk generated_trees/host_trees/host_tree_41.nwk generated_trees/host_trees/host_tree_42.nwk generated_trees/host_trees/host_tree_43.nwk generated_trees/host_trees/host_tree_44.nwk generated_trees/host_trees/host_tree_45.nwk generated_trees/host_trees/host_tree_46.nwk generated_trees/host_trees/host_tree_47.nwk generated_trees/host_trees/host_tree_48.nwk generated_trees/host_trees/host_tree_49.nwk generated_trees/host_trees/host_tree_4.nwk generated_trees/host_trees/host_tree_50.nwk generated_trees/host_trees/host_tree_5.nwk generated_trees/host_trees/host_tree_6.nwk generated_trees/host_trees/host_tree_7.nwk generated_trees/host_trees/host_tree_8.nwk generated_trees/host_trees/host_tree_9.nwk
++ python simulate_input_trees.py --num_trees 50 --min_leaves 15 --max_leaves 50 --output_dir ./generated_trees/ --output_dir_tgl ./generated_trees/Datasets/ --num_threads 48 --jar_path ./cophylogeny-ML/code/coala/TGLGenerator.jar
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Generating TGLs:   0%|          | 0/50 [00:00<?, ?it/s]Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Error: Unable to initialize main class exec.TGLGenerator
+Caused by: java.lang.NoClassDefFoundError: org/apache/commons/cli/UnrecognizedOptionException
+Generating TGLs: 100%|██████████| 50/50 [00:00<00:00, 549.20it/s]
++ python alisim.py generated_trees/Datasets --substitution LG --gamma GC --iqtree ../bin/bin_linux/iqtree_2.2.0 --length 500 --max-attempts 1 --allow-duplicate-sequences

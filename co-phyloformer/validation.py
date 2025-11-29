@@ -1,0 +1,485 @@
+
+import torch
+import pandas as pd
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, Dataset
+from model import Cophyloformer
+from data import CophylogenyDataset
+from torch.nn import functional as F
+import time
+import numpy as np
+import os
+from plot_val import plot_event_metric_over_epochs, plot_epoch_loss_curve, plot_labels_vs_predictions
+from sklearn.model_selection import train_test_split
+
+from tqdm import tqdm
+from itertools import islice
+
+import wandb
+from lightning.fabric import Fabric
+from lightning.fabric.utilities.seed import seed_everything
+from lightning.fabric.strategies import DDPStrategy
+
+import glob
+
+torch.set_float32_matmul_precision('high')
+
+seed_everything(42)
+event_names = [
+    "Cospeciations",
+    "Host_spread/Switches"
+]
+
+start_time = time.time()  # Record start time
+
+# Paths (as requested)
+CHECKPOINT_PATH = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/co-phyloformer/epoch_6.pth"
+#CHECKPOINT_PATH = '/Users/gabriele/Co-phyloformer/co-phyloformer/checkpoints/epoch_4.pth'
+VALIDATION_DIR = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/co-phyloformer/validation"
+#VALIDATION_DIR = '/Users/gabriele/Co-phyloformer/co-phyloformer/validation'
+
+os.makedirs(VALIDATION_DIR, exist_ok=True)
+
+
+class LazyCophyloformerDataset(Dataset):
+    def __init__(self, preencoded_dir):
+        self.pt_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
+        self.preencoded_dir = preencoded_dir
+
+    def __len__(self):
+        return len(self.pt_files)
+
+    def __getitem__(self, idx):
+        pt_path = self.pt_files[idx]
+        sample = torch.load(pt_path, map_location="cpu", weights_only=False)
+
+        # Define mask_sequence inside __getitem__
+        def mask_sequence(sequence, mask_prob=0.1, mask_token=22):
+            masked = []
+            for aa in sequence:
+                if torch.rand(1).item() < mask_prob:
+                    masked.append(mask_token)
+                else:
+                    masked.append(aa)
+            return torch.tensor(masked, dtype=torch.long)
+
+        # Skip empty samples
+        if len(sample["host_msas"]) == 0 or len(sample["parasite_msas"]) == 0:
+            return None
+
+        host_list = list(sample["host_msas"].keys())
+        parasite_list = list(sample["parasite_msas"].keys())
+
+        parasite_idx_map = {name: i for i, name in enumerate(parasite_list)}
+        host_idx_map = {name: i for i, name in enumerate(host_list)}
+        valid_mappings = [
+            (host_idx_map[h], parasite_idx_map[p])
+            for p, h in sample["mappings"]
+            if p in parasite_idx_map and h in host_idx_map
+        ]
+
+        labels = torch.tensor(
+            [sample["event_frequencies"].get(event, 0.0) for event in event_names],
+            dtype=torch.float32,
+        )
+
+        sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 0.0)], dtype=torch.float32)
+        return {
+            "host_msa": torch.stack([
+                mask_sequence(encode_sequence(seq), mask_prob=0.1)
+                for seq in sample["host_msas"].values()
+            ]),
+            "parasite_msa": torch.stack([
+                mask_sequence(encode_sequence(seq), mask_prob=0.1)
+                for seq in sample["parasite_msas"].values()
+            ]),
+            "mappings": valid_mappings,
+            "labels": labels,
+            "sim_time": sim_time,
+        }
+
+
+def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir, filename, batch_idx=None):
+    """Save model and optimizer state."""
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint = {
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict() if optimizer is not None else None,
+        'epoch': epoch,
+        'val_loss': val_loss,
+    }
+    if batch_idx is not None:
+        checkpoint['batch_idx'] = batch_idx
+    torch.save(checkpoint, os.path.join(checkpoint_dir, filename))
+
+
+def load_checkpoint(model, optimizer, checkpoint_path, map_location=None):
+    """Load model and optimizer state from checkpoint."""
+    checkpoint = torch.load(checkpoint_path, map_location=map_location)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    if optimizer is not None and 'optimizer_state_dict' in checkpoint and checkpoint['optimizer_state_dict'] is not None:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    epoch = checkpoint.get('epoch', 0)
+    val_loss = checkpoint.get('val_loss', float('inf'))
+    batch_idx = checkpoint.get('batch_idx', None)
+    return epoch, val_loss, batch_idx
+
+
+def collate_fn(batch):
+    """Pads MSA sequences dynamically to match batch size."""
+    batch = [b for b in batch if b is not None]
+    if len(batch) == 0:
+        return None
+    host_msas = [torch.cat([torch.full((1, sample["host_msa"].shape[1]), 22), sample["host_msa"]], dim=0) for sample in batch]
+    parasite_msas = [torch.cat([torch.full((1, sample["parasite_msa"].shape[1]), 22), sample["parasite_msa"]], dim=0) for sample in batch]
+    labels = torch.stack([sample["labels"] for sample in batch])
+    mappings = [sample["mappings"] for sample in batch]
+    sim_time = torch.stack([sample["sim_time"] for sample in batch])
+    sim_time_min = sim_time.min()
+    sim_time_max = sim_time.max()
+    sim_time = (sim_time - sim_time_min) / (sim_time_max - sim_time_min + 1e-8)
+
+    #  Fix: Ensure consistent padding for batch processing
+    max_host_len = max(m.shape[0] for m in host_msas)
+    max_parasite_len = max(m.shape[0] for m in parasite_msas)
+
+    host_msas = [F.pad(m, (0, 0, 0, max_host_len - m.shape[0]), value=0) for m in host_msas]
+    parasite_msas = [F.pad(m, (0, 0, 0, max_parasite_len - m.shape[0]), value=0) for m in parasite_msas]
+
+    host_msas = torch.stack(host_msas)
+    parasite_msas = torch.stack(parasite_msas)
+
+    return {
+        "host_msa": host_msas,
+        "parasite_msa": parasite_msas,
+        "labels": labels,
+        "mappings": mappings,
+        "sim_time": sim_time,
+    }
+
+
+def encode_sequence(sequence, max_len=128):
+    """Convert an MSA sequence string into a numerical tensor (simple index encoding)."""
+    amino_acids = "ACDEFGHIKLMNPQRSTVWY-"  # Standard amino acids + gap
+    aa_to_index = {aa: i for i, aa in enumerate(amino_acids)}
+    padding_token = 22  # Ensure padding has a consistent index
+
+    encoded = [aa_to_index.get(aa, padding_token) for aa in sequence[:max_len]]
+
+    # Pad to max length
+    encoded += [padding_token] * (max_len - len(encoded))
+
+    return torch.tensor(encoded, dtype=torch.long)
+
+
+def main(fabric: Fabric):
+    # -----------------------------
+    # 1. Load dataset (validation only)
+    # -----------------------------
+    preencoded_dir = os.path.join(os.environ["JOBSCRATCH"], "preencoded_pt")
+    #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
+
+    dataset = LazyCophyloformerDataset(preencoded_dir)
+
+    indices = list(range(len(dataset)))
+    val_subset = torch.utils.data.Subset(dataset, indices)
+
+    device = fabric.device
+
+    batch_size = 4
+
+    val_loader = DataLoader(
+        val_subset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=4,
+        persistent_workers=True,
+        prefetch_factor=2,
+        pin_memory=False,
+    )
+
+    val_loader = fabric.setup_dataloaders(val_loader)
+
+    # -----------------------------
+    # 2. Build model, load checkpoint
+    # -----------------------------
+    lr = 1e-4
+    wd = 0.0
+    criterion = nn.HuberLoss(reduction='none', delta=1.0)
+
+    model = Cophyloformer()
+    # Dummy optimizer, only needed so that Fabric.setup + save_checkpoint work smoothly
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
+
+    model, optimizer = fabric.setup(model, optimizer)
+
+    if fabric.is_global_zero:
+        print(f"[Validation] Loading checkpoint from: {CHECKPOINT_PATH}")
+    _, _, _ = load_checkpoint(model, optimizer, CHECKPOINT_PATH, map_location=fabric.device)
+
+    model.eval()
+
+    # -----------------------------
+    # 3. Init W&B (optional, still useful)
+    # -----------------------------
+    entity = os.environ.get("WANDB_ENTITY", "cophylo_team")
+    project = os.environ.get("WANDB_PROJECT", "CoPhyloformer")
+    name_experiment = os.environ.get("WANDB_NAME", "validation_only_epoch_6")
+    mode = os.environ.get("WANDB_MODE", "online")  # "online", "offline", or "disabled"
+
+    run = None
+    if fabric.global_rank == 0:
+        model_config = {}
+        for attr in ["num_layers", "hidden_dim", "dropout", "embedding_dim", "num_heads"]:
+            if hasattr(model, attr):
+                model_config[attr] = getattr(model, attr)
+
+        run = wandb.init(
+            entity=entity,
+            project=project,
+            name=name_experiment,
+            job_type="validation_only",
+            config={
+                "mode": mode,
+                "batch_size": batch_size,
+                "learning_rate": lr,
+                "weight_decay": wd,
+                "dataset_dir": preencoded_dir,
+                "checkpoint_path": CHECKPOINT_PATH,
+                "model_name": model.__class__.__name__,
+                "dataset_size": len(dataset),
+                **model_config,
+            },
+        )
+
+        num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        run.config["num_parameters"] = num_params
+
+        wandb.watch(getattr(model, "module", model), log="all", log_freq=100)
+
+    # -----------------------------
+    # 4. Validation loop (ONLY)
+    # -----------------------------
+    best_batch_loss = float("inf")
+    best_batch_index = None
+    best_batch_preds = None
+    best_batch_labels = None
+
+    # For CSV and plotting (best batch only)
+    best_batch_predictions_rows = []
+
+    # For optional global metrics
+    val_sum_abs = torch.zeros(len(event_names), device=device)
+    val_sum_sq = torch.zeros(len(event_names), device=device)
+    val_sum_rel = torch.zeros(len(event_names), device=device)
+    val_sum_smape = torch.zeros(len(event_names), device=device)
+    val_sample_count = 0
+
+    with torch.no_grad():
+        for batch_idx, batch in tqdm(enumerate(val_loader), total=len(val_loader), desc="Validation", leave=True):
+            if batch is None:
+                continue
+
+            batch["host_msa"] = batch["host_msa"].to(device)
+            batch["parasite_msa"] = batch["parasite_msa"].to(device)
+            batch["sim_time"] = batch["sim_time"].to(device)
+            batch["labels"] = batch["labels"].to(device)
+
+            outputs = model(
+                batch["host_msa"],
+                batch["parasite_msa"],
+                batch["mappings"],
+                batch["sim_time"],
+            )
+
+            loss_cosp = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
+            loss_sw = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
+            loss = loss_cosp + loss_sw
+
+            preds = outputs
+            labels = batch["labels"]
+
+            abs_err = (preds - labels).abs()
+            sq_err = abs_err ** 2
+
+            denom_abs = torch.where(labels.abs() > 0, labels.abs(), torch.full_like(labels, 1e9))
+            rel_err = abs_err / denom_abs
+            smape = 2 * abs_err / (preds.abs() + labels.abs() + 1e-8)
+
+            # Per-batch metrics
+            mae_batch = abs_err.mean(dim=0).detach().cpu().tolist()
+            mse_batch = sq_err.mean(dim=0).detach().cpu().tolist()
+            mre_batch = rel_err.mean(dim=0).detach().cpu().tolist()
+            smape_batch = smape.mean(dim=0).detach().cpu().tolist()
+
+            if fabric.is_global_zero:
+                log_dict = {
+                    "val/batch_loss": loss.item(),
+                    "val/batch_index": batch_idx,
+                }
+                for i, event in enumerate(event_names):
+                    log_dict[f"val_batch/MAE/{event}"] = mae_batch[i]
+                    log_dict[f"val_batch/MSE/{event}"] = mse_batch[i]
+                    log_dict[f"val_batch/MRE/{event}"] = mre_batch[i]
+                    log_dict[f"val_batch/sMAPE/{event}"] = smape_batch[i]
+                wandb.log(log_dict)
+
+                print(
+                    f"[Validation] Batch {batch_idx}: "
+                    f"loss={loss.item():.6f}, "
+                    f"MAE={mae_batch}, MSE={mse_batch}, MRE={mre_batch}, sMAPE={smape_batch}"
+                )
+
+            # Track global sums for optional overall metrics
+            val_sum_abs += abs_err.sum(dim=0)
+            val_sum_sq += sq_err.sum(dim=0)
+            val_sum_rel += rel_err.sum(dim=0)
+            val_sum_smape += smape.sum(dim=0)
+            val_sample_count += labels.shape[0]
+
+            # Track best batch (by loss)
+            if loss.item() < best_batch_loss:
+                best_batch_loss = loss.item()
+                best_batch_index = batch_idx
+                best_batch_preds = preds.detach().cpu()
+                best_batch_labels = labels.detach().cpu()
+
+                # Prepare CSV rows for this batch
+                best_batch_predictions_rows = []
+                for i in range(best_batch_preds.shape[0]):
+                    best_batch_predictions_rows.append({
+                        "Batch_Index": batch_idx,
+                        "Sample_Index_in_Batch": i,
+                        "Cospeciations_Pred": best_batch_preds[i, 0].item(),
+                        "Cospeciations_GT": best_batch_labels[i, 0].item(),
+                        "Host_switches_Pred": best_batch_preds[i, 1].item(),
+                        "Host_switches_GT": best_batch_labels[i, 1].item(),
+                    })
+
+    # -----------------------------
+    # 5. Aggregate overall validation metrics (optional)
+    # -----------------------------
+    val_sum_abs = fabric.all_reduce(val_sum_abs, reduce_op="sum")
+    val_sum_sq = fabric.all_reduce(val_sum_sq, reduce_op="sum")
+    val_sum_rel = fabric.all_reduce(val_sum_rel, reduce_op="sum")
+    val_sum_smape = fabric.all_reduce(val_sum_smape, reduce_op="sum")
+    val_sample_count = int(fabric.all_reduce(
+        torch.tensor(val_sample_count, device=device),
+        reduce_op="sum"
+    ).item())
+
+    if val_sample_count > 0:
+        denom = float(val_sample_count)
+        val_mae = (val_sum_abs / denom).cpu().tolist()
+        val_mse = (val_sum_sq / denom).cpu().tolist()
+        val_mre = (val_sum_rel / denom).cpu().tolist()
+        val_smape = (val_sum_smape / denom).cpu().tolist()
+    else:
+        val_mae = val_mse = val_mre = val_smape = [float("nan")] * len(event_names)
+
+    if fabric.is_global_zero:
+        print("\n===== VALIDATION SUMMARY (overall) =====")
+        print(f"Total samples: {val_sample_count}")
+        for i, event in enumerate(event_names):
+            print(f"  {event}: MAE {val_mae[i]:.6f}, MSE {val_mse[i]:.6f}, MRE {val_mre[i]:.6f}, sMAPE {val_smape[i]:.6f}")
+        print("========================================")
+
+        wandb.log({
+            **{f"val_overall/MAE/{event_names[i]}": val_mae[i] for i in range(len(event_names))},
+            **{f"val_overall/MSE/{event_names[i]}": val_mse[i] for i in range(len(event_names))},
+            **{f"val_overall/MRE/{event_names[i]}": val_mre[i] for i in range(len(event_names))},
+            **{f"val_overall/sMAPE/{event_names[i]}": val_smape[i] for i in range(len(event_names))},
+        })
+
+    # -----------------------------
+    # 6. Save BEST BATCH outputs (CSV, plots, model)
+    # -----------------------------
+    if fabric.is_global_zero and best_batch_index is not None:
+        print(f"\n[Best Batch] Index: {best_batch_index}, Loss: {best_batch_loss:.6f}")
+
+        # 6a. CSV with best batch predictions
+        csv_path = os.path.join(VALIDATION_DIR, "best_batch_predictions.csv")
+        import csv
+        with open(csv_path, mode="w", newline="") as csv_file:
+            fieldnames = [
+                "Batch_Index",
+                "Sample_Index_in_Batch",
+                "Cospeciations_Pred",
+                "Cospeciations_GT",
+                "Host_switches_Pred",
+                "Host_switches_GT",
+            ]
+            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(best_batch_predictions_rows)
+        print(f"[Best Batch] Predictions saved to {csv_path}")
+
+        # 6b. Plots: labels vs predictions for best batch
+        cospec_labels = [row["Cospeciations_GT"] for row in best_batch_predictions_rows]
+        cospec_preds = [row["Cospeciations_Pred"] for row in best_batch_predictions_rows]
+        switch_labels = [row["Host_switches_GT"] for row in best_batch_predictions_rows]
+        switch_preds = [row["Host_switches_Pred"] for row in best_batch_predictions_rows]
+
+        cospec_plot_path = os.path.join(VALIDATION_DIR, "best_batch_label_vs_pred_cospeciations.png")
+        switch_plot_path = os.path.join(VALIDATION_DIR, "best_batch_label_vs_pred_switches.png")
+
+        # We pass empty train_* lists since we're only plotting validation here
+        plot_labels_vs_predictions(
+            train_labels=[],
+            train_preds=[],
+            val_labels=cospec_labels,
+            val_preds=cospec_preds,
+            event_name="Cospeciations (Best Batch)",
+            filename=cospec_plot_path,
+        )
+
+        plot_labels_vs_predictions(
+            train_labels=[],
+            train_preds=[],
+            val_labels=switch_labels,
+            val_preds=switch_preds,
+            event_name="Host Switches (Best Batch)",
+            filename=switch_plot_path,
+        )
+
+        print(f"[Best Batch] Cospeciation plot saved to {cospec_plot_path}")
+        print(f"[Best Batch] Host Switch plot saved to {switch_plot_path}")
+
+        wandb.log({
+            "plots/best_batch_cospeciations": wandb.Image(cospec_plot_path),
+            "plots/best_batch_host_switches": wandb.Image(switch_plot_path),
+        })
+
+        # 6c. Save best-batch model checkpoint
+        best_model_filename = "best_batch_model.pth"
+        save_checkpoint(
+            model=getattr(model, "module", model),  # unwrap DDP if needed
+            optimizer=optimizer,
+            epoch=0,
+            val_loss=best_batch_loss,
+            checkpoint_dir=VALIDATION_DIR,
+            filename=best_model_filename,
+            batch_idx=best_batch_index,
+        )
+        print(f"[Best Batch] Model checkpoint saved to {os.path.join(VALIDATION_DIR, best_model_filename)}")
+
+    if fabric.is_global_zero:
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"Validation execution time: {elapsed_time:.4f} seconds")
+
+        if run is not None:
+            wandb.finish()
+
+
+if __name__ == "__main__":
+    fabric = Fabric(
+        accelerator="cuda" if torch.cuda.is_available() else "cpu",
+        devices="auto",
+        strategy=DDPStrategy(
+            find_unused_parameters=True,
+        ),
+    )
+    fabric.launch(main)

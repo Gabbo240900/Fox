@@ -62,10 +62,10 @@ export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300     
 
 echo "Copying dataset from ALLCCFRSCRATCH to JOBSCRATCH..."
-mkdir -p $JOBSCRATCH/old_preencoded_pt
+mkdir -p $JOBSCRATCH/preencoded_pt
 
-rsync -avh /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/old_preencoded_pt/ \
-      $JOBSCRATCH/old_preencoded_pt/
+rsync -avh /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/ \
+      $JOBSCRATCH/preencoded_pt/
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
 python train.py

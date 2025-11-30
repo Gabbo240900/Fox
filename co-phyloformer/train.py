@@ -220,7 +220,7 @@ class CophyloformerDataset(Dataset):
 def main(fabric: Fabric):
     # Load Data
     #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
-    preencoded_dir = os.path.join(os.environ["JOBSCRATCH"], "old_preencoded_pt")
+    preencoded_dir = os.path.join(os.environ["JOBSCRATCH"], "preencoded_pt")
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     #dataset_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final/"
     #dataset_dir = "../generate_treeducken/generated_trees/Datasets/"
@@ -234,7 +234,7 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 50
+    epochs = 5
 
     batch_size = 40
 
@@ -261,7 +261,7 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 2e-4
+    lr = 1e-3
     wd = 0
     criterion = nn.HuberLoss(reduction='none', delta=1.0)
     # criterion = nn.MSELoss(reduction='none')

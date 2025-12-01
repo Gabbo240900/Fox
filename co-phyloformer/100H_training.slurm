@@ -42,9 +42,7 @@ export NCCL_IB_DISABLE=0
 export XDG_CACHE_HOME="$ALL_CCFRWORK/.cache"
 export MPLCONFIGDIR="$ALL_CCFRWORK/.cache/mpl"
 export HF_HOME="$ALL_CCFRWORK/.cache/huggingface"  
-# W&B: Move everything to JOBSCRATCH to avoid symlink problems
 export WANDB_DATA_DIR="$JOBSCRATCH/wandb_data"
-export WANDB_DIR="$JOBSCRATCH/wandb"
 export WANDB_CACHE_DIR="$JOBSCRATCH/wandb_cache"
 
 mkdir -p "$WANDB_DATA_DIR" "$WANDB_DIR" "$WANDB_CACHE_DIR"

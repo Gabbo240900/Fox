@@ -139,6 +139,9 @@ def process_single_tgl(args_tuple):
     
     try:
         file_content, host_tree, parasite_tree = parse_tgl_file(tgl_file)
+        # --- SKIP FILES THAT ALREADY CONTAIN MSAs ---
+        if "ALIGNMENT * Host1" in file_content or "ALIGNMENT * Para1" in file_content:
+            return f"Skipped {tgl_file}: already contains MSAs"
         if not host_tree or not parasite_tree:
             return f"Skipped {tgl_file}: missing tree"
 

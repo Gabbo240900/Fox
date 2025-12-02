@@ -220,7 +220,7 @@ class CophyloformerDataset(Dataset):
 def main(fabric: Fabric):
     # Load Data
     #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
-    preencoded_dir = os.path.join(os.environ["JOBSCRATCH"], "preencoded_pt")
+    preencoded_dir = os.path.join(os.environ["JOBSCRATCH"], "new_preencoded_pt")
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     #dataset_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final/"
     #dataset_dir = "../generate_treeducken/generated_trees/Datasets/"

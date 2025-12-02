@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=20
 #SBATCH --hint=nomultithread
 #SBATCH --time=100:00:00 
-#SBATCH --output=simulate_trees%j.out 
-#SBATCH --error=simulate_trees%j.err  
+#SBATCH --output=alisim%j.out 
+#SBATCH --error=alisim%j.err  
 
 
 set -euo pipefail

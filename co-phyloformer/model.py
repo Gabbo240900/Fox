@@ -6,7 +6,7 @@ from torch.utils.checkpoint import checkpoint_sequential
 
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):
+    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):# increase embedding and layers reduce batch size 
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
@@ -20,7 +20,7 @@ class MSAEncoder(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)  # Reduce from 8 to 4 layers
         self.norm = nn.LayerNorm(hidden_dim)  # Stabilize training
-        self.dropout = nn.Dropout(0.1)
+        #self.dropout = nn.Dropout(0.1)
         self.mask_token_id = 22
         
 
@@ -61,7 +61,7 @@ class Cophyloformer(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.num_heads = num_heads
-        self.dropout = 0.1
+        #self.dropout = 0.1
         self.embedding_dim = hidden_dim
         
         self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)

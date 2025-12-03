@@ -24,8 +24,15 @@ from lightning.fabric.strategies import DDPStrategy
 
 import glob
 
+
+
+# every 100 batches of training do validation loss (not only at epoch end)- even less often you decide based on time 
+# try larger model 
+
 # sotre loss more often than once every epoch 
 #try 1e-4 also for batch size 48
+# 10% warmup steps + lower learning rate (5e-5, or 1e-5).
+# Trying optimizing MAE instead of huber
 torch.set_float32_matmul_precision('high')
 
 seed_everything(42)

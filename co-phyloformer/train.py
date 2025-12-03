@@ -352,7 +352,7 @@ def main(fabric: Fabric):
             lr_scheduler.step()
 
             #Log training loss every 100 batches 
-            if fabric.is_global_zero and (batch_idx + 1) % 5 == 0:
+            if fabric.is_global_zero and (batch_idx + 1) % 100 == 0:
                 val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
                 wandb.log({
                     "train/loss_step": total_loss_tensor.item(),
@@ -401,7 +401,7 @@ def main(fabric: Fabric):
                 smape   = 2 * abs_err / (preds.abs() + labels_abs + eps_vec)
 
                 # --- Log per-event metrics every 100 batches ---
-                if fabric.is_global_zero and ((batch_idx + 1) % 5 == 0):
+                if fabric.is_global_zero and ((batch_idx + 1) % 100 == 0):
                     batch_mae   = abs_err.mean(dim=0).detach().cpu().tolist()
                     batch_mse   = sq_err.mean(dim=0).detach().cpu().tolist()
                     batch_mre   = rel_err.mean(dim=0).detach().cpu().tolist()

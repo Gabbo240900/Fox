@@ -53,7 +53,7 @@ set -x
 # STEP 3: Training phase 
 export WANDB_ENTITY=cophylo_team           
 export WANDB_PROJECT=CoPhyloformer
-export WANDB_NAME=Dev_training7
+export WANDB_NAME=Dev_training_MAE
 export WANDB_MODE=offline    # "online", "offline", or "disabled" 
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300     

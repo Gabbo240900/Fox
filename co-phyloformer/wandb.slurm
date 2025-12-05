@@ -9,4 +9,10 @@ module purge
 module load miniforge/24.9.0
 conda activate cophylo
 
+
+while squeue -u $USER | grep -q 100H_tra; do
+    wandb sync --sync-all wandb/offline-run-* >/dev/null 2>&1
+    sleep 60
+done
+
 wandb sync --sync-all wandb/offline-run-*

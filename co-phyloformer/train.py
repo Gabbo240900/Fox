@@ -154,8 +154,8 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
-    #preencoded_dir = os.path.join(os.environ["JOBSCRATCH"], "preencoded_pt")
+    #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
+    preencoded_dir = os.path.join(os.environ["JOBSCRATCH"], "preencoded_pt")
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     #dataset_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final/"
     #dataset_dir = "../generate_treeducken/generated_trees/Datasets/"
@@ -171,7 +171,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 5
 
-    batch_size = 40
+    batch_size = 32
 
     train_loader = DataLoader(
         train_subset,

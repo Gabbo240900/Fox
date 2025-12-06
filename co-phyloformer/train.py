@@ -154,8 +154,8 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
-    preencoded_dir = os.path.join(os.environ["JOBSCRATCH"], "preencoded_pt")
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
+    #preencoded_dir = os.path.join(os.environ["JOBSCRATCH"], "preencoded_pt")
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     #dataset_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final/"
     #dataset_dir = "../generate_treeducken/generated_trees/Datasets/"
@@ -169,7 +169,7 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 5
+    epochs = 2
 
     batch_size = 32
 
@@ -196,7 +196,7 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
+    lr = 1e-5 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
     criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
@@ -342,7 +342,7 @@ def main(fabric: Fabric):
             lr_scheduler.step()
 
             #Log training loss every 100 batches 
-            if fabric.is_global_zero and ((batch_idx + 1) % 1200 == 0 or batch_idx == 0):
+            if fabric.is_global_zero and ((batch_idx + 1) % 600 == 0 or batch_idx == 0):
                 val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
                 wandb.log({
                     "train/loss_step": total_loss_tensor.item(),
@@ -391,7 +391,7 @@ def main(fabric: Fabric):
                 smape   = 2 * abs_err / (preds.abs() + labels_abs + eps_vec)
 
                 # --- Log per-event metrics every 100 batches ---
-                if fabric.is_global_zero and ((batch_idx + 1) % 1200 == 0 or batch_idx == 0):
+                if fabric.is_global_zero and ((batch_idx + 1) % 600 == 0 or batch_idx == 0):
                     batch_mae   = abs_err.mean(dim=0).detach().cpu().tolist()
                     batch_mse   = sq_err.mean(dim=0).detach().cpu().tolist()
                     batch_mre   = rel_err.mean(dim=0).detach().cpu().tolist()

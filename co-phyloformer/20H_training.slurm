@@ -8,7 +8,7 @@
 #SBATCH --constraint=h100 
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1    
-#SBATCH --gres=gpu:4           
+#SBATCH --gres=gpu:2           
 #SBATCH --cpus-per-task=24
 #SBATCH --time=20:00:00 
 
@@ -56,16 +56,11 @@ set -x
 # STEP 3: Training phase 
 export WANDB_ENTITY=cophylo_team           
 export WANDB_PROJECT=CoPhyloformer
-export WANDB_NAME=20H_training_MAE
+export WANDB_NAME=20H_training_MAE2
 export WANDB_MODE=offline    # "online", "offline", or "disabled" 
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300     
 
 echo "Copying dataset from ALLCCFRSCRATCH to JOBSCRATCH..."
-mkdir -p $JOBSCRATCH/preencoded_pt
-
-rsync -avh /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/ \
-      $JOBSCRATCH/preencoded_pt/
-
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
 python train.py

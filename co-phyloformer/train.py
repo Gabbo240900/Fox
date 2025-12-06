@@ -196,7 +196,7 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-5 # lower learning rate (5e-5, or 1e-5).
+    lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
     criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
@@ -292,6 +292,14 @@ def main(fabric: Fabric):
 
     # Training loop over all batches per epoch (no micro-epochs)
     for epoch in range(start_epoch, epochs):
+        steps_per_epoch = len(train_loader)
+        # Validation trigger points at 25%, 50%, 75% of the epoch
+        val_checkpoints = {
+            int(0 * steps_per_epoch),
+            int(0.25 * steps_per_epoch),
+            int(0.50 * steps_per_epoch),
+            int(0.75 * steps_per_epoch),
+        }
         num_events = len(event_names)
         sum_abs_err = torch.zeros(num_events, device=device)
         sum_sq_err  = torch.zeros(num_events, device=device)
@@ -341,8 +349,8 @@ def main(fabric: Fabric):
             optimizer.step()
             lr_scheduler.step()
 
-            #Log training loss every 100 batches 
-            if fabric.is_global_zero and ((batch_idx + 1) % 600 == 0 or batch_idx == 0):
+            current_step = batch_idx + 1
+            if fabric.is_global_zero and current_step in val_checkpoints:
                 val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
                 wandb.log({
                     "train/loss_step": total_loss_tensor.item(),
@@ -391,7 +399,8 @@ def main(fabric: Fabric):
                 smape   = 2 * abs_err / (preds.abs() + labels_abs + eps_vec)
 
                 # --- Log per-event metrics every 100 batches ---
-                if fabric.is_global_zero and ((batch_idx + 1) % 600 == 0 or batch_idx == 0):
+                current_step = batch_idx + 1
+                if fabric.is_global_zero and current_step in val_checkpoints:
                     batch_mae   = abs_err.mean(dim=0).detach().cpu().tolist()
                     batch_mse   = sq_err.mean(dim=0).detach().cpu().tolist()
                     batch_mre   = rel_err.mean(dim=0).detach().cpu().tolist()

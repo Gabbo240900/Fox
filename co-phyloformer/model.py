@@ -10,6 +10,7 @@ class MSAEncoder(nn.Module):
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.pool_weights = nn.Linear(hidden_dim, 1)
         self.encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim, 
@@ -36,7 +37,7 @@ class MSAEncoder(nn.Module):
         x = self.norm(x)
         #x = self.dropout(x)
 
-        cls_token = torch.zeros(x.size(0), 1, x.size(-1), device=x.device)  # (B, 1, D)
+        cls_token = self.cls_token.expand(x.size(0), -1, -1)  # (B, 1, D), shared learnable CLS
         x = torch.cat([cls_token, x], dim=1)  # (B, N+1, D)
 
         # Activation checkpointing across encoder layers to save memory during backprop
@@ -71,7 +72,7 @@ class Cophyloformer(nn.Module):
 
         self.sim_time_fc = nn.Sequential(
             nn.Linear(1, hidden_dim * 2),
-            nn.Identity()
+            nn.GELU()
         )
         self.concat_dim = 3 * hidden_dim
         self.cospeciation_head = nn.Sequential(

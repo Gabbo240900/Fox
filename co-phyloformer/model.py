@@ -70,6 +70,10 @@ class Cophyloformer(nn.Module):
 
         self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
 
+        # Normalization + gating before cross-attention
+        self.pre_cross_norm = nn.LayerNorm(hidden_dim)
+        self.gate_fc = nn.Linear(hidden_dim, hidden_dim)
+
         self.sim_time_fc = nn.Sequential(
             nn.Linear(1, hidden_dim * 2),
             nn.GELU()
@@ -107,8 +111,19 @@ class Cophyloformer(nn.Module):
             parasite_nodes = []
             for h_idx, p_idx in mapping:
                 if 0 <= h_idx < host_emb.shape[1] and 0 <= p_idx < parasite_emb.shape[1]:
-                    host_nodes.append(host_emb[i, h_idx])
-                    parasite_nodes.append(parasite_emb[i, p_idx])
+                    # Normalize
+                    h = self.pre_cross_norm(host_emb[i, h_idx])
+                    p = self.pre_cross_norm(parasite_emb[i, p_idx])
+
+                    # Gating
+                    h_gate = torch.sigmoid(self.gate_fc(h))
+                    p_gate = torch.sigmoid(self.gate_fc(p))
+
+                    h = h * h_gate
+                    p = p * p_gate
+
+                    host_nodes.append(h)
+                    parasite_nodes.append(p)
             if host_nodes:
                 host_tensor = torch.stack(host_nodes).unsqueeze(1)  # (num_pairs, 1, hidden_dim)
                 parasite_tensor = torch.stack(parasite_nodes).unsqueeze(1)  # (num_pairs, 1, hidden_dim)

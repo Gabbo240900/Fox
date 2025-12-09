@@ -4,96 +4,56 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint_sequential
 
 
+    
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=640, num_layers=12, num_heads=8):  # increase embedding and layers reduce batch size
+    def __init__(self, hidden_dim=640, num_layers=12, num_heads=8):# increase embedding and layers reduce batch size 
         super(MSAEncoder, self).__init__()
 
-        self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)
-
+        self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.pool_weights = nn.Linear(hidden_dim, 1)
-
-        residue_layers = max(1, num_layers // 3)
-        self.residue_encoder_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_dim,
-            nhead=num_heads,
-            dim_feedforward=hidden_dim * 2,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
+        self.encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim, 
+            nhead=num_heads, 
+            dim_feedforward=hidden_dim * 2, 
+            activation='gelu',
+            batch_first=True
         )
-        self.residue_transformer = nn.TransformerEncoder(
-            self.residue_encoder_layer, num_layers=residue_layers
-        )
-
-        # --- Leaf-level Transformer (over host/parasite leaves + CLS) ---
-        self.leaf_encoder_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_dim,
-            nhead=num_heads,
-            dim_feedforward=hidden_dim * 2,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
-        )
-        self.leaf_transformer = nn.TransformerEncoder(
-            self.leaf_encoder_layer, num_layers=num_layers
-        )
-
-        self.norm = nn.LayerNorm(hidden_dim)  # Stabilize training after pooling
-
+        self.transformer = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)  # Reduce from 8 to 4 layers
+        self.norm = nn.LayerNorm(hidden_dim)  # Stabilize training
+        #self.dropout = nn.Dropout(0.1)
         self.mask_token_id = 22
+        
 
     def forward(self, x):
-        # Optional random residue masking when training
-        if self.training and hasattr(self, "dropout_rate") and self.dropout_rate > 0:
+        # x: (batch, num_leaves+1, seq_len)
+        if self.training and hasattr(self, 'dropout_rate') and self.dropout_rate > 0:
             mask = torch.rand_like(x.float()) < self.dropout_rate
             x = x.masked_fill(mask, self.mask_token_id)
+        x = self.embedding(x)  # (batch, num_leaves+1, seq_len, hidden_dim)
 
-        # Embed residues: (B, N, L, D)
-        x = self.embedding(x)
-
-        B, N, L, D = x.shape
-        x_flat = x.view(B * N, L, D)
-
-        if self.training and hasattr(self.residue_transformer, "layers") and len(self.residue_transformer.layers) > 1:
-            x_flat = checkpoint_sequential(
-                self.residue_transformer.layers,
-                len(self.residue_transformer.layers),
-                x_flat,
-                use_reentrant=False,
-            )
-            if getattr(self.residue_transformer, "norm", None) is not None:
-                x_flat = self.residue_transformer.norm(x_flat)
-        else:
-            x_flat = self.residue_transformer(x_flat)
-
-        # Reshape back to (B, N, L, D)
-        x = x_flat.view(B, N, L, D)
-
-        # Learned attention pooling over positions
-        weights = F.softmax(self.pool_weights(x).squeeze(-1), dim=2)  # (B, N, L)
+        weights = F.softmax(self.pool_weights(x).squeeze(-1), dim=2)  # (B, N, S)
         x = torch.sum(x * weights.unsqueeze(-1), dim=2)  # (B, N, D)
-
         x = self.norm(x)
+        #x = self.dropout(x)
 
-        # --- Leaf-level Transformer (over leaves + CLS token) ---
-        cls_token = self.cls_token.expand(B, 1, D)  # (B, 1, D)
+        cls_token = self.cls_token.expand(x.size(0), -1, -1)  # (B, 1, D), shared learnable CLS
         x = torch.cat([cls_token, x], dim=1)  # (B, N+1, D)
 
-        if self.training and hasattr(self.leaf_transformer, "layers") and len(self.leaf_transformer.layers) > 1:
+        # Activation checkpointing across encoder layers to save memory during backprop
+        if self.training and hasattr(self.transformer, 'layers') and len(self.transformer.layers) > 1:
             x = checkpoint_sequential(
-                self.leaf_transformer.layers,
-                len(self.leaf_transformer.layers),
+                self.transformer.layers,
+                len(self.transformer.layers),
                 x,
-                use_reentrant=False,
+                use_reentrant=False
             )
-            if getattr(self.leaf_transformer, "norm", None) is not None:
-                x = self.leaf_transformer.norm(x)
+            if getattr(self.transformer, 'norm', None) is not None:
+                x = self.transformer.norm(x)
         else:
-            x = self.leaf_transformer(x)  # (B, N+1, D)
+            x = self.transformer(x)  # (batch, num_leaves+1, hidden_dim)
+        return x, x[:, 0]  # Return the full output and CLS token
 
-        # Return full sequence and CLS token
-        return x, x[:, 0]
 
 class Cophyloformer(nn.Module):
     def __init__(self, hidden_dim=640, num_layers=12, num_heads=8):
@@ -102,6 +62,7 @@ class Cophyloformer(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.num_heads = num_heads
+        #self.dropout = 0.1
         self.embedding_dim = hidden_dim
         
         self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)

@@ -94,11 +94,6 @@ class CophylogenyDataset(Dataset):
         raise TypeError("Index must be an integer")
 
     def get_data(self, index=None):
-        """
-        Backward-compatible:
-        - If index is None, return the Dataset itself (so callers can pass it to a DataLoader).
-        - If index is an int, return that parsed sample.
-        """
         if index is None:
             return self
         return self.__getitem__(index)

@@ -154,9 +154,9 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
+    #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
     #preencoded_dir = os.path.join(os.environ["JOBSCRATCH"], "preencoded_pt")
-    #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
+    preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     #dataset_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final/"
     #dataset_dir = "../generate_treeducken/generated_trees/Datasets/"
     #dataset = CophylogenyDataset(dataset_dir).get_data()
@@ -171,7 +171,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 2
 
-    batch_size = 30
+    batch_size = 4
 
     train_loader = DataLoader(
         train_subset,
@@ -273,7 +273,7 @@ def main(fabric: Fabric):
         run.config["num_parameters"] = num_params
 
         # Watch gradients and parameters
-        wandb.watch(getattr(model, "module", model), log="all", log_freq=100)
+        wandb.watch(getattr(model, "module", model), log="gradients", log_freq=5000)
 
 
     epoch_losses = []
@@ -343,7 +343,13 @@ def main(fabric: Fabric):
 
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
             loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
-            total_loss_tensor = loss_cospeciation + loss_switches
+            weight_cospeciation = 1.0
+            weight_switches = 3.0
+
+            total_loss_tensor = (
+                weight_cospeciation * loss_cospeciation
+                + weight_switches * loss_switches
+            )
 
             fabric.backward(total_loss_tensor)
             optimizer.step()
@@ -687,6 +693,7 @@ if __name__ == "__main__":
     fabric = Fabric(
         accelerator="cuda" if torch.cuda.is_available() else "cpu",
         devices="auto",
+        precision="16-mixed",  # Enable automatic mixed precision
         strategy=DDPStrategy(
                 find_unused_parameters=True,
             )

@@ -196,7 +196,7 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 2e-5 # lower learning rate (5e-5, or 1e-5).
+    lr = 4e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
     criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
@@ -695,7 +695,7 @@ if __name__ == "__main__":
         devices="auto",
         precision="16-mixed",  # Enable automatic mixed precision
         strategy=DDPStrategy(
-                find_unused_parameters=True,
+                find_unused_parameters=False,
             )
     )
     fabric.launch(main)

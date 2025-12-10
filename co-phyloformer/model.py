@@ -2,7 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint_sequential
+from torch.backends.cuda import sdp_kernel
 
+sdp_kernel.enable_flash(True)
+sdp_kernel.enable_mem_efficient(False)
+sdp_kernel.enable_math(False)
 
 class FlashMSAEncoderLayer(nn.Module):
     def __init__(self, hidden_dim, num_heads):

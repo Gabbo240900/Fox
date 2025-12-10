@@ -46,12 +46,13 @@ class FlashMSAEncoderLayer(nn.Module):
 
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=640, num_layers=12, num_heads=8):# increase embedding and layers reduce batch size 
+    def __init__(self, hidden_dim=512, num_layers=6, num_heads=8):# increase embedding and layers reduce batch size 
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.pool_weights = nn.Linear(hidden_dim, 1)
+        self.norm = nn.LayerNorm(hidden_dim)
         self.layers = nn.ModuleList([
             FlashMSAEncoderLayer(hidden_dim, num_heads)
             for _ in range(num_layers)
@@ -83,7 +84,7 @@ class MSAEncoder(nn.Module):
 
 
 class Cophyloformer(nn.Module):
-    def __init__(self, hidden_dim=640, num_layers=12, num_heads=8):
+    def __init__(self, hidden_dim=512, num_layers=6, num_heads=8):
         super(Cophyloformer, self).__init__()
         # Store hyperparameters for W&B logging
         self.hidden_dim = hidden_dim
@@ -129,6 +130,14 @@ class Cophyloformer(nn.Module):
         host_emb, host_cls = self.host_encoder(host_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
         parasite_emb, parasite_cls = self.parasite_encoder(parasite_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
 
+        if sim_time is not None:
+            gamma_beta = self.sim_time_fc(sim_time)  # (B, 2*hidden_dim)
+            scale, shift = gamma_beta.chunk(2, dim=-1)  # each (B, hidden_dim)
+
+            # Apply gating to CLS and all leaf embeddings
+            host_emb = host_emb * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+            parasite_emb = parasite_emb * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+
         batch_size = host_msa.shape[0]
         hidden_dim = host_emb.shape[-1]
         mapped_pair_features = torch.zeros(batch_size, hidden_dim * 3, device=host_msa.device)
@@ -172,16 +181,6 @@ class Cophyloformer(nn.Module):
                 mapped_pair_features[i] = pooled
 
         attended_pairs = mapped_pair_features
-
-        if sim_time is not None:
-            gamma_beta = self.sim_time_fc(sim_time)  # (B, 2 * hidden_dim)
-            scale, shift = gamma_beta.chunk(2, dim=-1)  # (B, hidden_dim), (B, hidden_dim)
-
-            base = attended_pairs[:, :hidden_dim]
-            rest = attended_pairs[:, hidden_dim:]
-
-            modulated = base * (1 + scale) + shift
-            attended_pairs = torch.cat([modulated, rest], dim=-1)
 
         out_cospeciation = self.cospeciation_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)

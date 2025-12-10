@@ -101,6 +101,10 @@ class Cophyloformer(nn.Module):
         self.pre_cross_norm = nn.LayerNorm(hidden_dim)
         self.gate_fc = nn.Linear(hidden_dim, hidden_dim)
 
+        self.mapping_pool_host = nn.Linear(hidden_dim, 1)
+        self.mapping_pool_parasite = nn.Linear(hidden_dim, 1)
+        self.mapping_pool_cross = nn.Linear(hidden_dim, 1)
+
         self.sim_time_fc = nn.Sequential(
             nn.Linear(1, hidden_dim * 2),
             nn.GELU()
@@ -160,17 +164,26 @@ class Cophyloformer(nn.Module):
                     host_nodes.append(h)
                     parasite_nodes.append(p)
             if host_nodes:
-                host_tensor = torch.stack(host_nodes).unsqueeze(1)  # (num_pairs, 1, hidden_dim)
-                parasite_tensor = torch.stack(parasite_nodes).unsqueeze(1)  # (num_pairs, 1, hidden_dim)
+                # (num_pairs, hidden_dim)
+                host_tensor = torch.stack(host_nodes)
+                parasite_tensor = torch.stack(parasite_nodes)
 
-                attn = self.cross_attention
-                cross_attended, _ = attn(host_tensor, parasite_tensor, parasite_tensor)  # (num_pairs, 1, hidden_dim)
+                # Cross-attention over pairs (batch_first = True)
+                host_seq = host_tensor.unsqueeze(1)      # (num_pairs, 1, hidden_dim)
+                parasite_seq = parasite_tensor.unsqueeze(1)  # (num_pairs, 1, hidden_dim)
+                cross_attended, _ = self.cross_attention(host_seq, parasite_seq, parasite_seq)  # (num_pairs, 1, hidden_dim)
+                cross_tensor = cross_attended.squeeze(1)  # (num_pairs, hidden_dim)
 
-                pooled = torch.cat([
-                    host_tensor.squeeze(1).mean(dim=0),
-                    parasite_tensor.squeeze(1).mean(dim=0),
-                    cross_attended.squeeze(1).mean(dim=0)
-                ], dim=-1)  # (3*hidden_dim)
+                # Learned pooling over mapping pairs
+                host_weights = F.softmax(self.mapping_pool_host(host_tensor), dim=0)      # (num_pairs, 1)
+                parasite_weights = F.softmax(self.mapping_pool_parasite(parasite_tensor), dim=0)  # (num_pairs, 1)
+                cross_weights = F.softmax(self.mapping_pool_cross(cross_tensor), dim=0)   # (num_pairs, 1)
+
+                pooled_host = (host_weights * host_tensor).sum(dim=0)        # (hidden_dim,)
+                pooled_parasite = (parasite_weights * parasite_tensor).sum(dim=0)  # (hidden_dim,)
+                pooled_cross = (cross_weights * cross_tensor).sum(dim=0)    # (hidden_dim,)
+
+                pooled = torch.cat([pooled_host, pooled_parasite, pooled_cross], dim=-1)  # (3*hidden_dim)
                 mapped_pair_features[i] = pooled
             else:
                 base_host = host_cls[i]

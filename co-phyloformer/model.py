@@ -20,21 +20,19 @@ class MSAEncoder(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)  # Reduce from 8 to 4 layers
         self.norm = nn.LayerNorm(hidden_dim)  # Stabilize training
-        self.dropout = nn.Dropout(0.1)
+        #self.dropout = nn.Dropout(0.1)
         self.mask_token_id = 22
         
 
     def forward(self, x):
-        # x: (batch, num_leaves+1, seq_len)
-        if self.training and hasattr(self, 'dropout_rate') and self.dropout_rate > 0:
-            mask = torch.rand_like(x.float()) < self.dropout_rate
-            x = x.masked_fill(mask, self.mask_token_id)
+        mask = torch.rand_like(x.float()) < 0.1  
+        x = x.masked_fill(mask, self.mask_token_id)
         x = self.embedding(x)  # (batch, num_leaves+1, seq_len, hidden_dim)
 
         weights = F.softmax(self.pool_weights(x).squeeze(-1), dim=2)  # (B, N, S)
         x = torch.sum(x * weights.unsqueeze(-1), dim=2)  # (B, N, D)
         x = self.norm(x)
-        x = self.dropout(x)
+        #x = self.dropout(x)
 
         cls_token = torch.zeros(x.size(0), 1, x.size(-1), device=x.device)  # (B, 1, D)
         x = torch.cat([cls_token, x], dim=1)  # (B, N+1, D)
@@ -61,7 +59,7 @@ class Cophyloformer(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.num_heads = num_heads
-        self.dropout = 0.1
+        #self.dropout = 0.1
         self.embedding_dim = hidden_dim
         
         self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)

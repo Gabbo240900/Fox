@@ -154,12 +154,8 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/old_preencoded_pt/"
-    #preencoded_dir = os.path.join(os.environ["JOBSCRATCH"], "preencoded_pt")
-    preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
-    #dataset_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final/"
-    #dataset_dir = "../generate_treeducken/generated_trees/Datasets/"
-    #dataset = CophylogenyDataset(dataset_dir).get_data()
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/old_preencoded_pt/"
+    #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
     indices = list(range(len(dataset)))
@@ -169,9 +165,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 2
+    epochs = 500
 
-    batch_size = 4
+    batch_size = 40
 
     train_loader = DataLoader(
         train_subset,
@@ -196,10 +192,10 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-3 # lower learning rate (5e-5, or 1e-5).
+    lr = 5e-5 # lower learning rate (5e-5, or 1e-5).
     wd = 0
-    #criterion = nn.HuberLoss(reduction='none', delta=1.0)
-    criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
+    criterion = nn.HuberLoss(reduction='none', delta=1.0)
+    #criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
     # criterion = nn.MSELoss(reduction='none')
 
     model = Cophyloformer()

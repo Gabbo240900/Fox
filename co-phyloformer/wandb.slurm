@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --account=vcu@cpu
 #SBATCH --job-name=wandb_sync
-#SBATCH --time=20:00:00    # adjust as needed
+#SBATCH --time=2:00:00    # adjust as needed
 #SBATCH --partition=prepost
 #SBATCH --output=wandb_sync.log
 

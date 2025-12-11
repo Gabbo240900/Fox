@@ -48,6 +48,16 @@ class LazyCophyloformerDataset(Dataset):
         pt_path = self.pt_files[idx]
         sample = torch.load(pt_path, map_location="cpu", weights_only=False)
 
+        # Define mask_sequence inside __getitem__
+        def mask_sequence(sequence, mask_prob=0.1, mask_token=22):
+            masked = []
+            for aa in sequence:
+                if torch.rand(1).item() < mask_prob:
+                    masked.append(mask_token)
+                else:
+                    masked.append(aa)
+            return torch.tensor(masked, dtype=torch.long)
+
         # Skip empty samples
         if len(sample["host_msas"]) == 0 or len(sample["parasite_msas"]) == 0:
             return None
@@ -71,11 +81,11 @@ class LazyCophyloformerDataset(Dataset):
         sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 0.0)], dtype=torch.float32)
         return {
             "host_msa": torch.stack([
-                (encode_sequence(seq))
+                mask_sequence(encode_sequence(seq), mask_prob=0.1)
                 for seq in sample["host_msas"].values()
             ]),
             "parasite_msa": torch.stack([
-                (encode_sequence(seq))
+                mask_sequence(encode_sequence(seq), mask_prob=0.1)
                 for seq in sample["parasite_msas"].values()
             ]),
             "mappings": valid_mappings,

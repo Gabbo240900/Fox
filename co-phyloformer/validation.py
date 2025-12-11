@@ -1,5 +1,5 @@
 import torch
-
+# BEST CONFIGURATION SO FAR FOR SMALL DATASETS
 def run_full_validation(fabric, model, val_loader, criterion, event_names, device):
     model.eval()
     val_loss = 0.0

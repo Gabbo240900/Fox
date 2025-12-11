@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint_sequential
 
+# BEST CONFIGURATION SO FAR FOR SMALL DATASETS
 class FlashMSAEncoderLayer(nn.Module):
     def __init__(self, hidden_dim, num_heads):
         super().__init__()

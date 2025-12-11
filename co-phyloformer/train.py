@@ -169,7 +169,7 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 2
+    epochs = 5
     grad_accum_steps = 4
 
     batch_size = 32
@@ -196,7 +196,7 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 6e-4 # lower learning rate (5e-5, or 1e-5).
+    lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
     criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
@@ -345,11 +345,7 @@ def main(fabric: Fabric):
             weight_cospeciation = 1.0
             weight_switches = 3.0
 
-            total_loss_tensor = (
-                weight_cospeciation * loss_cospeciation
-                + weight_switches * loss_switches
-            )
-
+            total_loss_tensor = loss_cospeciation + loss_switches
             total_loss_tensor = total_loss_tensor / grad_accum_steps
             fabric.backward(total_loss_tensor)
 

@@ -18,7 +18,6 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
             batch["sim_time"] = batch["sim_time"].to(device)
             batch["labels"] = batch["labels"].to(device)
-            batch["labels"] = torch.log1p(batch["labels"])
 
             outputs = model(
                 batch["host_msa"],
@@ -31,8 +30,8 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
             loss_sw   = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
             loss = loss_cosp + loss_sw
 
-            preds = torch.expm1(outputs)
-            labels = torch.expm1(batch["labels"])
+            preds = outputs
+            labels = batch["labels"]
 
             val_loss += loss.item()
             val_batches += 1
@@ -89,7 +88,6 @@ def compute_val_predictions(model, val_loader, device):
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
             batch["labels"] = batch["labels"].to(device)
-            batch["labels"] = torch.log1p(batch["labels"])
             batch["sim_time"] = batch["sim_time"].to(device)
 
             outputs = model(
@@ -99,8 +97,8 @@ def compute_val_predictions(model, val_loader, device):
                 batch["sim_time"],
             )
 
-            preds_list.append(torch.expm1(outputs).cpu())
-            labels_list.append(torch.expm1(batch["labels"]).cpu())
+            preds_list.append(outputs.cpu())
+            labels_list.append(batch["labels"].cpu())
 
     if len(preds_list) == 0:
         return None, None

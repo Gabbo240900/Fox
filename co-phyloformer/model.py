@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint_sequential
 
+
 class FlashMSAEncoderLayer(nn.Module):
     def __init__(self, hidden_dim, num_heads):
         super().__init__()
@@ -45,10 +46,11 @@ class FlashMSAEncoderLayer(nn.Module):
 
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=512, num_layers=6, num_heads=8):# increase embedding and layers reduce batch size 
+    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):# increase embedding and layers reduce batch size 
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
+        # self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.pool_weights = nn.Linear(hidden_dim, 1)
         self.norm = nn.LayerNorm(hidden_dim)
         self.layers = nn.ModuleList([
@@ -61,26 +63,29 @@ class MSAEncoder(nn.Module):
         
 
     def forward(self, x):
-        # x: (batch, num_leaves, seq_len)
+        # x: (batch, num_leaves+1, seq_len)
         if self.training and hasattr(self, 'dropout_rate') and self.dropout_rate > 0:
             mask = torch.rand_like(x.float()) < self.dropout_rate
             x = x.masked_fill(mask, self.mask_token_id)
-        x = self.embedding(x)  # (batch, num_leaves, seq_len, hidden_dim)
+        x = self.embedding(x)  # (batch, num_leaves+1, seq_len, hidden_dim)
 
         weights = F.softmax(self.pool_weights(x).squeeze(-1), dim=2)  # (B, N, S)
         x = torch.sum(x * weights.unsqueeze(-1), dim=2)  # (B, N, D)
         x = self.norm(x)
         #x = self.dropout(x)
 
+        # cls_token = self.cls_token.expand(x.size(0), -1, -1)  # (B, 1, D), shared learnable CLS
+        # x = torch.cat([cls_token, x], dim=1)  # (B, N+1, D)
+
         for layer in self.layers:
             x = layer(x)
         x = self.final_norm(x)
-        global_repr = x.mean(dim=1)  # (B, D) global embedding from leaves
-        return x, global_repr
+        # return x, x[:, 0]  # CLS removed
+        return x, None
 
 
 class Cophyloformer(nn.Module):
-    def __init__(self, hidden_dim=512, num_layers=6, num_heads=8):
+    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):
         super(Cophyloformer, self).__init__()
         # Store hyperparameters for W&B logging
         self.hidden_dim = hidden_dim
@@ -97,10 +102,6 @@ class Cophyloformer(nn.Module):
         # Normalization + gating before cross-attention
         self.pre_cross_norm = nn.LayerNorm(hidden_dim)
         self.gate_fc = nn.Linear(hidden_dim, hidden_dim)
-
-        self.mapping_pool_host = nn.Linear(hidden_dim, 1)
-        self.mapping_pool_parasite = nn.Linear(hidden_dim, 1)
-        self.mapping_pool_cross = nn.Linear(hidden_dim, 1)
 
         self.sim_time_fc = nn.Sequential(
             nn.Linear(1, hidden_dim * 2),
@@ -127,16 +128,10 @@ class Cophyloformer(nn.Module):
     def forward(self, host_msa, parasite_msa, mappings, sim_time):
         # Encode host and parasite MSAs
 
-        host_emb, host_cls = self.host_encoder(host_msa)  
-        parasite_emb, parasite_cls = self.parasite_encoder(parasite_msa) 
-
-        if sim_time is not None:
-            gamma_beta = self.sim_time_fc(sim_time)  # (B, 2*hidden_dim)
-            scale, shift = gamma_beta.chunk(2, dim=-1)  # each (B, hidden_dim)
-
-            # Apply gating to CLS and all leaf embeddings
-            host_emb = host_emb * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
-            parasite_emb = parasite_emb * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+        # host_emb, host_cls = self.host_encoder(host_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
+        # parasite_emb, parasite_cls = self.parasite_encoder(parasite_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
+        host_emb, _ = self.host_encoder(host_msa)
+        parasite_emb, _ = self.parasite_encoder(parasite_msa)
 
         batch_size = host_msa.shape[0]
         hidden_dim = host_emb.shape[-1]
@@ -161,35 +156,38 @@ class Cophyloformer(nn.Module):
                     host_nodes.append(h)
                     parasite_nodes.append(p)
             if host_nodes:
-                # (num_pairs, hidden_dim)
-                host_tensor = torch.stack(host_nodes)
-                parasite_tensor = torch.stack(parasite_nodes)
+                host_tensor = torch.stack(host_nodes).unsqueeze(1)  # (num_pairs, 1, hidden_dim)
+                parasite_tensor = torch.stack(parasite_nodes).unsqueeze(1)  # (num_pairs, 1, hidden_dim)
 
-                # Cross-attention over pairs (batch_first = True)
-                host_seq = host_tensor.unsqueeze(1)      # (num_pairs, 1, hidden_dim)
-                parasite_seq = parasite_tensor.unsqueeze(1)  # (num_pairs, 1, hidden_dim)
-                cross_attended, _ = self.cross_attention(host_seq, parasite_seq, parasite_seq)  # (num_pairs, 1, hidden_dim)
-                cross_tensor = cross_attended.squeeze(1)  # (num_pairs, hidden_dim)
+                attn = self.cross_attention
+                cross_attended, _ = attn(host_tensor, parasite_tensor, parasite_tensor)  # (num_pairs, 1, hidden_dim)
 
-                # Learned pooling over mapping pairs
-                host_weights = F.softmax(self.mapping_pool_host(host_tensor), dim=0)      # (num_pairs, 1)
-                parasite_weights = F.softmax(self.mapping_pool_parasite(parasite_tensor), dim=0)  # (num_pairs, 1)
-                cross_weights = F.softmax(self.mapping_pool_cross(cross_tensor), dim=0)   # (num_pairs, 1)
-
-                pooled_host = (host_weights * host_tensor).sum(dim=0)        # (hidden_dim,)
-                pooled_parasite = (parasite_weights * parasite_tensor).sum(dim=0)  # (hidden_dim,)
-                pooled_cross = (cross_weights * cross_tensor).sum(dim=0)    # (hidden_dim,)
-
-                pooled = torch.cat([pooled_host, pooled_parasite, pooled_cross], dim=-1)  # (3*hidden_dim)
+                pooled = torch.cat([
+                    host_tensor.squeeze(1).mean(dim=0),
+                    parasite_tensor.squeeze(1).mean(dim=0),
+                    cross_attended.squeeze(1).mean(dim=0)
+                ], dim=-1)  # (3*hidden_dim)
                 mapped_pair_features[i] = pooled
             else:
-                base_host = host_cls[i]
-                base_parasite = parasite_cls[i]
+                # base_host = host_cls[i]
+                # base_parasite = parasite_cls[i]
+                base_host = host_emb[i].mean(dim=0)
+                base_parasite = parasite_emb[i].mean(dim=0)
                 zero_cross = torch.zeros(hidden_dim, device=host_msa.device)
                 pooled = torch.cat([base_host, base_parasite, zero_cross], dim=-1)
                 mapped_pair_features[i] = pooled
 
         attended_pairs = mapped_pair_features
+
+        if sim_time is not None:
+            gamma_beta = self.sim_time_fc(sim_time)  # (B, 2 * hidden_dim)
+            scale, shift = gamma_beta.chunk(2, dim=-1)  # (B, hidden_dim), (B, hidden_dim)
+
+            base = attended_pairs[:, :hidden_dim]
+            rest = attended_pairs[:, hidden_dim:]
+
+            modulated = base * (1 + scale) + shift
+            attended_pairs = torch.cat([modulated, rest], dim=-1)
 
         out_cospeciation = self.cospeciation_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)

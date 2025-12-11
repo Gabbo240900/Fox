@@ -154,9 +154,9 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
     #preencoded_dir = os.path.join(os.environ["JOBSCRATCH"], "preencoded_pt")
-    preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
+    #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     #dataset_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final/"
     #dataset_dir = "../generate_treeducken/generated_trees/Datasets/"
     #dataset = CophylogenyDataset(dataset_dir).get_data()
@@ -170,9 +170,9 @@ def main(fabric: Fabric):
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
     epochs = 2
-    grad_accum_steps = 4
 
-    batch_size = 4
+    batch_size = 32
+
     train_loader = DataLoader(
         train_subset,
         batch_size=batch_size,
@@ -196,7 +196,7 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
+    lr = 2e-5 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
     criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
@@ -223,13 +223,15 @@ def main(fabric: Fabric):
         if fabric.is_global_zero:
             print(f"[Checkpoint] Resumed from epoch {loaded_epoch}, best_val_loss {loaded_val_loss}, batch_idx {loaded_batch_idx}")
 
-    # CosineAnnealingLR scheduler with warmup
-    from torch.optim.lr_scheduler import CosineAnnealingLR
+    total_steps = epochs * len(train_loader)
+    warmup_steps = total_steps // 10 # 10% warmup steps 
+    #warmup_steps = 0
 
-    total_steps = epochs * len(train_loader) // grad_accum_steps
-    warmup_steps = int(0.1 * total_steps)
-
-    scheduler = CosineAnnealingLR(optimizer, T_max=total_steps - warmup_steps)
+    lr_scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_steps
+    )
 
     entity = os.environ.get("WANDB_ENTITY", "cophylo_team")
     project = os.environ.get("WANDB_PROJECT", "CoPhyloformer")
@@ -293,7 +295,6 @@ def main(fabric: Fabric):
         steps_per_epoch = len(train_loader)
         # Validation trigger points at 25%, 50%, 75% of the epoch
         val_checkpoints = {
-            int(0 * steps_per_epoch),
             int(0.25 * steps_per_epoch),
             int(0.50 * steps_per_epoch),
             int(0.75 * steps_per_epoch),
@@ -321,7 +322,6 @@ def main(fabric: Fabric):
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
             batch["sim_time"] = batch["sim_time"].to(device)
             batch["labels"] = batch["labels"].to(device)
-            batch["labels"] = torch.log1p(batch["labels"])
             optimizer.zero_grad(set_to_none=True)
 
             outputs = model(
@@ -342,17 +342,11 @@ def main(fabric: Fabric):
 
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
             loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
-            weight_cospeciation = 1.0
-            weight_switches = 3.0
-
             total_loss_tensor = loss_cospeciation + loss_switches
-            total_loss_tensor = total_loss_tensor / grad_accum_steps
-            fabric.backward(total_loss_tensor)
 
-            if (batch_idx + 1) % grad_accum_steps == 0:
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-                scheduler.step()
+            fabric.backward(total_loss_tensor)
+            optimizer.step()
+            lr_scheduler.step()
 
             current_step = batch_idx + 1
             if fabric.is_global_zero and current_step in val_checkpoints:
@@ -388,10 +382,6 @@ def main(fabric: Fabric):
             with torch.no_grad():
                 preds = outputs.detach()
                 labels = batch["labels"].detach()
-
-                # Inverse normalization for metrics
-                preds = torch.expm1(preds)
-                labels = torch.expm1(labels)
 
                 abs_err = (preds - labels).abs()
                 sq_err  = (preds - labels).pow(2)

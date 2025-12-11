@@ -362,20 +362,32 @@ def main(fabric: Fabric):
                     **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
                     **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))}
                 })
-            checkpoints_per_epoch = 5
-            save_every = max(1, len(train_loader) // checkpoints_per_epoch)
-            if fabric.is_global_zero and (batch_idx + 1) % save_every == 0:
-                mid_ckpt_name = f"epoch{epoch+1}_batch{batch_idx+1}.pth"
+                ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
                 save_checkpoint(
                     model,
                     optimizer,
                     epoch,
-                    total_loss_tensor.item(),
+                    val_results["val_loss"],
                     checkpoint_dir,
-                    mid_ckpt_name,
+                    ckpt_name,
                     batch_idx=batch_idx
                 )
-                print(f"[Checkpoint] Saved mid-epoch checkpoint: {mid_ckpt_name}")
+                print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
+                # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
+                if val_results["val_loss"] < best_val_loss:
+                    best_val_loss = val_results["val_loss"]
+                    val_predictions_data = val_results["predictions_data"]
+                    ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
+                    save_checkpoint(
+                        model,
+                        optimizer,
+                        epoch,
+                        best_val_loss,
+                        checkpoint_dir,
+                        ckpt_name,
+                        batch_idx=batch_idx
+                    )
+                    print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
 
             total_loss += total_loss_tensor.item()
             num_batches += 1
@@ -518,60 +530,6 @@ def main(fabric: Fabric):
 
         model.train()
 
-        # --- Save best-step checkpoint safely 
-        if fabric.is_global_zero and hasattr(main, "best_step_batch"):
-            # Remove previous best-step checkpoint if it exists
-            if hasattr(main, "best_step_ckpt_name") and main.best_step_ckpt_name is not None:
-                old_path = os.path.join(checkpoint_dir, main.best_step_ckpt_name)
-                if os.path.exists(old_path):
-                    os.remove(old_path)
-                    print(f"[Checkpoint] Removed old BEST STEP checkpoint: {main.best_step_ckpt_name}")
-
-            # Save new best-step checkpoint
-            step_ckpt_name = (
-                f"best_step_val_loss_epoch{main.best_step_epoch+1}_batch{main.best_step_batch+1}.pth"
-            )
-
-            save_checkpoint(
-                model,
-                optimizer,
-                main.best_step_epoch,
-                main.best_step_val_loss,
-                checkpoint_dir,
-                step_ckpt_name,
-                batch_idx=main.best_step_batch
-            )
-
-            main.best_step_ckpt_name = step_ckpt_name
-            print(f"[Checkpoint] Saved NEW BEST STEP validation model (SAFE): {step_ckpt_name}")
-
-            # Clear temporary tracking so it doesn't trigger again this epoch
-            del main.best_step_batch
-            del main.best_step_epoch
-
-        #  Checkpoint saving logic at end of epoch 
-        if fabric.is_global_zero:
-            # Save checkpoint for current epoch
-            save_checkpoint(
-                model,
-                optimizer,
-                epoch,
-                epoch_loss,
-                checkpoint_dir,
-                f"epoch_{epoch+1}.pth"
-            )
-            # Save best (lowest validation loss) checkpoint
-            if val_loss < best_val_loss:
-                save_checkpoint(
-                    model,
-                    optimizer,
-                    epoch,
-                    val_loss,
-                    checkpoint_dir,
-                    "best_val_loss.pth"
-                )
-                best_val_loss = val_loss
-
     if fabric.is_global_zero:
         torch.save(model.state_dict(), "cophyloformer_custom_model.pth")
 
@@ -613,15 +571,6 @@ def main(fabric: Fabric):
             metric_name="sMAPE"
         )
 
-        # Log generated plots as images to W&B
-        wandb.log({
-            "plots/loss_curve": wandb.Image("combined_loss.png"),
-        })
-        for metric_name in ["MAE", "MSE", "MRE", "sMAPE"]:
-            png_name = f"{metric_name.lower()}_over_epochs.png"
-            if os.path.exists(png_name):
-                wandb.log({f"plots/{metric_name}": wandb.Image(png_name)})
-
         # Save final epoch predictions to a CSV file
         import csv
 
@@ -630,11 +579,7 @@ def main(fabric: Fabric):
             fieldnames = ["Sample_Index", "Cospeciations_Pred", "Cospeciations_GT", "Host_switches_Pred", "Host_switches_GT"]
             writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
             writer.writeheader()
-
-            if hasattr(main, "best_step_predictions") and main.best_step_predictions is not None:
-                writer.writerows(main.best_step_predictions)
-            else:
-                writer.writerows(val_predictions_data)
+            writer.writerows(val_predictions_data)
 
         print(f"Final predictions saved to {output_path}")
 
@@ -642,33 +587,32 @@ def main(fabric: Fabric):
         # --- Combined Train + Val Scatter Plots (Pred vs GT) ---
         val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
 
-        if val_preds_tensor is not None:
-            # Cospeciations
-            plot_labels_vs_predictions(
-                train_labels=[row["Cospeciations_GT"] for row in all_train_prediction_data],
-                train_preds=[row["Cospeciations_Pred"] for row in all_train_prediction_data],
-                val_labels=val_labels_tensor[:, 0].numpy(),
-                val_preds=val_preds_tensor[:, 0].numpy(),
-                event_name="Cospeciations",
-                filename="combined_label_vs_pred_cospeciations.png"
-            )
 
-            # Host switches
-            plot_labels_vs_predictions(
-                train_labels=[row["Host_switches_GT"] for row in all_train_prediction_data],
-                train_preds=[row["Host_switches_Pred"] for row in all_train_prediction_data],
-                val_labels=val_labels_tensor[:, 1].numpy(),
-                val_preds=val_preds_tensor[:, 1].numpy(),
-                event_name="Host Switches",
-                filename="combined_label_vs_pred_switches.png"
-            )
-        else:
-            print("[Warning] No validation predictions available for scatter plots.")
-        # Log scatter plots to W&B
-        if os.path.exists("label_vs_pred_cospeciations.png"):
-            wandb.log({"plots/labels_vs_preds_cospeciations": wandb.Image("label_vs_pred_cospeciations.png")})
-        if os.path.exists("label_vs_pred_host_switches.png"):
-            wandb.log({"plots/labels_vs_preds_host_switches": wandb.Image("label_vs_pred_host_switches.png")})
+        # Cospeciations
+        plot_labels_vs_predictions(
+            train_labels=[row["Cospeciations_GT"] for row in all_train_prediction_data],
+            train_preds=[row["Cospeciations_Pred"] for row in all_train_prediction_data],
+            val_labels=val_labels_tensor[:, 0].numpy(),
+            val_preds=val_preds_tensor[:, 0].numpy(),
+            event_name="Cospeciations",
+            filename="combined_label_vs_pred_cospeciations.png"
+        )
+
+        # Host switches
+        plot_labels_vs_predictions(
+            train_labels=[row["Host_switches_GT"] for row in all_train_prediction_data],
+            train_preds=[row["Host_switches_Pred"] for row in all_train_prediction_data],
+            val_labels=val_labels_tensor[:, 1].numpy(),
+            val_preds=val_preds_tensor[:, 1].numpy(),
+            event_name="Host Switches",
+            filename="combined_label_vs_pred_switches.png"
+        )
+
+        wandb.log({
+            "plots/loss_curve": wandb.Image("combined_loss.png"),
+            "plots/labels_vs_preds_cospeciations": wandb.Image("combined_label_vs_pred_cospeciations.png"),
+            "plots/labels_vs_preds_host_switches": wandb.Image("combined_label_vs_pred_switches.png")
+        })
 
         # Save and log model as a W&B model artifact
         model_path = "cophyloformer_custom_model.pth"

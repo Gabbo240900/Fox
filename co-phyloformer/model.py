@@ -3,23 +3,59 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint_sequential
 
+class FlashMSAEncoderLayer(nn.Module):
+    def __init__(self, hidden_dim, num_heads):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.head_dim = hidden_dim // num_heads
 
+        self.qkv = nn.Linear(hidden_dim, hidden_dim * 3)
+        self.proj = nn.Linear(hidden_dim, hidden_dim)
+
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+
+        self.ff = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 4),
+            nn.GELU(),
+            nn.Linear(hidden_dim * 4, hidden_dim)
+        )
+
+    def forward(self, x):
+        B, N, D = x.shape
+        x_norm = self.norm1(x)
+
+        qkv = self.qkv(x_norm)
+        q, k, v = qkv.chunk(3, dim=-1)
+
+        q = q.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
+
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False
+        )
+
+        out = out.transpose(1, 2).contiguous().view(B, N, D)
+
+        x = x + self.proj(out)
+        x = x + self.ff(self.norm2(x))
+        return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):
+    def __init__(self, hidden_dim=512, num_layers=6, num_heads=8):# increase embedding and layers reduce batch size 
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.pool_weights = nn.Linear(hidden_dim, 1)
-        self.encoder_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_dim, 
-            nhead=num_heads, 
-            dim_feedforward=hidden_dim * 2, 
-            activation='gelu',
-            batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)  # Reduce from 8 to 4 layers
-        self.norm = nn.LayerNorm(hidden_dim)  # Stabilize training
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.layers = nn.ModuleList([
+            FlashMSAEncoderLayer(hidden_dim, num_heads)
+            for _ in range(num_layers)
+        ])
+        self.final_norm = nn.LayerNorm(hidden_dim)
         #self.dropout = nn.Dropout(0.1)
         self.mask_token_id = 22
         
@@ -34,21 +70,12 @@ class MSAEncoder(nn.Module):
         x = self.norm(x)
         #x = self.dropout(x)
 
-        cls_token = torch.zeros(x.size(0), 1, x.size(-1), device=x.device)  # (B, 1, D)
+        cls_token = self.cls_token.expand(x.size(0), -1, -1)  # (B, 1, D), shared learnable CLS
         x = torch.cat([cls_token, x], dim=1)  # (B, N+1, D)
 
-        # Activation checkpointing across encoder layers to save memory during backprop
-        if self.training and hasattr(self.transformer, 'layers') and len(self.transformer.layers) > 1:
-            x = checkpoint_sequential(
-                self.transformer.layers,
-                len(self.transformer.layers),
-                x,
-                use_reentrant=False
-            )
-            if getattr(self.transformer, 'norm', None) is not None:
-                x = self.transformer.norm(x)
-        else:
-            x = self.transformer(x)  # (batch, num_leaves+1, hidden_dim)
+        for layer in self.layers:
+            x = layer(x)
+        x = self.final_norm(x)
         return x, x[:, 0]  # Return the full output and CLS token
 
 

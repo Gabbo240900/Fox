@@ -154,9 +154,9 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/old_preencoded_pt/"
+    #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/old_preencoded_pt/"
     #preencoded_dir = os.path.join(os.environ["JOBSCRATCH"], "preencoded_pt")
-    #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
+    preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     #dataset_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final/"
     #dataset_dir = "../generate_treeducken/generated_trees/Datasets/"
     #dataset = CophylogenyDataset(dataset_dir).get_data()
@@ -169,9 +169,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 500
+    epochs = 2
 
-    batch_size = 32
+    batch_size = 4
 
     train_loader = DataLoader(
         train_subset,
@@ -376,7 +376,7 @@ def main(fabric: Fabric):
                 # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
                 if val_results["val_loss"] < best_val_loss:
                     best_val_loss = val_results["val_loss"]
-                    val_predictions_data = val_results["predictions_data"]
+                    val_predictions_data = val_results
                     ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
                     save_checkpoint(
                         model,
@@ -575,11 +575,25 @@ def main(fabric: Fabric):
         import csv
 
         output_path = "final_predictions.csv"
+
+        # Compute full validation predictions properly
+        val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
+
+        rows = []
+        for i in range(len(val_preds_tensor)):
+            rows.append({
+                "Sample_Index": i,
+                "Cospeciations_Pred": float(val_preds_tensor[i, 0]),
+                "Cospeciations_GT": float(val_labels_tensor[i, 0]),
+                "Host_switches_Pred": float(val_preds_tensor[i, 1]),
+                "Host_switches_GT": float(val_labels_tensor[i, 1]),
+            })
+
         with open(output_path, mode="w", newline="") as csv_file:
             fieldnames = ["Sample_Index", "Cospeciations_Pred", "Cospeciations_GT", "Host_switches_Pred", "Host_switches_GT"]
             writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(val_predictions_data)
+            writer.writerows(rows)
 
         print(f"Final predictions saved to {output_path}")
 

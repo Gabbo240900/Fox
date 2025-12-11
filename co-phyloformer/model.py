@@ -143,6 +143,5 @@ class Cophyloformer(nn.Module):
         out_cospeciation = self.cospeciation_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
-        if self.training:
-    	    return outputs  # raw values (unbounded) 
-        return outputs.clamp(0.0,1.0)
+        outputs = torch.sigmoid(outputs)
+        return outputs

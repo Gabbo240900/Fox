@@ -51,7 +51,8 @@ class MSAEncoder(nn.Module):
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
         # self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
-        self.pool_weights = nn.Linear(hidden_dim, 1)
+        self.pool_q = nn.Parameter(torch.randn(1, hidden_dim))
+        self.attn_pool = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
         self.norm = nn.LayerNorm(hidden_dim)
         self.layers = nn.ModuleList([
             FlashMSAEncoderLayer(hidden_dim, num_heads)
@@ -69,8 +70,12 @@ class MSAEncoder(nn.Module):
             x = x.masked_fill(mask, self.mask_token_id)
         x = self.embedding(x)  # (batch, num_leaves+1, seq_len, hidden_dim)
 
-        weights = F.softmax(self.pool_weights(x).squeeze(-1), dim=2)  # (B, N, S)
-        x = torch.sum(x * weights.unsqueeze(-1), dim=2)  # (B, N, D)
+        B, N, S, D = x.shape
+        x_flat = x.view(B * N, S, D)
+        q = self.pool_q.expand(B * N, -1)
+        q = q.unsqueeze(1)
+        pooled, _ = self.attn_pool(q, x_flat, x_flat)
+        x = pooled.view(B, N, D)
         x = self.norm(x)
         #x = self.dropout(x)
 
@@ -97,7 +102,12 @@ class Cophyloformer(nn.Module):
         self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
         self.parasite_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
 
-        self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+        self.mapping_cross_attn = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+        self.relation_mlp = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim)
+        )
 
         # Normalization + gating before cross-attention
         self.pre_cross_norm = nn.LayerNorm(hidden_dim)
@@ -108,6 +118,11 @@ class Cophyloformer(nn.Module):
             nn.GELU()
         )
         self.concat_dim = 3 * hidden_dim
+        self.pre_head_mlp = nn.Sequential(
+            nn.Linear(self.concat_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, self.concat_dim)
+        )
         self.cospeciation_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
             nn.Linear(self.concat_dim, hidden_dim),
@@ -136,46 +151,84 @@ class Cophyloformer(nn.Module):
         batch_size = host_msa.shape[0]
         hidden_dim = host_emb.shape[-1]
         mapped_pair_features = torch.zeros(batch_size, hidden_dim * 3, device=host_msa.device)
-
+        
         for i, mapping in enumerate(mappings):
-            host_nodes = []
-            parasite_nodes = []
+            # Normalize and gate full host/parasite embeddings for this sample
+            h_i = self.pre_cross_norm(host_emb[i])   # (H, D)
+            p_i = self.pre_cross_norm(parasite_emb[i])  # (P, D)
+
+            h_gate = torch.sigmoid(self.gate_fc(h_i))
+            p_gate = torch.sigmoid(self.gate_fc(p_i))
+
+            h_i = h_i * h_gate
+            p_i = p_i * p_gate
+
+            H_len = h_i.shape[0]
+            P_len = p_i.shape[0]
+
+            # Build mapping mask: True = masked, False = allowed
+            mask_hp = torch.ones(H_len, P_len, device=host_msa.device, dtype=torch.bool)
+            mapped_hosts = []
+            mapped_parasites = []
+
             for h_idx, p_idx in mapping:
-                if 0 <= h_idx < host_emb.shape[1] and 0 <= p_idx < parasite_emb.shape[1]:
-                    # Normalize
-                    h = self.pre_cross_norm(host_emb[i, h_idx])
-                    p = self.pre_cross_norm(parasite_emb[i, p_idx])
+                if 0 <= h_idx < H_len and 0 <= p_idx < P_len:
+                    mask_hp[h_idx, p_idx] = False
+                    mapped_hosts.append(h_idx)
+                    mapped_parasites.append(p_idx)
 
-                    # Gating
-                    h_gate = torch.sigmoid(self.gate_fc(h))
-                    p_gate = torch.sigmoid(self.gate_fc(p))
+            if len(mapped_hosts) == 0:
+                # No mappings: allow all attention
+                mask_hp[:] = False
 
-                    h = h * h_gate
-                    p = p * p_gate
-
-                    host_nodes.append(h)
-                    parasite_nodes.append(p)
-            if host_nodes:
-                host_tensor = torch.stack(host_nodes).unsqueeze(1)  # (num_pairs, 1, hidden_dim)
-                parasite_tensor = torch.stack(parasite_nodes).unsqueeze(1)  # (num_pairs, 1, hidden_dim)
-
-                attn = self.cross_attention
-                cross_attended, _ = attn(host_tensor, parasite_tensor, parasite_tensor)  # (num_pairs, 1, hidden_dim)
-
-                pooled = torch.cat([
-                    host_tensor.squeeze(1).mean(dim=0),
-                    parasite_tensor.squeeze(1).mean(dim=0),
-                    cross_attended.squeeze(1).mean(dim=0)
-                ], dim=-1)  # (3*hidden_dim)
-                mapped_pair_features[i] = pooled
             else:
-                # base_host = host_cls[i]
-                # base_parasite = parasite_cls[i]
-                base_host = host_emb[i].mean(dim=0)
-                base_parasite = parasite_emb[i].mean(dim=0)
-                zero_cross = torch.zeros(hidden_dim, device=host_msa.device)
-                pooled = torch.cat([base_host, base_parasite, zero_cross], dim=-1)
-                mapped_pair_features[i] = pooled
+                # For hosts with no mapped parasites, allow all keys
+                mapped_hosts_set = set(mapped_hosts)
+                for h_idx in range(H_len):
+                    if h_idx not in mapped_hosts_set:
+                        mask_hp[h_idx, :] = False
+
+            # Host attends to parasites with mapping-based mask
+            h_ctx, _ = self.mapping_cross_attn(
+                h_i.unsqueeze(0),  # (1, H, D)
+                p_i.unsqueeze(0),  # (1, P, D)
+                p_i.unsqueeze(0),  # (1, P, D)
+                attn_mask=mask_hp
+            )  # (1, H, D)
+
+            # Parasite attends to hosts (transpose mask)
+            mask_ph = mask_hp.transpose(0, 1)
+            p_ctx, _ = self.mapping_cross_attn(
+                p_i.unsqueeze(0),  # (1, P, D)
+                h_i.unsqueeze(0),  # (1, H, D)
+                h_i.unsqueeze(0),  # (1, H, D)
+                attn_mask=mask_ph
+            )  # (1, P, D)
+
+            h_ctx = h_ctx.squeeze(0)  # (H, D)
+            p_ctx = p_ctx.squeeze(0)  # (P, D)
+
+            if len(mapped_hosts) > 0:
+                mh_idx = torch.tensor(mapped_hosts, device=host_msa.device, dtype=torch.long)
+                mp_idx = torch.tensor(mapped_parasites, device=host_msa.device, dtype=torch.long)
+
+                host_vec = h_ctx[mh_idx].mean(dim=0)
+                parasite_vec = p_ctx[mp_idx].mean(dim=0)
+
+                relation_nodes = []
+                for h_idx, p_idx in zip(mapped_hosts, mapped_parasites):
+                    r = self.relation_mlp(torch.cat([h_ctx[h_idx], p_ctx[p_idx]], dim=-1))
+                    relation_nodes.append(r)
+                relation_vec = torch.stack(relation_nodes).mean(dim=0)
+
+            else:
+                # Fallback: global pooling when no explicit mappings are present
+                host_vec = h_ctx.mean(dim=0)
+                parasite_vec = p_ctx.mean(dim=0)
+                relation_vec = torch.zeros(hidden_dim, device=host_msa.device)
+
+            pooled = torch.cat([host_vec, parasite_vec, relation_vec], dim=-1)  # (3*hidden_dim)
+            mapped_pair_features[i] = pooled
 
         attended_pairs = mapped_pair_features
 
@@ -189,6 +242,7 @@ class Cophyloformer(nn.Module):
             modulated = base * (1 + scale) + shift
             attended_pairs = torch.cat([modulated, rest], dim=-1)
 
+        attended_pairs = self.pre_head_mlp(attended_pairs)
         out_cospeciation = self.cospeciation_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)

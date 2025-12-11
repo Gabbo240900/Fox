@@ -196,7 +196,7 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 2e-5 # lower learning rate (5e-5, or 1e-5).
+    lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
     criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
@@ -258,11 +258,8 @@ def main(fabric: Fabric):
                 "batch_size": batch_size,
                 "learning_rate": lr,
                 "weight_decay": wd,
-                "dataset_dir": preencoded_dir,
-                "scheduler": "linear_warmup",
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
-                "model_name": model.__class__.__name__,
                 "dataset_size": len(dataset),  
                 **model_config                 
             },
@@ -361,20 +358,33 @@ def main(fabric: Fabric):
                     **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
                     **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))}
                 })
-            checkpoints_per_epoch = 5
-            save_every = max(1, len(train_loader) // checkpoints_per_epoch)
-            if fabric.is_global_zero and (batch_idx + 1) % save_every == 0:
-                mid_ckpt_name = f"epoch{epoch+1}_batch{batch_idx+1}.pth"
+                # Save checkpoint at validation trigger
+                val_ckpt_name = f"val_epoch{epoch+1}_step{current_step}.pth"
                 save_checkpoint(
                     model,
                     optimizer,
                     epoch,
-                    total_loss_tensor.item(),
+                    val_results["val_loss"],
                     checkpoint_dir,
-                    mid_ckpt_name,
-                    batch_idx=batch_idx
+                    val_ckpt_name,
+                    batch_idx=batch_idx,
                 )
-                print(f"[Checkpoint] Saved mid-epoch checkpoint: {mid_ckpt_name}")
+                print(f"[Checkpoint] Saved validation checkpoint: {val_ckpt_name}")
+
+                # Save BEST validation checkpoint if this is the lowest val loss so far
+                if val_results["val_loss"] < best_val_loss:
+                    best_val_loss = val_results["val_loss"]
+                    best_ckpt_name = f"best_val_epoch{epoch+1}_step{current_step}.pth"
+                    save_checkpoint(
+                        model,
+                        optimizer,
+                        epoch,
+                        best_val_loss,
+                        checkpoint_dir,
+                        best_ckpt_name,
+                        batch_idx=batch_idx,
+                    )
+                    print(f"[Checkpoint] Saved NEW BEST validation checkpoint: {best_ckpt_name}")
 
             total_loss += total_loss_tensor.item()
             num_batches += 1
@@ -515,65 +525,10 @@ def main(fabric: Fabric):
                 "epoch": epoch + 1,
             })
 
-        model.train()
 
-        # --- Save best-step checkpoint safely 
-        if fabric.is_global_zero and hasattr(main, "best_step_batch"):
-            # Remove previous best-step checkpoint if it exists
-            if hasattr(main, "best_step_ckpt_name") and main.best_step_ckpt_name is not None:
-                old_path = os.path.join(checkpoint_dir, main.best_step_ckpt_name)
-                if os.path.exists(old_path):
-                    os.remove(old_path)
-                    print(f"[Checkpoint] Removed old BEST STEP checkpoint: {main.best_step_ckpt_name}")
-
-            # Save new best-step checkpoint
-            step_ckpt_name = (
-                f"best_step_val_loss_epoch{main.best_step_epoch+1}_batch{main.best_step_batch+1}.pth"
-            )
-
-            save_checkpoint(
-                model,
-                optimizer,
-                main.best_step_epoch,
-                main.best_step_val_loss,
-                checkpoint_dir,
-                step_ckpt_name,
-                batch_idx=main.best_step_batch
-            )
-
-            main.best_step_ckpt_name = step_ckpt_name
-            print(f"[Checkpoint] Saved NEW BEST STEP validation model (SAFE): {step_ckpt_name}")
-
-            # Clear temporary tracking so it doesn't trigger again this epoch
-            del main.best_step_batch
-            del main.best_step_epoch
-
-        #  Checkpoint saving logic at end of epoch 
-        if fabric.is_global_zero:
-            # Save checkpoint for current epoch
-            save_checkpoint(
-                model,
-                optimizer,
-                epoch,
-                epoch_loss,
-                checkpoint_dir,
-                f"epoch_{epoch+1}.pth"
-            )
-            # Save best (lowest validation loss) checkpoint
-            if val_loss < best_val_loss:
-                save_checkpoint(
-                    model,
-                    optimizer,
-                    epoch,
-                    val_loss,
-                    checkpoint_dir,
-                    "best_val_loss.pth"
-                )
-                best_val_loss = val_loss
+# --- PLOTS ----
 
     if fabric.is_global_zero:
-        torch.save(model.state_dict(), "cophyloformer_custom_model.pth")
-
         end_time = time.time()  # Record end time
         elapsed_time = end_time - start_time  # Compute elapsed time
 
@@ -621,24 +576,7 @@ def main(fabric: Fabric):
             if os.path.exists(png_name):
                 wandb.log({f"plots/{metric_name}": wandb.Image(png_name)})
 
-        # Save final epoch predictions to a CSV file
-        import csv
 
-        output_path = "final_predictions.csv"
-        with open(output_path, mode="w", newline="") as csv_file:
-            fieldnames = ["Sample_Index", "Cospeciations_Pred", "Cospeciations_GT", "Host_switches_Pred", "Host_switches_GT"]
-            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-            writer.writeheader()
-
-            if hasattr(main, "best_step_predictions") and main.best_step_predictions is not None:
-                writer.writerows(main.best_step_predictions)
-            else:
-                writer.writerows(val_predictions_data)
-
-        print(f"Final predictions saved to {output_path}")
-
-
-        # --- Combined Train + Val Scatter Plots (Pred vs GT) ---
         val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
 
         if val_preds_tensor is not None:
@@ -668,16 +606,6 @@ def main(fabric: Fabric):
             wandb.log({"plots/labels_vs_preds_cospeciations": wandb.Image("label_vs_pred_cospeciations.png")})
         if os.path.exists("label_vs_pred_host_switches.png"):
             wandb.log({"plots/labels_vs_preds_host_switches": wandb.Image("label_vs_pred_host_switches.png")})
-
-        # Save and log model as a W&B model artifact
-        model_path = "cophyloformer_custom_model.pth"
-        if os.path.exists(model_path):
-            artifact = wandb.Artifact("cophyloformer", type="model")
-            artifact.add_file(model_path)
-            # Also include final predictions CSV as an associated file
-            if os.path.exists("final_predictions.csv"):
-                artifact.add_file("final_predictions.csv")
-            run.log_artifact(artifact, aliases=["latest", f"epoch-{epochs}"])
 
         # Finish W&B run
         wandb.finish()

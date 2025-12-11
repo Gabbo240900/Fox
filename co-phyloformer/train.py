@@ -25,7 +25,7 @@ from validation import run_full_validation, compute_val_predictions
 
 import glob
 
-
+# BEST CONFIGURATION SO FAR FOR SMALL DATASETS
 torch.set_float32_matmul_precision('high')
 
 seed_everything(42)

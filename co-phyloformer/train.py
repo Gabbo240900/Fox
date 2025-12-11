@@ -154,9 +154,9 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
+    #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
     #preencoded_dir = os.path.join(os.environ["JOBSCRATCH"], "preencoded_pt")
-    #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
+    preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     #dataset_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final/"
     #dataset_dir = "../generate_treeducken/generated_trees/Datasets/"
     #dataset = CophylogenyDataset(dataset_dir).get_data()
@@ -169,10 +169,10 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 5
+    epochs = 2
     grad_accum_steps = 4
 
-    batch_size = 32
+    batch_size = 4
     train_loader = DataLoader(
         train_subset,
         batch_size=batch_size,

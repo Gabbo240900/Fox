@@ -49,7 +49,6 @@ class MSAEncoder(nn.Module):
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.pool_weights = nn.Linear(hidden_dim, 1)
         self.norm = nn.LayerNorm(hidden_dim)
         self.layers = nn.ModuleList([
@@ -62,24 +61,22 @@ class MSAEncoder(nn.Module):
         
 
     def forward(self, x):
-        # x: (batch, num_leaves+1, seq_len)
+        # x: (batch, num_leaves, seq_len)
         if self.training and hasattr(self, 'dropout_rate') and self.dropout_rate > 0:
             mask = torch.rand_like(x.float()) < self.dropout_rate
             x = x.masked_fill(mask, self.mask_token_id)
-        x = self.embedding(x)  # (batch, num_leaves+1, seq_len, hidden_dim)
+        x = self.embedding(x)  # (batch, num_leaves, seq_len, hidden_dim)
 
         weights = F.softmax(self.pool_weights(x).squeeze(-1), dim=2)  # (B, N, S)
         x = torch.sum(x * weights.unsqueeze(-1), dim=2)  # (B, N, D)
         x = self.norm(x)
         #x = self.dropout(x)
 
-        cls_token = self.cls_token.expand(x.size(0), -1, -1)  # (B, 1, D), shared learnable CLS
-        x = torch.cat([cls_token, x], dim=1)  # (B, N+1, D)
-
         for layer in self.layers:
             x = layer(x)
         x = self.final_norm(x)
-        return x, x[:, 0]  # Return the full output and CLS token
+        global_repr = x.mean(dim=1)  # (B, D) global embedding from leaves
+        return x, global_repr
 
 
 class Cophyloformer(nn.Module):
@@ -130,8 +127,8 @@ class Cophyloformer(nn.Module):
     def forward(self, host_msa, parasite_msa, mappings, sim_time):
         # Encode host and parasite MSAs
 
-        host_emb, host_cls = self.host_encoder(host_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
-        parasite_emb, parasite_cls = self.parasite_encoder(parasite_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
+        host_emb, host_cls = self.host_encoder(host_msa)  
+        parasite_emb, parasite_cls = self.parasite_encoder(parasite_msa) 
 
         if sim_time is not None:
             gamma_beta = self.sim_time_fc(sim_time)  # (B, 2*hidden_dim)

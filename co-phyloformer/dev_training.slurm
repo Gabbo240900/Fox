@@ -8,7 +8,7 @@
 #SBATCH --constraint=h100 
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1    
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=24 
 #SBATCH --time=2:00:00 
 
@@ -43,8 +43,11 @@ export XDG_CACHE_HOME="$ALL_CCFRWORK/.cache"
 export MPLCONFIGDIR="$ALL_CCFRWORK/.cache/mpl"
 export HF_HOME="$ALL_CCFRWORK/.cache/huggingface"  
 export WANDB_CACHE_DIR="$ALL_CCFRWORK/.cache/wandb"
+export WANDB_DATA_DIR="$JOBSCRATCH/wandb_data"
 
-mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR" "$HF_HOME" "$WANDB_CACHE_DIR"
+mkdir -p "$WANDB_DATA_DIR" "$WANDB_DIR" "$WANDB_CACHE_DIR"
+mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR" "$HF_HOME" 
+
 
 
 # ECHO 

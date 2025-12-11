@@ -204,8 +204,8 @@ def main(fabric: Fabric):
 
     lr = 5e-5 # lower learning rate (5e-5, or 1e-5).
     wd = 0
-    criterion = nn.HuberLoss(reduction='none', delta=1.0)
-    #criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
+    #criterion = nn.HuberLoss(reduction='none', delta=1.0)
+    criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
     # criterion = nn.MSELoss(reduction='none')
 
     model = Cophyloformer()

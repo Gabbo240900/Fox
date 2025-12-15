@@ -34,7 +34,7 @@ class LazyCophyloformerDataset(Dataset):
         return sample.get("event_frequencies", {})
 
 
-preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
+preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
 #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
 dataset = LazyCophyloformerDataset(preencoded_dir)
 

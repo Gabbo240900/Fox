@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=20
 #SBATCH --hint=nomultithread
-#SBATCH --time=10:00:00 
+#SBATCH --time=20:00:00 
 #SBATCH --output=label_analysis_%j.out
 #SBATCH --error=label_analysis_%j.err
 

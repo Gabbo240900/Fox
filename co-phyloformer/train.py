@@ -37,12 +37,12 @@ event_names = [
 # --- Label normalization stats (computed offline) ---
 LABEL_STATS = {
     "Cospeciations": {
-        "mean": 0.909537,
-        "std":  0.118719,
+        "mean": 0.257012283,
+        "std":  0.06425729938795134,
     },
     "Host_spread/Switches": {
-        "mean": 0.080463,
-        "std":  0.076180,
+        "mean": 0.017842309100000002,
+        "std":  0.01676293855173496,
     },
 }
 
@@ -211,9 +211,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 5
+    epochs = 500
 
-    batch_size = 4
+    batch_size = 32
 
     train_loader = DataLoader(
         train_subset,

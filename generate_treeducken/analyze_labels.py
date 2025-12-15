@@ -8,6 +8,7 @@ from collections import defaultdict
 from torch.utils.data import Dataset
 import glob
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import math
 
 parser = argparse.ArgumentParser(description="Compute mean/std of labels from pre-encoded .pt datasets")
 parser.add_argument(
@@ -38,6 +39,12 @@ preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_
 #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
 dataset = LazyCophyloformerDataset(preencoded_dir)
 
+EXPECTED_LABELS = [
+    "Cospeciations",
+    "Host_spread/Switches",
+    "Sim_time",
+]
+
 def read_event_frequencies(pt_path):
     try:
         sample = torch.load(pt_path, map_location="cpu", weights_only=False)
@@ -46,6 +53,9 @@ def read_event_frequencies(pt_path):
         return None
 
 label_values = defaultdict(list)
+nan_counts = defaultdict(int)
+
+num_samples = len(dataset.pt_files)
 
 if args.workers is not None:
     max_workers = args.workers
@@ -64,9 +74,23 @@ with ThreadPoolExecutor(max_workers=max_workers) as executor:
         events = fut.result()
         if not events:
             continue
-        for k, v in events.items():
-            if isinstance(v, (int, float)):
-                label_values[k].append(v)
+        # Fill missing labels with 0.0
+        for label in EXPECTED_LABELS:
+            if label in events:
+                v = events[label]
+                if isinstance(v, float) and math.isnan(v):
+                    nan_counts[label] += 1
+                    v = 0.0
+            else:
+                # Label missing entirely → interpret as 0.0
+                v = 0.0
+                nan_counts[label] += 1
+
+            label_values[label].append(v)
+
+print("\nSanity check (counts should equal number of samples):")
+for label in EXPECTED_LABELS:
+    print(f"  {label}: {len(label_values[label])} / {num_samples}")
 
 stats = {}
 for label, values in label_values.items():
@@ -86,6 +110,10 @@ for label, s in stats.items():
         f"mean={s['mean']:.6f} std={s['std']:.6f} "
         f"min={s['min']:.6f} max={s['max']:.6f}"
     )
+
+print("\nNaN values replaced with 0.0:")
+for label, cnt in nan_counts.items():
+    print(f"  {label}: {cnt}")
 
 # Optional CSV output
 out_csv = os.path.join("/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/label_analysis/", "label_stats.csv")

@@ -35,7 +35,7 @@ class LazyCophyloformerDataset(Dataset):
         return sample.get("event_frequencies", {})
 
 
-preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
+preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/old_preencoded_pt/"
 #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
 dataset = LazyCophyloformerDataset(preencoded_dir)
 
@@ -116,7 +116,7 @@ for label, cnt in nan_counts.items():
     print(f"  {label}: {cnt}")
 
 # Optional CSV output
-out_csv = os.path.join("/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/label_analysis/", "label_stats.csv")
+out_csv = os.path.join("/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/label_analysis/", "old_label_stats.csv")
 #out_csv = os.path.join("/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/label_analysis/", "label_stats.csv")
 
 

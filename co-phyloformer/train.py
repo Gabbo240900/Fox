@@ -34,6 +34,25 @@ event_names = [
     "Host_spread/Switches"
 ]
 
+# --- Label normalization stats (computed offline) ---
+LABEL_STATS = {
+    "Cospeciations": {
+        "mean": 0.909537,
+        "std":  0.118719,
+    },
+    "Host_spread/Switches": {
+        "mean": 0.080463,
+        "std":  0.076180,
+    },
+}
+
+# --- Unified denormalization helper ---
+def denormalize_tensor(y_norm, event_names, stats):
+    y = y_norm.clone()
+    for i, event in enumerate(event_names):
+        y[..., i] = y[..., i] * stats[event]["std"] + stats[event]["mean"]
+    return y
+
 start_time = time.time()  # Record start time
 
 class LazyCophyloformerDataset(Dataset):
@@ -73,11 +92,26 @@ class LazyCophyloformerDataset(Dataset):
             if p in parasite_idx_map and h in host_idx_map
         ]
 
-        labels = torch.tensor(
-            [sample["event_frequencies"].get(event, 0.0) for event in event_names],
-            dtype=torch.float32,
-        )
+        raw_labels = [
+            sample["event_frequencies"].get(event, 0.0)
+            for event in event_names
+        ]
 
+        # Replace NaNs with 0.0
+        raw_labels = [
+            0.0 if (isinstance(v, float) and np.isnan(v)) else v
+            for v in raw_labels
+        ]
+
+        # Z-score normalization per event
+        norm_labels = [
+            (raw_labels[i] - LABEL_STATS[event]["mean"]) /
+            (LABEL_STATS[event]["std"] + 1e-8)
+            for i, event in enumerate(event_names)
+        ]
+
+        labels = torch.tensor(norm_labels, dtype=torch.float32)
+        
         sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 0.0)], dtype=torch.float32)
         return {
             "host_msa": torch.stack([
@@ -92,6 +126,8 @@ class LazyCophyloformerDataset(Dataset):
             "labels": labels,
             "sim_time": sim_time,
         }
+        
+
 def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir, filename, batch_idx=None):
     """Save model and optimizer state."""
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -164,7 +200,7 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/old_preencoded_pt/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
@@ -175,9 +211,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 100
+    epochs = 5
 
-    batch_size = 32
+    batch_size = 4
 
     train_loader = DataLoader(
         train_subset,
@@ -339,12 +375,14 @@ def main(fabric: Fabric):
             )
 
             for idx in range(outputs.shape[0]):
+                pred_dn = denormalize_tensor(outputs[idx:idx+1], event_names, LABEL_STATS)[0]
+                gt_dn   = denormalize_tensor(batch["labels"][idx:idx+1], event_names, LABEL_STATS)[0]
                 all_train_prediction_data.append({
                     "Sample_Index": batch_idx * outputs.shape[0] + idx,
-                    "Cospeciations_Pred": outputs[idx, 0].item(),
-                    "Cospeciations_GT": batch["labels"][idx, 0].item(),
-                    "Host_switches_Pred": outputs[idx, 1].item(),
-                    "Host_switches_GT": batch["labels"][idx, 1].item(),
+                    "Cospeciations_Pred": float(pred_dn[0]),
+                    "Cospeciations_GT": float(gt_dn[0]),
+                    "Host_switches_Pred": float(pred_dn[1]),
+                    "Host_switches_GT": float(gt_dn[1]),
                 })
 
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
@@ -399,8 +437,12 @@ def main(fabric: Fabric):
             num_batches += 1
 
             with torch.no_grad():
-                preds = outputs.detach()
-                labels = batch["labels"].detach()
+                preds_norm = outputs.detach()
+                labels_norm = batch["labels"].detach()
+
+                # De-normalize for metrics & logging
+                preds  = denormalize_tensor(preds_norm, event_names, LABEL_STATS)
+                labels = denormalize_tensor(labels_norm, event_names, LABEL_STATS)
 
                 abs_err = (preds - labels).abs()
                 sq_err  = (preds - labels).pow(2)
@@ -460,6 +502,7 @@ def main(fabric: Fabric):
                 "epoch": epoch + 1,
                 "train/loss": epoch_loss,
                 "lr": optimizer.param_groups[0]['lr'],
+                "train/loss_normalized": epoch_loss,
             })
 
         #Synchronize metric accumulators across all ranks
@@ -490,8 +533,8 @@ def main(fabric: Fabric):
                 for sample_idx in range(min(3, outputs.shape[0])):
                     print(f"\nEpoch {epoch+1}, Sample {sample_idx} - Predictions vs Ground Truth:")
                     for i, event in enumerate(event_names):
-                        pred_val = outputs[sample_idx, i].item()
-                        gt_val = batch["labels"][sample_idx, i].item()
+                        pred_val = preds[sample_idx, i].item()
+                        gt_val   = labels[sample_idx, i].item()
                         print(f"  {event}: Pred {pred_val:.4f}, GT {gt_val:.4f}")
             else:
                 print(f"[Warning] No training batches completed in epoch {epoch+1}. Skipping sample preview.")
@@ -505,7 +548,15 @@ def main(fabric: Fabric):
             wandb.log(metrics)
 
         # VALIDATION PHASE replaced by function
-        val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
+        val_results = run_full_validation(
+            fabric,
+            model,
+            val_loader,
+            criterion,
+            event_names,
+            device,
+            denormalize_fn=lambda x: denormalize_tensor(x, event_names, LABEL_STATS),
+        )
         val_loss = val_results["val_loss"]
         val_mae = val_results["val_mae"]
         val_mse = val_results["val_mse"]
@@ -583,7 +634,12 @@ def main(fabric: Fabric):
         output_path = "final_predictions.csv"
 
         # Compute full validation predictions properly
-        val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
+        val_preds_tensor, val_labels_tensor = compute_val_predictions(
+            model,
+            val_loader,
+            device,
+            denormalize_fn=lambda x: denormalize_tensor(x, event_names, LABEL_STATS),
+        )
 
         rows = []
         for i in range(len(val_preds_tensor)):
@@ -605,7 +661,12 @@ def main(fabric: Fabric):
 
 
         # --- Combined Train + Val Scatter Plots (Pred vs GT) ---
-        val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
+        val_preds_tensor, val_labels_tensor = compute_val_predictions(
+            model,
+            val_loader,
+            device,
+            denormalize_fn=lambda x: denormalize_tensor(x, event_names, LABEL_STATS),
+        )
 
 
         # Cospeciations

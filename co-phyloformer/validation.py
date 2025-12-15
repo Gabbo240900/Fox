@@ -1,6 +1,6 @@
 import torch
 # BEST CONFIGURATION SO FAR FOR SMALL DATASETS
-def run_full_validation(fabric, model, val_loader, criterion, event_names, device):
+def run_full_validation(fabric, model, val_loader, criterion, event_names, device, denormalize_fn=None):
     model.eval()
     val_loss = 0.0
     val_batches = 0
@@ -30,8 +30,12 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
             loss_sw   = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
             loss = loss_cosp + loss_sw
 
-            preds = outputs
-            labels = batch["labels"]
+            if denormalize_fn is not None:
+                preds  = denormalize_fn(outputs)
+                labels = denormalize_fn(batch["labels"])
+            else:
+                preds = outputs
+                labels = batch["labels"]
 
             val_loss += loss.item()
             val_batches += 1
@@ -77,7 +81,7 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
     }
 
 
-def compute_val_predictions(model, val_loader, device):
+def compute_val_predictions(model, val_loader, device, denormalize_fn=None):
     preds_list = []
     labels_list = []
     model.eval()
@@ -97,8 +101,12 @@ def compute_val_predictions(model, val_loader, device):
                 batch["sim_time"],
             )
 
-            preds_list.append(outputs.cpu())
-            labels_list.append(batch["labels"].cpu())
+            if denormalize_fn is not None:
+                preds_list.append(denormalize_fn(outputs).cpu())
+                labels_list.append(denormalize_fn(batch["labels"]).cpu())
+            else:
+                preds_list.append(outputs.cpu())
+                labels_list.append(batch["labels"].cpu())
 
     if len(preds_list) == 0:
         return None, None

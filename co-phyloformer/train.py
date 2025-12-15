@@ -37,12 +37,12 @@ event_names = [
 # --- Label normalization stats (computed offline) ---
 LABEL_STATS = {
     "Cospeciations": {
-        "mean": 0.2516080660637104,
-        "std":  0.07158824785692834,
+        "mean": 0.25157258484899997,
+        "std":  0.07123629091382899,
     },
     "Host_spread/Switches": {
-        "mean": 0.018465133175313033,
-        "std":  0.020087339997302604,
+        "mean": 0.0182283987884,
+        "std":  0.02039181533782126,
     },
 }
 
@@ -213,7 +213,7 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
@@ -224,7 +224,7 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 2
+    epochs = 200
 
     batch_size = 32
 

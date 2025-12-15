@@ -46,6 +46,19 @@ LABEL_STATS = {
     },
 }
 
+# # --- Label normalization stats (MACOS) ---
+# LABEL_STATS = {
+#     "Cospeciations": {
+#         "mean": 0.909537,
+#         "std":  0.118719,
+#     },
+#     "Host_spread/Switches": {
+#         "mean": 0.080463,
+#         "std":  0.076180,
+#     },
+# }
+
+
 # --- Unified denormalization helper ---
 def denormalize_tensor(y_norm, event_names, stats):
     y = y_norm.clone()
@@ -213,7 +226,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 500
 
-    batch_size = 32
+    batch_size = 16
 
     train_loader = DataLoader(
         train_subset,
@@ -387,7 +400,7 @@ def main(fabric: Fabric):
 
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
             loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
-            total_loss_tensor = loss_cospeciation + loss_switches
+            total_loss_tensor = 0.5 * (loss_cospeciation + loss_switches)
 
             fabric.backward(total_loss_tensor)
             optimizer.step()

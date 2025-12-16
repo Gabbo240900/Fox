@@ -228,6 +228,9 @@ def main(fabric: Fabric):
 
     batch_size = 32
 
+    # --- Gradient accumulation ---
+    accumulation_steps = 4  # effective batch = batch_size * accumulation_steps
+
     train_loader = DataLoader(
         train_subset,
         batch_size=batch_size,
@@ -251,7 +254,7 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
+    lr = 1e-5 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
     criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
@@ -318,8 +321,10 @@ def main(fabric: Fabric):
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
                 "model_name": model.__class__.__name__,
-                "dataset_size": len(dataset),  
-                **model_config                 
+                "dataset_size": len(dataset),
+                "effective_batch_size": batch_size * accumulation_steps,
+                "gradient_accumulation_steps": accumulation_steps,
+                **model_config
             },
         )
 
@@ -351,9 +356,15 @@ def main(fabric: Fabric):
         # Validation trigger points at 25%, 50%, 75% of the epoch
         val_checkpoints = {
             int(0 * steps_per_epoch),
-            int(0.25 * steps_per_epoch),
+            int(0.10 * steps_per_epoch),
+            int(0.20 * steps_per_epoch),
+            int(0.30 * steps_per_epoch),
+            int(0.40 * steps_per_epoch),
             int(0.50 * steps_per_epoch),
-            int(0.75 * steps_per_epoch),
+            int(0.60 * steps_per_epoch),
+            int(0.70 * steps_per_epoch),
+            int(0.80 * steps_per_epoch),
+            int(0.90 * steps_per_epoch)
         }
         num_events = len(event_names)
         sum_abs_err = torch.zeros(num_events, device=device)
@@ -378,7 +389,8 @@ def main(fabric: Fabric):
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
             batch["sim_time"] = batch["sim_time"].to(device)
             batch["labels"] = batch["labels"].to(device)
-            optimizer.zero_grad(set_to_none=True)
+            if batch_idx % accumulation_steps == 0:
+                optimizer.zero_grad(set_to_none=True)
 
             outputs = model(
                 batch["host_msa"],
@@ -401,10 +413,13 @@ def main(fabric: Fabric):
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
             loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
             total_loss_tensor = 0.5 * (loss_cospeciation + loss_switches)
+            total_loss_tensor = total_loss_tensor / accumulation_steps
 
             fabric.backward(total_loss_tensor)
-            optimizer.step()
-            lr_scheduler.step()
+
+            if (batch_idx + 1) % accumulation_steps == 0:
+                optimizer.step()
+                lr_scheduler.step()
 
             current_step = batch_idx + 1
             if fabric.is_global_zero and current_step in val_checkpoints:
@@ -496,6 +511,11 @@ def main(fabric: Fabric):
                 sum_rel_err += rel_err.sum(dim=0)
                 sum_smape   += smape.sum(dim=0)
                 sample_count += preds.shape[0]
+
+        # Step optimizer for leftover gradients at epoch end
+        if num_batches % accumulation_steps != 0:
+            optimizer.step()
+            lr_scheduler.step()
 
         # Compute epoch loss on this rank
         epoch_loss = total_loss / max(1, num_batches)

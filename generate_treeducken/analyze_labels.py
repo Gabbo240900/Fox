@@ -36,8 +36,8 @@ class LazyCophyloformerDataset(Dataset):
         return sample.get("event_frequencies", {})
 
 
-preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/new_preencoded_pt/"
-#preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
+#preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/new_preencoded_pt/"
+preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
 dataset = LazyCophyloformerDataset(preencoded_dir)
 
 EXPECTED_LABELS = [
@@ -107,8 +107,8 @@ for label, values in label_values.items():
 # =========================
 # Histogram plots (bins of 0.05)
 # =========================
-hist_out_dir = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/label_analysis/new_histograms"
-#hist_out_dir = "/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/label_analysis/histograms"
+#hist_out_dir = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/label_analysis/new_histograms"
+hist_out_dir = "/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/label_analysis/histograms"
 os.makedirs(hist_out_dir, exist_ok=True)
 
 bin_width = 0.05
@@ -118,7 +118,20 @@ for label, values in label_values.items():
     arr = np.array(values, dtype=float)
 
     plt.figure(figsize=(8, 5))
-    plt.hist(arr, bins=bins)
+    counts, edges = np.histogram(arr, bins=bins)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    plt.bar(centers, counts, width=bin_width, align="center")
+    for c, x in zip(counts, centers):
+        if c > 0:
+            plt.text(
+                x,
+                c,
+                str(int(c)),
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                rotation=90,
+            )
     plt.xlabel(label)
     plt.ylabel("Count")
     plt.title(f"Histogram of {label} (bin width = {bin_width})")
@@ -129,6 +142,14 @@ for label, values in label_values.items():
     plt.close()
 
     print(f"Saved histogram for {label} to: {out_path}")
+
+    csv_path = os.path.join(hist_out_dir, f"{label.replace('/', '_')}_hist_bins.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["bin_start", "bin_end", "count"])
+        for i in range(len(counts)):
+            writer.writerow([edges[i], edges[i+1], int(counts[i])])
+    print(f"Saved histogram bin counts for {label} to: {csv_path}")
 
 # Print to stdout
 for label, s in stats.items():
@@ -143,8 +164,8 @@ for label, cnt in nan_counts.items():
     print(f"  {label}: {cnt}")
 
 # Optional CSV output
-out_csv = os.path.join("/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/label_analysis/", "new_label_stats.csv")
-#out_csv = os.path.join("/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/label_analysis/", "label_stats.csv")
+#out_csv = os.path.join("/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/label_analysis/", "new_label_stats.csv")
+out_csv = os.path.join("/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/label_analysis/", "label_stats.csv")
 
 
 

@@ -34,37 +34,6 @@ event_names = [
     "Host_spread/Switches"
 ]
 
-# --- Label normalization stats (computed offline) ---
-LABEL_STATS = {
-    "Cospeciations": {
-        "mean": 0.25157258484899997,
-        "std":  0.07123629091382899,
-    },
-    "Host_spread/Switches": {
-        "mean": 0.0182283987884,
-        "std":  0.02039181533782126,
-    },
-}
-
-# # --- Label normalization stats (MACOS) ---
-# LABEL_STATS = {
-#     "Cospeciations": {
-#         "mean": 0.909537,
-#         "std":  0.118719,
-#     },
-#     "Host_spread/Switches": {
-#         "mean": 0.080463,
-#         "std":  0.076180,
-#     },
-# }
-
-
-# --- Unified denormalization helper ---
-def denormalize_tensor(y_norm, event_names, stats):
-    y = y_norm.clone()
-    for i, event in enumerate(event_names):
-        y[..., i] = y[..., i] * stats[event]["std"] + stats[event]["mean"]
-    return y
 
 start_time = time.time()  # Record start time
 
@@ -115,15 +84,7 @@ class LazyCophyloformerDataset(Dataset):
             0.0 if (isinstance(v, float) and np.isnan(v)) else v
             for v in raw_labels
         ]
-
-        # Z-score normalization per event
-        norm_labels = [
-            (raw_labels[i] - LABEL_STATS[event]["mean"]) /
-            (LABEL_STATS[event]["std"])
-            for i, event in enumerate(event_names)
-        ]
-
-        labels = torch.tensor(norm_labels, dtype=torch.float32)
+        labels = torch.tensor(raw_labels, dtype=torch.float32)
         
         sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 0.0)], dtype=torch.float32)
         return {
@@ -263,8 +224,8 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
-    #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
+    #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
+    preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
     indices = list(range(len(dataset)))
@@ -274,9 +235,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 100
+    epochs = 5
 
-    batch_size = 32
+    batch_size = 4
 
     # --- Gradient accumulation ---
     accumulation_steps = 8  # effective batch = batch_size * accumulation_steps
@@ -455,21 +416,20 @@ def main(fabric: Fabric):
                 batch["mappings"],
                 batch["sim_time"],
             )
-
             for idx in range(outputs.shape[0]):
-                pred_dn = denormalize_tensor(outputs[idx:idx+1], event_names, LABEL_STATS)[0]
-                gt_dn   = denormalize_tensor(batch["labels"][idx:idx+1], event_names, LABEL_STATS)[0]
+                pred = outputs[idx]
+                gt   = batch["labels"][idx]
                 all_train_prediction_data.append({
                     "Sample_Index": batch_idx * outputs.shape[0] + idx,
-                    "Cospeciations_Pred": float(pred_dn[0]),
-                    "Cospeciations_GT": float(gt_dn[0]),
-                    "Host_switches_Pred": float(pred_dn[1]),
-                    "Host_switches_GT": float(gt_dn[1]),
+                    "Cospeciations_Pred": float(pred[0]),
+                    "Cospeciations_GT": float(gt[0]),
+                    "Host_switches_Pred": float(pred[1]),
+                    "Host_switches_GT": float(gt[1]),
                 })
 
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
             loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
-            total_loss_tensor = 0.5 * (loss_cospeciation + loss_switches)
+            total_loss_tensor = loss_cospeciation + loss_switches
             total_loss_tensor = total_loss_tensor / accumulation_steps
 
             fabric.backward(total_loss_tensor)
@@ -522,12 +482,8 @@ def main(fabric: Fabric):
             num_batches += 1
 
             with torch.no_grad():
-                preds_norm = outputs.detach()
-                labels_norm = batch["labels"].detach()
-
-                # De-normalize for metrics & logging
-                preds  = denormalize_tensor(preds_norm, event_names, LABEL_STATS)
-                labels = denormalize_tensor(labels_norm, event_names, LABEL_STATS)
+                preds = outputs.detach()
+                labels = batch["labels"].detach()
 
                 abs_err = (preds - labels).abs()
                 sq_err  = (preds - labels).pow(2)
@@ -645,7 +601,6 @@ def main(fabric: Fabric):
             criterion,
             event_names,
             device,
-            denormalize_fn=lambda x: denormalize_tensor(x, event_names, LABEL_STATS),
         )
         val_loss = val_results["val_loss"]
         val_mae = val_results["val_mae"]
@@ -728,7 +683,6 @@ def main(fabric: Fabric):
             model,
             val_loader,
             device,
-            denormalize_fn=lambda x: denormalize_tensor(x, event_names, LABEL_STATS),
         )
 
         rows = []
@@ -755,7 +709,6 @@ def main(fabric: Fabric):
             model,
             val_loader,
             device,
-            denormalize_fn=lambda x: denormalize_tensor(x, event_names, LABEL_STATS),
         )
 
 

@@ -119,7 +119,7 @@ class LazyCophyloformerDataset(Dataset):
         # Z-score normalization per event
         norm_labels = [
             (raw_labels[i] - LABEL_STATS[event]["mean"]) /
-            (LABEL_STATS[event]["std"] + 1e-8)
+            (LABEL_STATS[event]["std"])
             for i, event in enumerate(event_names)
         ]
 

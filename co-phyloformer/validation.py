@@ -1,6 +1,14 @@
 import torch
 # BEST CONFIGURATION SO FAR FOR SMALL DATASETS
-def run_full_validation(fabric, model, val_loader, criterion, event_names, device):
+def run_full_validation(
+    fabric,
+    model,
+    val_loader,
+    criterion,
+    event_names,
+    device,
+    cospec_bin_edges=None,
+):
     model.eval()
     val_loss = 0.0
     val_batches = 0
@@ -9,6 +17,12 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
     val_sum_rel = torch.zeros(len(event_names), device=device)
     val_sum_smape = torch.zeros(len(event_names), device=device)
     val_sample_count = 0
+
+    # Bin-wise MAE accumulators (Cospeciations only)
+    if cospec_bin_edges is not None:
+        num_bins = len(cospec_bin_edges) - 1
+        bin_abs_sum = torch.zeros(num_bins, device=device)
+        bin_count   = torch.zeros(num_bins, device=device)
 
     with torch.no_grad():
         for batch in val_loader:
@@ -37,6 +51,24 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
             val_batches += 1
 
             abs_err = (preds - labels).abs()
+
+            # --- Bin-wise accumulation for Cospeciations ---
+            if cospec_bin_edges is not None:
+                cospec_gt = labels[:, 0]
+                cospec_pred = preds[:, 0]
+
+                bin_ids = torch.bucketize(
+                    cospec_gt,
+                    cospec_bin_edges[1:-1].to(device),
+                    right=True
+                )
+
+                for b in range(num_bins):
+                    mask = bin_ids == b
+                    if mask.any():
+                        bin_abs_sum[b] += (cospec_pred[mask] - cospec_gt[mask]).abs().sum()
+                        bin_count[b]   += mask.sum()
+
             sq_err  = abs_err ** 2
 
             denom_abs = torch.where(labels.abs() > 0, labels.abs(), torch.full_like(labels, 1e9))
@@ -62,11 +94,24 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
         reduce_op="sum"
     ).item())
 
+    if cospec_bin_edges is not None:
+        bin_abs_sum = fabric.all_reduce(bin_abs_sum, reduce_op="sum")
+        bin_count   = fabric.all_reduce(bin_count, reduce_op="sum")
+
     denom = max(1, val_sample_count)
     val_mae = (val_sum_abs / denom).cpu().tolist()
     val_mse = (val_sum_sq / denom).cpu().tolist()
     val_mre = (val_sum_rel / denom).cpu().tolist()
     val_smape = (val_sum_smape / denom).cpu().tolist()
+
+    val_bin_mae = None
+    if cospec_bin_edges is not None:
+        val_bin_mae = {}
+        for b in range(num_bins):
+            if bin_count[b] > 0:
+                val_bin_mae[f"bin_{b}"] = (bin_abs_sum[b] / bin_count[b]).item()
+            else:
+                val_bin_mae[f"bin_{b}"] = float("nan")
 
     return {
         "val_loss": val_loss,
@@ -74,6 +119,7 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
         "val_mse": val_mse,
         "val_mre": val_mre,
         "val_smape": val_smape,
+        "val_bin_mae": val_bin_mae,
     }
 
 

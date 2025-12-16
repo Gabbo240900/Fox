@@ -128,6 +128,7 @@ class StratifiedSampler(Sampler):
             cospec_vals,
             torch.linspace(0, 1, num_bins + 1)
         )
+        self.bin_edges = quantiles.cpu()
 
         self.bins = [[] for _ in range(num_bins)]
         for idx, v in zip(indices, cospec_vals):
@@ -245,9 +246,11 @@ def main(fabric: Fabric):
     train_sampler = StratifiedSampler(
         dataset,
         train_indices,
-        num_bins=5,
+        num_bins=10,
         shuffle=True
     )
+
+    cospec_bin_edges = train_sampler.bin_edges
 
     train_loader = DataLoader(
         dataset,
@@ -440,7 +443,15 @@ def main(fabric: Fabric):
 
             current_step = batch_idx + 1
             if fabric.is_global_zero and current_step in val_checkpoints:
-                val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
+                val_results = run_full_validation(
+                    fabric,
+                    model,
+                    val_loader,
+                    criterion,
+                    event_names,
+                    device,
+                    cospec_bin_edges=cospec_bin_edges,
+                )
                 wandb.log({
                     "train/loss_step": total_loss_tensor.item(),
                     "lr": optimizer.param_groups[0]['lr'],
@@ -451,6 +462,14 @@ def main(fabric: Fabric):
                     **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
                     **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))}
                 })
+                if val_results.get("val_bin_mae") is not None:
+                    wandb.log({
+                        **{
+                            f"val/bin_MAE_step/Cospeciations/{k}": v
+                            for k, v in val_results["val_bin_mae"].items()
+                        },
+                        "step": epoch * len(train_loader) + batch_idx,
+                    })
                 ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
                 save_checkpoint(
                     model,
@@ -601,6 +620,7 @@ def main(fabric: Fabric):
             criterion,
             event_names,
             device,
+            cospec_bin_edges=cospec_bin_edges,
         )
         val_loss = val_results["val_loss"]
         val_mae = val_results["val_mae"]
@@ -629,6 +649,14 @@ def main(fabric: Fabric):
                 **{f"val/sMAPE/{event_names[i]}": val_smape[i] for i in range(len(event_names))},
                 "epoch": epoch + 1,
             })
+            if val_results.get("val_bin_mae") is not None:
+                wandb.log({
+                    **{
+                        f"val/bin_MAE/Cospeciations/{k}": v
+                        for k, v in val_results["val_bin_mae"].items()
+                    },
+                    "epoch": epoch + 1,
+                })
 
         model.train()
 
@@ -684,6 +712,37 @@ def main(fabric: Fabric):
             val_loader,
             device,
         )
+
+        # ==========================================================
+        # Bin-wise MAE for Cospeciations (RAW labels)
+        # ==========================================================
+        cospec_preds = val_preds_tensor[:, 0]
+        cospec_gt    = val_labels_tensor[:, 0]
+
+        bin_ids = torch.bucketize(
+            cospec_gt,
+            cospec_bin_edges[1:-1].to(cospec_gt.device),
+            right=True
+        )
+
+        bin_mae = {}
+        for b in range(len(cospec_bin_edges) - 1):
+            mask = bin_ids == b
+            if mask.any():
+                mae_b = torch.mean(torch.abs(cospec_preds[mask] - cospec_gt[mask]))
+                bin_mae[f"bin_{b}"] = mae_b.item()
+            else:
+                bin_mae[f"bin_{b}"] = float("nan")
+
+        if fabric.is_global_zero:
+            print("\n--- Bin-wise Validation MAE (Cospeciations) ---")
+            for b, v in bin_mae.items():
+                print(f"{b}: MAE = {v:.6f}")
+
+            wandb.log({
+                **{f"val/bin_MAE/Cospeciations/{k}": v for k, v in bin_mae.items()},
+                "epoch": epoch + 1
+            })
 
         rows = []
         for i in range(len(val_preds_tensor)):

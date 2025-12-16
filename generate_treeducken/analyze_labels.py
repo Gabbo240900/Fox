@@ -9,6 +9,7 @@ from torch.utils.data import Dataset
 import glob
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
+import matplotlib.pyplot as plt
 
 parser = argparse.ArgumentParser(description="Compute mean/std of labels from pre-encoded .pt datasets")
 parser.add_argument(
@@ -35,8 +36,8 @@ class LazyCophyloformerDataset(Dataset):
         return sample.get("event_frequencies", {})
 
 
-preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
-#preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
+#preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
+preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
 dataset = LazyCophyloformerDataset(preencoded_dir)
 
 EXPECTED_LABELS = [
@@ -103,6 +104,32 @@ for label, values in label_values.items():
         "max": float(arr.max()),
     }
 
+# =========================
+# Histogram plots (bins of 0.05)
+# =========================
+#hist_out_dir = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/label_analysis/histograms"
+hist_out_dir = "/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/label_analysis/histograms"
+os.makedirs(hist_out_dir, exist_ok=True)
+
+bin_width = 0.05
+bins = np.arange(0.0, 1.0 + bin_width, bin_width)
+
+for label, values in label_values.items():
+    arr = np.array(values, dtype=float)
+
+    plt.figure(figsize=(8, 5))
+    plt.hist(arr, bins=bins)
+    plt.xlabel(label)
+    plt.ylabel("Count")
+    plt.title(f"Histogram of {label} (bin width = {bin_width})")
+    plt.tight_layout()
+
+    out_path = os.path.join(hist_out_dir, f"{label.replace('/', '_')}_hist.png")
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+
+    print(f"Saved histogram for {label} to: {out_path}")
+
 # Print to stdout
 for label, s in stats.items():
     print(
@@ -116,8 +143,8 @@ for label, cnt in nan_counts.items():
     print(f"  {label}: {cnt}")
 
 # Optional CSV output
-out_csv = os.path.join("/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/label_analysis/", "test_label_stats.csv")
-#out_csv = os.path.join("/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/label_analysis/", "label_stats.csv")
+#out_csv = os.path.join("/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/label_analysis/", "test_label_stats.csv")
+out_csv = os.path.join("/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/label_analysis/", "label_stats.csv")
 
 
 

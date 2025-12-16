@@ -3,7 +3,7 @@ import torch
 import pandas as pd
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 from model import Cophyloformer
 from data import CophylogenyDataset
 from torch.nn import functional as F
@@ -139,7 +139,57 @@ class LazyCophyloformerDataset(Dataset):
             "labels": labels,
             "sim_time": sim_time,
         }
-        
+
+
+# --- Stratified Sampler for Training ---
+class StratifiedSampler(Sampler):
+    """
+    Stratified sampler based on Cospeciations z-scored label.
+    Each batch is drawn from a single quantile bin to reduce gradient cancellation.
+    """
+    def __init__(self, dataset, indices, num_bins=5, shuffle=True):
+        self.dataset = dataset
+        self.indices = indices
+        self.num_bins = num_bins
+        self.shuffle = shuffle
+
+        # Collect cospeciation labels
+        cospec_vals = []
+        for idx in indices:
+            sample = torch.load(dataset.pt_files[idx], map_location="cpu", weights_only=False)
+            val = sample["event_frequencies"].get("Cospeciations", 0.0)
+            cospec_vals.append(val)
+
+        cospec_vals = torch.tensor(cospec_vals)
+
+        # Build quantile bins
+        quantiles = torch.quantile(
+            cospec_vals,
+            torch.linspace(0, 1, num_bins + 1)
+        )
+
+        self.bins = [[] for _ in range(num_bins)]
+        for idx, v in zip(indices, cospec_vals):
+            bin_id = torch.bucketize(v, quantiles[1:-1], right=True).item()
+            self.bins[bin_id].append(idx)
+
+    def __iter__(self):
+        bins = self.bins
+        if self.shuffle:
+            for b in bins:
+                np.random.shuffle(b)
+
+        max_len = max(len(b) for b in bins)
+        batch_indices = []
+        for i in range(max_len):
+            for b in bins:
+                if i < len(b):
+                    batch_indices.append(b[i])
+
+        return iter(batch_indices)
+
+    def __len__(self):
+        return len(self.indices)
 
 def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir, filename, batch_idx=None):
     """Save model and optimizer state."""
@@ -229,12 +279,19 @@ def main(fabric: Fabric):
     batch_size = 32
 
     # --- Gradient accumulation ---
-    accumulation_steps = 4  # effective batch = batch_size * accumulation_steps
+    accumulation_steps = 8  # effective batch = batch_size * accumulation_steps
+
+    train_sampler = StratifiedSampler(
+        dataset,
+        train_indices,
+        num_bins=5,
+        shuffle=True
+    )
 
     train_loader = DataLoader(
-        train_subset,
+        dataset,
         batch_size=batch_size,
-        shuffle=True,
+        sampler=train_sampler,
         collate_fn=collate_fn,
         num_workers=8,
         persistent_workers=True,

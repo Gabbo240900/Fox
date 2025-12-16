@@ -108,7 +108,7 @@ class StratifiedSampler(Sampler):
     Stratified sampler based on Cospeciations z-scored label.
     Each batch is drawn from a single quantile bin to reduce gradient cancellation.
     """
-    def __init__(self, dataset, indices, num_bins=5, shuffle=True):
+    def __init__(self, dataset, indices, num_bins=10, shuffle=True):
         self.dataset = dataset
         self.indices = indices
         self.num_bins = num_bins

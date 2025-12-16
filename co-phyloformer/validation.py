@@ -28,7 +28,7 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
 
             loss_cosp = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
             loss_sw   = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
-            loss = 0.5 * (loss_cosp + loss_sw)
+            loss = loss_cosp + loss_sw
 
             preds = outputs
             labels = batch["labels"]

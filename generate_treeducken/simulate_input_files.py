@@ -72,7 +72,8 @@ class GenerateTGLFiles:
         # Normalize event counts to proportions
         event_keys = [
             "Cospeciations",
-            "Host_Spread/Switches"
+            "Host_Spread/Switches",
+            "Symbiont_Speciations"
         ]
         total_events = summary_df[event_keys].sum()
         for key in event_keys:

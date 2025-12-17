@@ -3,7 +3,7 @@ import torch
 import pandas as pd
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset, Sampler
+from torch.utils.data import DataLoader, Dataset
 from model import Cophyloformer
 from data import CophylogenyDataset
 from torch.nn import functional as F
@@ -33,7 +33,6 @@ event_names = [
     "Cospeciations",
     "Host_spread/Switches"
 ]
-
 
 start_time = time.time()  # Record start time
 
@@ -74,18 +73,11 @@ class LazyCophyloformerDataset(Dataset):
             if p in parasite_idx_map and h in host_idx_map
         ]
 
-        raw_labels = [
-            sample["event_frequencies"].get(event, 0.0)
-            for event in event_names
-        ]
+        labels = torch.tensor(
+            [sample["event_frequencies"].get(event, 0.0) for event in event_names],
+            dtype=torch.float32,
+        )
 
-        # Replace NaNs with 0.0
-        raw_labels = [
-            0.0 if (isinstance(v, float) and np.isnan(v)) else v
-            for v in raw_labels
-        ]
-        labels = torch.tensor(raw_labels, dtype=torch.float32)
-        
         sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 0.0)], dtype=torch.float32)
         return {
             "host_msa": torch.stack([
@@ -100,59 +92,6 @@ class LazyCophyloformerDataset(Dataset):
             "labels": labels,
             "sim_time": sim_time,
         }
-
-
-# --- Stratified Sampler for Training ---
-class StratifiedSampler(Sampler):
-    """
-    Stratified sampler based on Cospeciations z-scored label.
-    Each batch is drawn from a single quantile bin to reduce gradient cancellation.
-    """
-    def __init__(self, dataset, indices, num_bins=10, shuffle=True):
-        self.dataset = dataset
-        self.indices = indices
-        self.num_bins = num_bins
-        self.shuffle = shuffle
-
-        # Collect cospeciation labels
-        cospec_vals = []
-        for idx in indices:
-            sample = torch.load(dataset.pt_files[idx], map_location="cpu", weights_only=False)
-            val = sample["event_frequencies"].get("Cospeciations", 0.0)
-            cospec_vals.append(val)
-
-        cospec_vals = torch.tensor(cospec_vals)
-
-        # Build quantile bins
-        quantiles = torch.quantile(
-            cospec_vals,
-            torch.linspace(0, 1, num_bins + 1)
-        )
-        self.bin_edges = quantiles.cpu()
-
-        self.bins = [[] for _ in range(num_bins)]
-        for idx, v in zip(indices, cospec_vals):
-            bin_id = torch.bucketize(v, quantiles[1:-1], right=True).item()
-            self.bins[bin_id].append(idx)
-
-    def __iter__(self):
-        bins = self.bins
-        if self.shuffle:
-            for b in bins:
-                np.random.shuffle(b)
-
-        max_len = max(len(b) for b in bins)
-        batch_indices = []
-        for i in range(max_len):
-            for b in bins:
-                if i < len(b):
-                    batch_indices.append(b[i])
-
-        return iter(batch_indices)
-
-    def __len__(self):
-        return len(self.indices)
-
 def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir, filename, batch_idx=None):
     """Save model and optimizer state."""
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -225,8 +164,8 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
-    #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
+    #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
+    preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
     indices = list(range(len(dataset)))
@@ -236,26 +175,14 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 50
+    epochs = 5
 
-    batch_size = 32
-
-    # --- Gradient accumulation ---
-    accumulation_steps = 8  # effective batch = batch_size * accumulation_steps
-
-    train_sampler = StratifiedSampler(
-        dataset,
-        train_indices,
-        num_bins=10,
-        shuffle=True
-    )
-
-    cospec_bin_edges = train_sampler.bin_edges
+    batch_size = 4
 
     train_loader = DataLoader(
-        dataset,
+        train_subset,
         batch_size=batch_size,
-        sampler=train_sampler,
+        shuffle=True,
         collate_fn=collate_fn,
         num_workers=8,
         persistent_workers=True,
@@ -275,7 +202,7 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-5 # lower learning rate (5e-5, or 1e-5).
+    lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
     criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
@@ -342,10 +269,8 @@ def main(fabric: Fabric):
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
                 "model_name": model.__class__.__name__,
-                "dataset_size": len(dataset),
-                "effective_batch_size": batch_size * accumulation_steps,
-                "gradient_accumulation_steps": accumulation_steps,
-                **model_config
+                "dataset_size": len(dataset),  
+                **model_config                 
             },
         )
 
@@ -377,15 +302,9 @@ def main(fabric: Fabric):
         # Validation trigger points at 25%, 50%, 75% of the epoch
         val_checkpoints = {
             int(0 * steps_per_epoch),
-            int(0.10 * steps_per_epoch),
-            int(0.20 * steps_per_epoch),
-            int(0.30 * steps_per_epoch),
-            int(0.40 * steps_per_epoch),
+            int(0.25 * steps_per_epoch),
             int(0.50 * steps_per_epoch),
-            int(0.60 * steps_per_epoch),
-            int(0.70 * steps_per_epoch),
-            int(0.80 * steps_per_epoch),
-            int(0.90 * steps_per_epoch)
+            int(0.75 * steps_per_epoch),
         }
         num_events = len(event_names)
         sum_abs_err = torch.zeros(num_events, device=device)
@@ -410,8 +329,7 @@ def main(fabric: Fabric):
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
             batch["sim_time"] = batch["sim_time"].to(device)
             batch["labels"] = batch["labels"].to(device)
-            if batch_idx % accumulation_steps == 0:
-                optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad(set_to_none=True)
 
             outputs = model(
                 batch["host_msa"],
@@ -419,39 +337,27 @@ def main(fabric: Fabric):
                 batch["mappings"],
                 batch["sim_time"],
             )
+
             for idx in range(outputs.shape[0]):
-                pred = outputs[idx]
-                gt   = batch["labels"][idx]
                 all_train_prediction_data.append({
                     "Sample_Index": batch_idx * outputs.shape[0] + idx,
-                    "Cospeciations_Pred": float(pred[0]),
-                    "Cospeciations_GT": float(gt[0]),
-                    "Host_switches_Pred": float(pred[1]),
-                    "Host_switches_GT": float(gt[1]),
+                    "Cospeciations_Pred": outputs[idx, 0].item(),
+                    "Cospeciations_GT": batch["labels"][idx, 0].item(),
+                    "Host_switches_Pred": outputs[idx, 1].item(),
+                    "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
             loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
             total_loss_tensor = loss_cospeciation + loss_switches
-            total_loss_tensor = total_loss_tensor / accumulation_steps
 
             fabric.backward(total_loss_tensor)
-
-            if (batch_idx + 1) % accumulation_steps == 0:
-                optimizer.step()
-                lr_scheduler.step()
+            optimizer.step()
+            lr_scheduler.step()
 
             current_step = batch_idx + 1
             if fabric.is_global_zero and current_step in val_checkpoints:
-                val_results = run_full_validation(
-                    fabric,
-                    model,
-                    val_loader,
-                    criterion,
-                    event_names,
-                    device,
-                    cospec_bin_edges=cospec_bin_edges,
-                )
+                val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
                 wandb.log({
                     "train/loss_step": total_loss_tensor.item(),
                     "lr": optimizer.param_groups[0]['lr'],
@@ -462,14 +368,6 @@ def main(fabric: Fabric):
                     **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
                     **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))}
                 })
-                if val_results.get("val_bin_mae") is not None:
-                    wandb.log({
-                        **{
-                            f"val/bin_MAE_step/Cospeciations/{k}": v
-                            for k, v in val_results["val_bin_mae"].items()
-                        },
-                        "step": epoch * len(train_loader) + batch_idx,
-                    })
                 ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
                 save_checkpoint(
                     model,
@@ -544,11 +442,6 @@ def main(fabric: Fabric):
                 sum_smape   += smape.sum(dim=0)
                 sample_count += preds.shape[0]
 
-        # Step optimizer for leftover gradients at epoch end
-        if num_batches % accumulation_steps != 0:
-            optimizer.step()
-            lr_scheduler.step()
-
         # Compute epoch loss on this rank
         epoch_loss = total_loss / max(1, num_batches)
 
@@ -567,7 +460,6 @@ def main(fabric: Fabric):
                 "epoch": epoch + 1,
                 "train/loss": epoch_loss,
                 "lr": optimizer.param_groups[0]['lr'],
-                "train/loss_normalized": epoch_loss,
             })
 
         #Synchronize metric accumulators across all ranks
@@ -598,8 +490,8 @@ def main(fabric: Fabric):
                 for sample_idx in range(min(3, outputs.shape[0])):
                     print(f"\nEpoch {epoch+1}, Sample {sample_idx} - Predictions vs Ground Truth:")
                     for i, event in enumerate(event_names):
-                        pred_val = preds[sample_idx, i].item()
-                        gt_val   = labels[sample_idx, i].item()
+                        pred_val = outputs[sample_idx, i].item()
+                        gt_val = batch["labels"][sample_idx, i].item()
                         print(f"  {event}: Pred {pred_val:.4f}, GT {gt_val:.4f}")
             else:
                 print(f"[Warning] No training batches completed in epoch {epoch+1}. Skipping sample preview.")
@@ -613,15 +505,7 @@ def main(fabric: Fabric):
             wandb.log(metrics)
 
         # VALIDATION PHASE replaced by function
-        val_results = run_full_validation(
-            fabric,
-            model,
-            val_loader,
-            criterion,
-            event_names,
-            device,
-            cospec_bin_edges=cospec_bin_edges,
-        )
+        val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
         val_loss = val_results["val_loss"]
         val_mae = val_results["val_mae"]
         val_mse = val_results["val_mse"]
@@ -649,14 +533,6 @@ def main(fabric: Fabric):
                 **{f"val/sMAPE/{event_names[i]}": val_smape[i] for i in range(len(event_names))},
                 "epoch": epoch + 1,
             })
-            if val_results.get("val_bin_mae") is not None:
-                wandb.log({
-                    **{
-                        f"val/bin_MAE/Cospeciations/{k}": v
-                        for k, v in val_results["val_bin_mae"].items()
-                    },
-                    "epoch": epoch + 1,
-                })
 
         model.train()
 
@@ -707,42 +583,7 @@ def main(fabric: Fabric):
         output_path = "final_predictions.csv"
 
         # Compute full validation predictions properly
-        val_preds_tensor, val_labels_tensor = compute_val_predictions(
-            model,
-            val_loader,
-            device,
-        )
-
-        # ==========================================================
-        # Bin-wise MAE for Cospeciations (RAW labels)
-        # ==========================================================
-        cospec_preds = val_preds_tensor[:, 0]
-        cospec_gt    = val_labels_tensor[:, 0]
-
-        bin_ids = torch.bucketize(
-            cospec_gt,
-            cospec_bin_edges[1:-1].to(cospec_gt.device),
-            right=True
-        )
-
-        bin_mae = {}
-        for b in range(len(cospec_bin_edges) - 1):
-            mask = bin_ids == b
-            if mask.any():
-                mae_b = torch.mean(torch.abs(cospec_preds[mask] - cospec_gt[mask]))
-                bin_mae[f"bin_{b}"] = mae_b.item()
-            else:
-                bin_mae[f"bin_{b}"] = float("nan")
-
-        if fabric.is_global_zero:
-            print("\n--- Bin-wise Validation MAE (Cospeciations) ---")
-            for b, v in bin_mae.items():
-                print(f"{b}: MAE = {v:.6f}")
-
-            wandb.log({
-                **{f"val/bin_MAE/Cospeciations/{k}": v for k, v in bin_mae.items()},
-                "epoch": epoch + 1
-            })
+        val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
 
         rows = []
         for i in range(len(val_preds_tensor)):
@@ -764,11 +605,7 @@ def main(fabric: Fabric):
 
 
         # --- Combined Train + Val Scatter Plots (Pred vs GT) ---
-        val_preds_tensor, val_labels_tensor = compute_val_predictions(
-            model,
-            val_loader,
-            device,
-        )
+        val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
 
 
         # Cospeciations

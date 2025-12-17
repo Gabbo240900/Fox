@@ -34,7 +34,7 @@ export BLIS_NUM_THREADS=$OMP_NUM_THREADS
 # ECHO
 set -x 
 
-python /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/alisim.py /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final \
+python /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/alisim.py /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Datasets \
   --substitution LG \
   --gamma GC \
   --iqtree /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/bin/bin_linux/iqtree_2.2.0 \

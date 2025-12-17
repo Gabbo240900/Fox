@@ -43,14 +43,14 @@ rm -rf /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/
 # STEP 1: generate host trees
 python /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/simulate_input_files.py \
   --h_lambda 0.5 1.2 \
-  --c_lambda 0.7 1.6 \
+  --c_lambda 0.2 1.6 \
   --s_lambda 0.5 1.2 \
   --s_her 0.05 0.3 \
-  --num_trees 2000 \
+  --num_trees 20000 \
   --n_cores ${SLURM_CPUS_PER_TASK}
 
 # STEP 2: Simulate alignments 
-python /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/alisim.py /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final \
+python /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/alisim.py /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Datasets \
   --substitution LG \
   --gamma GC \
   --iqtree /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/bin/bin_linux/iqtree_2.2.0 \

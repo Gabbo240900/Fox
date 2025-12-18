@@ -46,7 +46,7 @@ python /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducke
   --c_lambda 0.2 1.6 \
   --s_lambda 0.5 1.2 \
   --s_her 0.05 0.3 \
-  --num_trees 20000 \
+  --num_trees 200000 \
   --n_cores ${SLURM_CPUS_PER_TASK}
 
 # STEP 2: Simulate alignments 
@@ -64,4 +64,4 @@ python /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducke
 # STEP 3: move and rename generated datasets
 python /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/dataset_renaming.py \
   --src "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Datasets" \
-  --dst "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/validation_datasates"
+  --dst "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final"

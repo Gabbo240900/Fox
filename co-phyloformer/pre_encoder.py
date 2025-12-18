@@ -6,8 +6,8 @@ from tqdm import tqdm
 #dst_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
 
 
-src_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Datasets/"
-dst_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
+src_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final/"
+dst_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/small_preencoded_pt/"
 os.makedirs(dst_dir, exist_ok=True)
 
 dataset = CophylogenyDataset(src_dir).get_data()

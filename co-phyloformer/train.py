@@ -13,19 +13,18 @@ import os
 from plot import plot_event_metric_over_epochs, plot_epoch_loss_curve, plot_labels_vs_predictions
 from sklearn.model_selection import train_test_split
 from transformers import get_linear_schedule_with_warmup
-
 from tqdm import tqdm
 from itertools import islice
-
 import wandb
 from lightning.fabric import Fabric
 from lightning.fabric.utilities.seed import seed_everything
 from lightning.fabric.strategies import DDPStrategy
 from validation import run_full_validation, compute_val_predictions
-
 import glob
 
 # BEST CONFIGURATION SO FAR FOR SMALL DATASETS
+# Log host switch 
+
 torch.set_float32_matmul_precision('high')
 
 seed_everything(42)
@@ -164,8 +163,8 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
-    #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
+    #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
+    preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
     indices = list(range(len(dataset)))
@@ -175,9 +174,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 30
+    epochs = 5
 
-    batch_size = 32
+    batch_size = 4
 
     train_loader = DataLoader(
         train_subset,
@@ -657,8 +656,16 @@ if __name__ == "__main__":
     fabric = Fabric(
         accelerator="cuda" if torch.cuda.is_available() else "cpu",
         devices="auto",
+        precision="bf16-mixed",
         strategy=DDPStrategy(
-                find_unused_parameters=True,
-            )
+            find_unused_parameters=False,
+        )
     )
+
+    # 🔍 Flash Attention availability check (run once)
+    if torch.cuda.is_available() and fabric.global_rank == 0:
+        from torch.backends.cuda import sdp_kernel
+        print("Flash available:", sdp_kernel.is_flash_attention_available())
+        print("Mem-efficient available:", sdp_kernel.is_mem_efficient_attention_available())
+
     fabric.launch(main)

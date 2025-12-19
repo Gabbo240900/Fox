@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint_sequential
 
-# BEST CONFIGURATION SO FAR FOR SMALL DATASETS
+# Understand model size where it comes from parameters and bottlenecks for memory 
 class FlashMSAEncoderLayer(nn.Module):
     def __init__(self, hidden_dim, num_heads):
         super().__init__()
@@ -45,7 +45,7 @@ class FlashMSAEncoderLayer(nn.Module):
         return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=512, num_layers=6, num_heads=8):# increase embedding and layers reduce batch size 
+    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):# increase embedding and layers reduce batch size 
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)

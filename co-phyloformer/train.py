@@ -662,10 +662,38 @@ if __name__ == "__main__":
         )
     )
 
-    # 🔍 Flash Attention availability check (run once)
+    # 🔍 SDPA / Flash Attention availability check (run once)
     if torch.cuda.is_available() and fabric.global_rank == 0:
-        from torch.backends.cuda import sdp_kernel
-        print("Flash available:", sdp_kernel.is_flash_attention_available())
-        print("Mem-efficient available:", sdp_kernel.is_mem_efficient_attention_available())
+        try:
+            # Newer PyTorch exposes these helpers on torch.backends.cuda
+            flash_avail = None
+            mem_avail = None
+            if hasattr(torch.backends.cuda, "is_flash_sdp_available"):
+                flash_avail = torch.backends.cuda.is_flash_sdp_available()
+            if hasattr(torch.backends.cuda, "is_mem_efficient_sdp_available"):
+                mem_avail = torch.backends.cuda.is_mem_efficient_sdp_available()
+
+            # Fallbacks / additional info for other versions
+            if flash_avail is None or mem_avail is None:
+                from torch.backends.cuda import sdp_kernel
+                # In some versions, sdp_kernel is a function/context-manager (no attrs)
+                if hasattr(sdp_kernel, "is_flash_attention_available"):
+                    flash_avail = sdp_kernel.is_flash_attention_available()
+                if hasattr(sdp_kernel, "is_mem_efficient_attention_available"):
+                    mem_avail = sdp_kernel.is_mem_efficient_attention_available()
+
+            # If still None, just report what we can without failing
+            print("Flash available:", flash_avail if flash_avail is not None else "(unknown in this torch version)")
+            print("Mem-efficient available:", mem_avail if mem_avail is not None else "(unknown in this torch version)")
+
+            # Also print whether SDPA backends are enabled (when available)
+            if hasattr(torch.backends.cuda, "flash_sdp_enabled"):
+                print("Flash enabled:", torch.backends.cuda.flash_sdp_enabled())
+            if hasattr(torch.backends.cuda, "mem_efficient_sdp_enabled"):
+                print("Mem-efficient enabled:", torch.backends.cuda.mem_efficient_sdp_enabled())
+            if hasattr(torch.backends.cuda, "math_sdp_enabled"):
+                print("Math enabled:", torch.backends.cuda.math_sdp_enabled())
+        except Exception as e:
+            print("[SDPA check] Skipped due to error:", e)
 
     fabric.launch(main)

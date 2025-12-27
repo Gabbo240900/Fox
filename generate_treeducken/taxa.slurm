@@ -18,7 +18,7 @@ module load pytorch-gpu/py3/2.4.0
 module load miniforge/24.9.0
 conda activate cophylo
 
-python taxa.py /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Datasets \
+python taxa.py /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final \
   --workers 20 \
   --csv_out taxa_summary.csv \
   --outliers_csv taxa_outliers_p99.csv \

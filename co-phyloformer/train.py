@@ -163,8 +163,8 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
-    preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
+    #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
     indices = list(range(len(dataset)))
@@ -176,7 +176,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 5
 
-    batch_size = 4
+    batch_size = 32
 
     train_loader = DataLoader(
         train_subset,
@@ -201,7 +201,7 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
+    lr = 1e-5 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
     criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
@@ -300,7 +300,7 @@ def main(fabric: Fabric):
         steps_per_epoch = len(train_loader)
         # Validation trigger points at 25%, 50%, 75% of the epoch
         val_checkpoints = {
-            int(0 * steps_per_epoch),
+            1,
             int(0.10 * steps_per_epoch),
             int(0.20 * steps_per_epoch),
             int(0.30 * steps_per_epoch),

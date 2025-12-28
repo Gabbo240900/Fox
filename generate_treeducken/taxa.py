@@ -136,12 +136,12 @@ def main():
     para_len  = [r["parasite_len"] for r in rows if r["parasite_len"] > 0]
 
     # Percentiles and outliers
-    p99_host = int(np.percentile(host_taxa, 99)) if host_taxa else 0
-    p99_para = int(np.percentile(para_taxa, 99)) if para_taxa else 0
+    p90_host = int(np.percentile(host_taxa, 90)) if host_taxa else 0
+    p90_para = int(np.percentile(para_taxa, 90)) if para_taxa else 0
     min_taxa = int(args.min_taxa)
 
-    outliers_host_hi = [r for r in rows if r["host_taxa"] > p99_host]
-    outliers_para_hi = [r for r in rows if r["parasite_taxa"] > p99_para]
+    outliers_host_hi = [r for r in rows if r["host_taxa"] > p90_host]
+    outliers_para_hi = [r for r in rows if r["parasite_taxa"] > p90_para]
 
     # Low outliers: has a parsed block (>0) but too few taxa
     outliers_host_lo = [r for r in rows if 0 < r["host_taxa"] < min_taxa]
@@ -155,16 +155,16 @@ def main():
     print("🧬 Host alignment length stats:", summarize(host_len))
     print("🧬 Parasite alignment length stats:", summarize(para_len))
 
-    # Show p99 thresholds and outlier files
-    print(f"\n🔎 thresholds — min_taxa={min_taxa} | Host taxa p99={p99_host} | Parasite taxa p99={p99_para}")
+    # Show p90 thresholds and outlier files
+    print(f"\n🔎 thresholds — min_taxa={min_taxa} | Host taxa p90={p90_host} | Parasite taxa p90={p90_para}")
     if outliers_host_hi:
-        print(f"🚩 Host files over p99 ({len(outliers_host_hi)}):")
+        print(f"🚩 Host files over p90 ({len(outliers_host_hi)}):")
         for r in sorted(outliers_host_hi, key=lambda x: x['host_taxa'], reverse=True)[:50]:
             print(f"  {r['host_taxa']:>6}  {r['path']}")
         if len(outliers_host_hi) > 50:
             print(f"  ... and {len(outliers_host_hi) - 50} more")
     else:
-        print("✅ No host files over p99.")
+        print("✅ No host files over p90.")
 
     if outliers_host_lo:
         print(f"🚩 Host files under min_taxa ({min_taxa}) ({len(outliers_host_lo)}):")
@@ -176,13 +176,13 @@ def main():
         print("✅ No host files under min_taxa.")
 
     if outliers_para_hi:
-        print(f"🚩 Parasite files over p99 ({len(outliers_para_hi)}):")
+        print(f"🚩 Parasite files over p90 ({len(outliers_para_hi)}):")
         for r in sorted(outliers_para_hi, key=lambda x: x['parasite_taxa'], reverse=True)[:50]:
             print(f"  {r['parasite_taxa']:>6}  {r['path']}")
         if len(outliers_para_hi) > 50:
             print(f"  ... and {len(outliers_para_hi) - 50} more")
     else:
-        print("✅ No parasite files over p99.")
+        print("✅ No parasite files over p90.")
 
     if outliers_para_lo:
         print(f"🚩 Parasite files under min_taxa ({min_taxa}) ({len(outliers_para_lo)}):")
@@ -206,7 +206,7 @@ def main():
             to_delete.add(r["path"])
 
         if to_delete:
-            print(f"\n🗑️ Removing {len(to_delete)} files outside [min_taxa, p99] taxa thresholds...")
+            print(f"\n🗑️ Removing {len(to_delete)} files outside [min_taxa, p90] taxa thresholds...")
             removed_ok = 0
             failed = 0
             for p in sorted(to_delete):
@@ -219,21 +219,21 @@ def main():
                     print(f"  ❌ failed:  {p} — {e}")
             print(f"Done. Removed {removed_ok} file(s); {failed} failed.")
         else:
-            print("\n✅ No files to remove outside [min_taxa, p99] thresholds.")
+            print("\n✅ No files to remove outside [min_taxa, p90] thresholds.")
 
     # Optional outliers CSV
     if args.outliers_csv:
         with open(args.outliers_csv, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=["path", "type", "side", "taxa", "min_taxa", "p99_threshold"])
+            w = csv.DictWriter(f, fieldnames=["path", "type", "side", "taxa", "min_taxa", "p90_threshold"])
             w.writeheader()
             for r in outliers_host_hi:
-                w.writerow({"path": r["path"], "type": "host", "side": "high", "taxa": r["host_taxa"], "min_taxa": min_taxa, "p99_threshold": p99_host})
+                w.writerow({"path": r["path"], "type": "host", "side": "high", "taxa": r["host_taxa"], "min_taxa": min_taxa, "p90_threshold": p90_host})
             for r in outliers_host_lo:
-                w.writerow({"path": r["path"], "type": "host", "side": "low", "taxa": r["host_taxa"], "min_taxa": min_taxa, "p99_threshold": p99_host})
+                w.writerow({"path": r["path"], "type": "host", "side": "low", "taxa": r["host_taxa"], "min_taxa": min_taxa, "p90_threshold": p90_host})
             for r in outliers_para_hi:
-                w.writerow({"path": r["path"], "type": "parasite", "side": "high", "taxa": r["parasite_taxa"], "min_taxa": min_taxa, "p99_threshold": p99_para})
+                w.writerow({"path": r["path"], "type": "parasite", "side": "high", "taxa": r["parasite_taxa"], "min_taxa": min_taxa, "p90_threshold": p90_para})
             for r in outliers_para_lo:
-                w.writerow({"path": r["path"], "type": "parasite", "side": "low", "taxa": r["parasite_taxa"], "min_taxa": min_taxa, "p99_threshold": p99_para})
+                w.writerow({"path": r["path"], "type": "parasite", "side": "low", "taxa": r["parasite_taxa"], "min_taxa": min_taxa, "p90_threshold": p90_para})
         print(f"🧾 Wrote outlier files to {args.outliers_csv}")
 
     # Optional CSV

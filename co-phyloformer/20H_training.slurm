@@ -63,4 +63,8 @@ export WANDB__SERVICE_WAIT=300
 
 echo "Copying dataset from ALLCCFRSCRATCH to JOBSCRATCH..."
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
-python train.py
+
+export TIMING_PROFILE=1
+export TIMING_EVERY=50
+
+srun python train.py

@@ -8,7 +8,6 @@ from model import Cophyloformer
 from data import CophylogenyDataset
 from torch.nn import functional as F
 import time
-import contextlib
 import numpy as np
 import os
 from plot import plot_event_metric_over_epochs, plot_epoch_loss_curve, plot_labels_vs_predictions
@@ -35,40 +34,6 @@ event_names = [
 ]
 
 start_time = time.time()  # Record start time
-
-# -----------------------------
-# Profiling helpers (timing + GPU memory)
-# -----------------------------
-class _Timer:
-    def __init__(self):
-        self.t0 = None
-    def __enter__(self):
-        self.t0 = time.perf_counter()
-        return self
-    def __exit__(self, exc_type, exc, tb):
-        self.dt = time.perf_counter() - self.t0
-
-
-def _cuda_mem():
-    """Return (alloc, reserved, peak_alloc, peak_reserved) in MB."""
-    if not torch.cuda.is_available():
-        return (0.0, 0.0, 0.0, 0.0)
-    alloc = torch.cuda.memory_allocated() / (1024**2)
-    reserv = torch.cuda.memory_reserved() / (1024**2)
-    peak_alloc = torch.cuda.max_memory_allocated() / (1024**2)
-    peak_reserv = torch.cuda.max_memory_reserved() / (1024**2)
-    return (alloc, reserv, peak_alloc, peak_reserv)
-
-
-def _maybe_sync():
-    # For accurate timings around GPU work
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-
-def _log_rank0(fabric, msg):
-    if getattr(fabric, "is_global_zero", False):
-        print(msg, flush=True)
 
 class LazyCophyloformerDataset(Dataset):
     def __init__(self, preencoded_dir):
@@ -197,16 +162,6 @@ def encode_sequence(sequence, max_len=128):
     return torch.tensor(encoded, dtype=torch.long)
 
 def main(fabric: Fabric):
-    # ---- Profiling knobs (set via environment variables) ----
-    # TIMING_PROFILE=1 enables rank0 timing/memory prints.
-    # PROFILE_STEPS=N enables torch.profiler for the first N train steps of the first epoch.
-    timing_profile = os.environ.get("TIMING_PROFILE", "0") == "1"
-    timing_every = int(os.environ.get("TIMING_EVERY", "50"))  # print every N steps
-    profile_steps = int(os.environ.get("PROFILE_STEPS", "0"))
-    profile_dir = os.environ.get("PROFILE_DIR", "profiles")
-    if timing_profile and torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
-
     # Load Data
     preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
@@ -219,7 +174,7 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 2
+    epochs = 5
 
     batch_size = 32
 
@@ -229,7 +184,7 @@ def main(fabric: Fabric):
         shuffle=True,
         collate_fn=collate_fn,
         num_workers=8,
-        persistent_workers=(False if timing_profile else True),
+        persistent_workers=True,
         prefetch_factor=4,
         pin_memory=False
     )
@@ -240,7 +195,7 @@ def main(fabric: Fabric):
         shuffle=False,
         collate_fn=collate_fn,
         num_workers=4,
-        persistent_workers=(False if timing_profile else True),
+        persistent_workers=True,
         prefetch_factor=2,
         pin_memory=False
     )
@@ -340,333 +295,253 @@ def main(fabric: Fabric):
     val_predictions_data = []  
     best_step_predictions = None
 
-    # Optional: torch.profiler for a small number of steps (first epoch only)
-    profiler_ctx = contextlib.nullcontext()
-    prof = None
-    if profile_steps > 0:
-        try:
-            from torch.profiler import profile, ProfilerActivity, schedule, tensorboard_trace_handler
-            os.makedirs(profile_dir, exist_ok=True)
-            prof = profile(
-                activities=[ProfilerActivity.CPU] + ([ProfilerActivity.CUDA] if torch.cuda.is_available() else []),
-                schedule=schedule(wait=0, warmup=1, active=max(1, profile_steps - 1), repeat=1),
-                on_trace_ready=tensorboard_trace_handler(profile_dir),
-                record_shapes=True,
-                profile_memory=True,
-                with_stack=False,
-            )
-            profiler_ctx = prof
-            if fabric.is_global_zero:
-                print(f"[Profiler] Enabled torch.profiler for ~{profile_steps} step(s). Traces -> {profile_dir}")
-        except Exception as e:
-            if fabric.is_global_zero:
-                print(f"[Profiler] Could not enable torch.profiler: {e}")
-                prof = None
-                profiler_ctx = contextlib.nullcontext()
-
     # Training loop over all batches per epoch (no micro-epochs)
-    with profiler_ctx:
-        for epoch in range(start_epoch, epochs):
-            steps_per_epoch = len(train_loader)
-            # Validation trigger points at 25%, 50%, 75% of the epoch
-            val_checkpoints = {
-                1,
-                int(0.10 * steps_per_epoch),
-                int(0.20 * steps_per_epoch),
-                int(0.30 * steps_per_epoch),
-                int(0.40 * steps_per_epoch),
-                int(0.50 * steps_per_epoch),
-                int(0.60 * steps_per_epoch),
-                int(0.70 * steps_per_epoch),
-                int(0.80 * steps_per_epoch),
-                int(0.90 * steps_per_epoch)
-            }
-            num_events = len(event_names)
-            sum_abs_err = torch.zeros(num_events, device=device)
-            sum_sq_err  = torch.zeros(num_events, device=device)
-            sum_rel_err = torch.zeros(num_events, device=device)
-            sum_smape   = torch.zeros(num_events, device=device)
-            sample_count = 0
-            running_min_nonzero = torch.full((num_events,), float('inf'), device=device)
-            all_train_prediction_data = []
-            if fabric.global_rank == 0:
-                print(f"\nEpoch {epoch+1}/{epochs}")
-            model.train()
-            total_loss = 0
-            num_batches = 0
-            for batch_idx, batch in tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Training Epoch {epoch+1}", leave=False):
-                # Measure data-loading gap (time between batches)
-                if timing_profile and fabric.is_global_zero:
-                    if batch_idx == 0:
-                        prev_end = time.perf_counter()
-                if timing_profile and fabric.is_global_zero and batch_idx > 0:
-                    dl_gap = time.perf_counter() - prev_end
-                # Resume logic: skip earlier batches if resuming mid-epoch
-                if epoch == start_epoch and batch_idx < start_batch:
-                    continue
-                elif epoch == start_epoch and batch_idx == start_batch:
-                    print(f"[Resume] Continuing from epoch {start_epoch+1}, batch {start_batch+1}")
+    for epoch in range(start_epoch, epochs):
+        steps_per_epoch = len(train_loader)
+        # Validation trigger points at 25%, 50%, 75% of the epoch
+        val_checkpoints = {
+            1,
+            int(0.10 * steps_per_epoch),
+            int(0.20 * steps_per_epoch),
+            int(0.30 * steps_per_epoch),
+            int(0.40 * steps_per_epoch),
+            int(0.50 * steps_per_epoch),
+            int(0.60 * steps_per_epoch),
+            int(0.70 * steps_per_epoch),
+            int(0.80 * steps_per_epoch),
+            int(0.90 * steps_per_epoch)
+        }
+        num_events = len(event_names)
+        sum_abs_err = torch.zeros(num_events, device=device)
+        sum_sq_err  = torch.zeros(num_events, device=device)
+        sum_rel_err = torch.zeros(num_events, device=device)
+        sum_smape   = torch.zeros(num_events, device=device)
+        sample_count = 0
+        running_min_nonzero = torch.full((num_events,), float('inf'), device=device)
+        all_train_prediction_data = []
+        if fabric.global_rank == 0:
+            print(f"\nEpoch {epoch+1}/{epochs}")
+        model.train()
+        total_loss = 0
+        num_batches = 0
+        for batch_idx, batch in tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Training Epoch {epoch+1}", leave=False):
+            # Resume logic: skip earlier batches if resuming mid-epoch
+            if epoch == start_epoch and batch_idx < start_batch:
+                continue
+            elif epoch == start_epoch and batch_idx == start_batch:
+                print(f"[Resume] Continuing from epoch {start_epoch+1}, batch {start_batch+1}")
+            batch["host_msa"] = batch["host_msa"].to(device)
+            batch["parasite_msa"] = batch["parasite_msa"].to(device)
+            batch["sim_time"] = batch["sim_time"].to(device)
+            batch["labels"] = batch["labels"].to(device)
+            optimizer.zero_grad(set_to_none=True)
 
-                if timing_profile and torch.cuda.is_available():
-                    torch.cuda.reset_peak_memory_stats()
-                    _maybe_sync()
+            outputs = model(
+                batch["host_msa"],
+                batch["parasite_msa"],
+                batch["mappings"],
+                batch["sim_time"],
+            )
 
-                # H2D / device transfer
-                with _Timer() as t_h2d:
-                    batch["host_msa"] = batch["host_msa"].to(device, non_blocking=False)
-                    batch["parasite_msa"] = batch["parasite_msa"].to(device, non_blocking=False)
-                    batch["sim_time"] = batch["sim_time"].to(device, non_blocking=False)
-                    batch["labels"] = batch["labels"].to(device, non_blocking=False)
-                    if torch.cuda.is_available():
-                        _maybe_sync()
+            for idx in range(outputs.shape[0]):
+                all_train_prediction_data.append({
+                    "Sample_Index": batch_idx * outputs.shape[0] + idx,
+                    "Cospeciations_Pred": outputs[idx, 0].item(),
+                    "Cospeciations_GT": batch["labels"][idx, 0].item(),
+                    "Host_switches_Pred": outputs[idx, 1].item(),
+                    "Host_switches_GT": batch["labels"][idx, 1].item(),
+                })
 
-                with _Timer() as t_zero:
-                    optimizer.zero_grad(set_to_none=True)
+            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
+            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
+            total_loss_tensor = loss_cospeciation + 10 * loss_switches
 
-                # Forward
-                with _Timer() as t_fwd:
-                    outputs = model(
-                        batch["host_msa"],
-                        batch["parasite_msa"],
-                        batch["mappings"],
-                        batch["sim_time"],
-                    )
-                    if torch.cuda.is_available():
-                        _maybe_sync()
+            fabric.backward(total_loss_tensor)
+            optimizer.step()
+            lr_scheduler.step()
 
-                for idx in range(outputs.shape[0]):
-                    all_train_prediction_data.append({
-                        "Sample_Index": batch_idx * outputs.shape[0] + idx,
-                        "Cospeciations_Pred": outputs[idx, 0].item(),
-                        "Cospeciations_GT": batch["labels"][idx, 0].item(),
-                        "Host_switches_Pred": outputs[idx, 1].item(),
-                        "Host_switches_GT": batch["labels"][idx, 1].item(),
-                    })
-
-                # Loss
-                with _Timer() as t_loss:
-                    loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
-                    loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
-                    total_loss_tensor = loss_cospeciation + 10 * loss_switches
-                    if torch.cuda.is_available():
-                        _maybe_sync()
-
-                # Backward
-                with _Timer() as t_bwd:
-                    fabric.backward(total_loss_tensor)
-                    if torch.cuda.is_available():
-                        _maybe_sync()
-
-                # Optimizer step + scheduler
-                with _Timer() as t_opt:
-                    optimizer.step()
-                    lr_scheduler.step()
-                    if torch.cuda.is_available():
-                        _maybe_sync()
-
-                # Advance torch.profiler (if enabled)
-                if prof is not None:
-                    prof.step()
-
-                current_step = batch_idx + 1
-                if fabric.is_global_zero and current_step in val_checkpoints:
-                    val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
-                    wandb.log({
-                        "train/loss_step": total_loss_tensor.item(),
-                        "lr": optimizer.param_groups[0]['lr'],
-                        "step": epoch * len(train_loader) + batch_idx,
-                        "val/loss_step": val_results["val_loss"],
-                        **{f"val/MAE_step/{event_names[i]}": val_results["val_mae"][i] for i in range(len(event_names))},
-                        **{f"val/MSE_step/{event_names[i]}": val_results["val_mse"][i] for i in range(len(event_names))},
-                        **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
-                        **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))}
-                    })
-                    ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
+            current_step = batch_idx + 1
+            if fabric.is_global_zero and current_step in val_checkpoints:
+                val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
+                wandb.log({
+                    "train/loss_step": total_loss_tensor.item(),
+                    "lr": optimizer.param_groups[0]['lr'],
+                    "step": epoch * len(train_loader) + batch_idx,
+                    "val/loss_step": val_results["val_loss"],
+                    **{f"val/MAE_step/{event_names[i]}": val_results["val_mae"][i] for i in range(len(event_names))},
+                    **{f"val/MSE_step/{event_names[i]}": val_results["val_mse"][i] for i in range(len(event_names))},
+                    **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
+                    **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))}
+                })
+                ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
+                save_checkpoint(
+                    model,
+                    optimizer,
+                    epoch,
+                    val_results["val_loss"],
+                    checkpoint_dir,
+                    ckpt_name,
+                    batch_idx=batch_idx
+                )
+                print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
+                # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
+                if val_results["val_loss"] < best_val_loss:
+                    best_val_loss = val_results["val_loss"]
+                    val_predictions_data = val_results
+                    ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
                     save_checkpoint(
                         model,
                         optimizer,
                         epoch,
-                        val_results["val_loss"],
+                        best_val_loss,
                         checkpoint_dir,
                         ckpt_name,
                         batch_idx=batch_idx
                     )
-                    print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
-                    # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
-                    if val_results["val_loss"] < best_val_loss:
-                        best_val_loss = val_results["val_loss"]
-                        val_predictions_data = val_results
-                        ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
-                        save_checkpoint(
-                            model,
-                            optimizer,
-                            epoch,
-                            best_val_loss,
-                            checkpoint_dir,
-                            ckpt_name,
-                            batch_idx=batch_idx
-                        )
-                        print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
+                    print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
 
-                total_loss += total_loss_tensor.item()
-                num_batches += 1
+            total_loss += total_loss_tensor.item()
+            num_batches += 1
 
-                # --- Timing/memory print ---
-                if timing_profile and fabric.is_global_zero and ((batch_idx + 1) % timing_every == 0 or batch_idx < 3):
-                    alloc, reserv, peak_alloc, peak_reserv = _cuda_mem()
-                    msg = (
-                        f"[Profile][e{epoch+1} b{batch_idx+1}/{len(train_loader)}] "
-                        + (f"dl_gap={dl_gap*1000:.1f}ms " if batch_idx > 0 else "")
-                        + f"h2d={t_h2d.dt*1000:.1f}ms fwd={t_fwd.dt*1000:.1f}ms loss={t_loss.dt*1000:.1f}ms "
-                        + f"bwd={t_bwd.dt*1000:.1f}ms opt={t_opt.dt*1000:.1f}ms "
-                        + f"mem(MB) alloc={alloc:.0f} reserv={reserv:.0f} peak_alloc={peak_alloc:.0f} peak_reserv={peak_reserv:.0f}"
-                    )
-                    _log_rank0(fabric, msg)
+            with torch.no_grad():
+                preds = outputs.detach()
+                labels = batch["labels"].detach()
 
-                if timing_profile and fabric.is_global_zero:
-                    prev_end = time.perf_counter()
+                abs_err = (preds - labels).abs()
+                sq_err  = (preds - labels).pow(2)
+                labels_abs = labels.abs()
 
-                with torch.no_grad():
-                    preds = outputs.detach()
-                    labels = batch["labels"].detach()
+                safe_labels = torch.where(labels_abs > 0, labels_abs, torch.full_like(labels_abs, float('inf')))
+                batch_min = torch.amin(safe_labels, dim=0)
+                running_min_nonzero = torch.minimum(running_min_nonzero, batch_min)
 
-                    abs_err = (preds - labels).abs()
-                    sq_err  = (preds - labels).pow(2)
-                    labels_abs = labels.abs()
+                fallback_eps = torch.finfo(labels.dtype).eps
+                eps_vec = torch.where(torch.isfinite(running_min_nonzero), running_min_nonzero * 1e-2, torch.full_like(running_min_nonzero, fallback_eps))
 
-                    safe_labels = torch.where(labels_abs > 0, labels_abs, torch.full_like(labels_abs, float('inf')))
-                    batch_min = torch.amin(safe_labels, dim=0)
-                    running_min_nonzero = torch.minimum(running_min_nonzero, batch_min)
+                rel_err = abs_err / (labels_abs + eps_vec)
+                smape   = 2 * abs_err / (preds.abs() + labels_abs + eps_vec)
 
-                    fallback_eps = torch.finfo(labels.dtype).eps
-                    eps_vec = torch.where(torch.isfinite(running_min_nonzero), running_min_nonzero * 1e-2, torch.full_like(running_min_nonzero, fallback_eps))
+                # --- Log per-event metrics every 100 batches ---
+                current_step = batch_idx + 1
+                if fabric.is_global_zero and current_step in val_checkpoints:
+                    batch_mae   = abs_err.mean(dim=0).detach().cpu().tolist()
+                    batch_mse   = sq_err.mean(dim=0).detach().cpu().tolist()
+                    batch_mre   = rel_err.mean(dim=0).detach().cpu().tolist()
+                    batch_smape = smape.mean(dim=0).detach().cpu().tolist()
 
-                    rel_err = abs_err / (labels_abs + eps_vec)
-                    smape   = 2 * abs_err / (preds.abs() + labels_abs + eps_vec)
+                    log_dict = {
+                        "step": epoch * len(train_loader) + batch_idx,
+                        "lr": optimizer.param_groups[0]['lr']
+                    }
+                    for i, event in enumerate(event_names):
+                        log_dict[f"MAE_step/{event}"] = batch_mae[i]
+                        log_dict[f"MSE_step/{event}"] = batch_mse[i]
+                        log_dict[f"MRE_step/{event}"] = batch_mre[i]
+                        log_dict[f"sMAPE_step/{event}"] = batch_smape[i]
 
-                    # --- Log per-event metrics every 100 batches ---
-                    current_step = batch_idx + 1
-                    if fabric.is_global_zero and current_step in val_checkpoints:
-                        batch_mae   = abs_err.mean(dim=0).detach().cpu().tolist()
-                        batch_mse   = sq_err.mean(dim=0).detach().cpu().tolist()
-                        batch_mre   = rel_err.mean(dim=0).detach().cpu().tolist()
-                        batch_smape = smape.mean(dim=0).detach().cpu().tolist()
+                    wandb.log(log_dict)
 
-                        log_dict = {
-                            "step": epoch * len(train_loader) + batch_idx,
-                            "lr": optimizer.param_groups[0]['lr']
-                        }
-                        for i, event in enumerate(event_names):
-                            log_dict[f"MAE_step/{event}"] = batch_mae[i]
-                            log_dict[f"MSE_step/{event}"] = batch_mse[i]
-                            log_dict[f"MRE_step/{event}"] = batch_mre[i]
-                            log_dict[f"sMAPE_step/{event}"] = batch_smape[i]
+                sum_abs_err += abs_err.sum(dim=0)
+                sum_sq_err  += sq_err.sum(dim=0)
+                sum_rel_err += rel_err.sum(dim=0)
+                sum_smape   += smape.sum(dim=0)
+                sample_count += preds.shape[0]
 
-                        wandb.log(log_dict)
+        # Compute epoch loss on this rank
+        epoch_loss = total_loss / max(1, num_batches)
 
-                    sum_abs_err += abs_err.sum(dim=0)
-                    sum_sq_err  += sq_err.sum(dim=0)
-                    sum_rel_err += rel_err.sum(dim=0)
-                    sum_smape   += smape.sum(dim=0)
-                    sample_count += preds.shape[0]
+        # All-reduce epoch loss across all processes so that the logged value
+        # represents the global average and not just rank 0.
+        epoch_loss_tensor = torch.tensor(epoch_loss, device=device)
+        epoch_loss = fabric.all_reduce(epoch_loss_tensor, reduce_op="mean").item()
 
-            # Compute epoch loss on this rank
-            epoch_loss = total_loss / max(1, num_batches)
+        epoch_losses.append(epoch_loss)
 
-            # All-reduce epoch loss across all processes so that the logged value
-            # represents the global average and not just rank 0.
-            epoch_loss_tensor = torch.tensor(epoch_loss, device=device)
-            epoch_loss = fabric.all_reduce(epoch_loss_tensor, reduce_op="mean").item()
+        if fabric.is_global_zero:
+            print(f"Epoch {epoch+1}/{epochs}, Training Loss: {epoch_loss:.6f}, Learning Rate: {optimizer.param_groups[0]['lr']}")
 
-            epoch_losses.append(epoch_loss)
+        if fabric.is_global_zero:
+            wandb.log({
+                "epoch": epoch + 1,
+                "train/loss": epoch_loss,
+                "lr": optimizer.param_groups[0]['lr'],
+            })
 
-            if fabric.is_global_zero:
-                print(f"Epoch {epoch+1}/{epochs}, Training Loss: {epoch_loss:.6f}, Learning Rate: {optimizer.param_groups[0]['lr']}")
+        #Synchronize metric accumulators across all ranks
+        sum_abs_err = fabric.all_reduce(sum_abs_err, reduce_op="sum")
+        sum_sq_err  = fabric.all_reduce(sum_sq_err,  reduce_op="sum")
+        sum_rel_err = fabric.all_reduce(sum_rel_err, reduce_op="sum")
+        sum_smape   = fabric.all_reduce(sum_smape,   reduce_op="sum")
 
-            if fabric.is_global_zero:
-                wandb.log({
-                    "epoch": epoch + 1,
-                    "train/loss": epoch_loss,
-                    "lr": optimizer.param_groups[0]['lr'],
-                })
+        sample_count_tensor = torch.tensor(sample_count, device=device, dtype=torch.float32)
+        sample_count = int(fabric.all_reduce(sample_count_tensor, reduce_op="sum").item())
 
-            #Synchronize metric accumulators across all ranks
-            sum_abs_err = fabric.all_reduce(sum_abs_err, reduce_op="sum")
-            sum_sq_err  = fabric.all_reduce(sum_sq_err,  reduce_op="sum")
-            sum_rel_err = fabric.all_reduce(sum_rel_err, reduce_op="sum")
-            sum_smape   = fabric.all_reduce(sum_smape,   reduce_op="sum")
+        denom = max(sample_count, 1)
+        mae = (sum_abs_err / denom).detach().cpu().tolist()
+        mse = (sum_sq_err  / denom).detach().cpu().tolist()
+        mre = (sum_rel_err / denom).detach().cpu().tolist()
+        smape = (sum_smape / denom).detach().cpu().tolist()
 
-            sample_count_tensor = torch.tensor(sample_count, device=device, dtype=torch.float32)
-            sample_count = int(fabric.all_reduce(sample_count_tensor, reduce_op="sum").item())
+        mae_history.append(mae)
+        mse_history.append(mse)
+        mre_history.append(mre)
+        smape_history.append(smape)
+    
+        if fabric.is_global_zero:
+            for i, event in enumerate(event_names):
+                print(f"  {event}: MAE {mae[i]:.6f}, MSE {mse[i]:.6f}, MRE {mre[i]:.6f}, sMAPE {smape[i]:.6f}")
+            # Print predictions only if at least one batch ran
+            if 'outputs' in locals():
+                for sample_idx in range(min(3, outputs.shape[0])):
+                    print(f"\nEpoch {epoch+1}, Sample {sample_idx} - Predictions vs Ground Truth:")
+                    for i, event in enumerate(event_names):
+                        pred_val = outputs[sample_idx, i].item()
+                        gt_val = batch["labels"][sample_idx, i].item()
+                        print(f"  {event}: Pred {pred_val:.4f}, GT {gt_val:.4f}")
+            else:
+                print(f"[Warning] No training batches completed in epoch {epoch+1}. Skipping sample preview.")
+        # Log event-wise metrics to W&B
+        if fabric.is_global_zero:
+            metrics = {f"MAE/{event_names[i]}": mae[i] for i in range(len(event_names))}
+            metrics.update({f"MSE/{event_names[i]}": mse[i] for i in range(len(event_names))})
+            metrics.update({f"MRE/{event_names[i]}": mre[i] for i in range(len(event_names))})
+            metrics.update({f"sMAPE/{event_names[i]}": smape[i] for i in range(len(event_names))})
+            metrics["epoch"] = epoch + 1
+            wandb.log(metrics)
 
-            denom = max(sample_count, 1)
-            mae = (sum_abs_err / denom).detach().cpu().tolist()
-            mse = (sum_sq_err  / denom).detach().cpu().tolist()
-            mre = (sum_rel_err / denom).detach().cpu().tolist()
-            smape = (sum_smape / denom).detach().cpu().tolist()
+        # VALIDATION PHASE replaced by function
+        val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
+        val_loss = val_results["val_loss"]
+        val_mae = val_results["val_mae"]
+        val_mse = val_results["val_mse"]
+        val_mre = val_results["val_mre"]
+        val_smape = val_results["val_smape"]
 
-            mae_history.append(mae)
-            mse_history.append(mse)
-            mre_history.append(mre)
-            smape_history.append(smape)
-        
-            if fabric.is_global_zero:
-                for i, event in enumerate(event_names):
-                    print(f"  {event}: MAE {mae[i]:.6f}, MSE {mse[i]:.6f}, MRE {mre[i]:.6f}, sMAPE {smape[i]:.6f}")
-                # Print predictions only if at least one batch ran
-                if 'outputs' in locals():
-                    for sample_idx in range(min(3, outputs.shape[0])):
-                        print(f"\nEpoch {epoch+1}, Sample {sample_idx} - Predictions vs Ground Truth:")
-                        for i, event in enumerate(event_names):
-                            pred_val = outputs[sample_idx, i].item()
-                            gt_val = batch["labels"][sample_idx, i].item()
-                            print(f"  {event}: Pred {pred_val:.4f}, GT {gt_val:.4f}")
-                else:
-                    print(f"[Warning] No training batches completed in epoch {epoch+1}. Skipping sample preview.")
-            # Log event-wise metrics to W&B
-            if fabric.is_global_zero:
-                metrics = {f"MAE/{event_names[i]}": mae[i] for i in range(len(event_names))}
-                metrics.update({f"MSE/{event_names[i]}": mse[i] for i in range(len(event_names))})
-                metrics.update({f"MRE/{event_names[i]}": mre[i] for i in range(len(event_names))})
-                metrics.update({f"sMAPE/{event_names[i]}": smape[i] for i in range(len(event_names))})
-                metrics["epoch"] = epoch + 1
-                wandb.log(metrics)
+        val_loss_history.append(val_loss)
+        val_mae_history.append(val_mae)
+        val_mse_history.append(val_mse)
+        val_mre_history.append(val_mre)
+        val_smape_history.append(val_smape)
 
-            # VALIDATION PHASE replaced by function
-            val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
-            val_loss = val_results["val_loss"]
-            val_mae = val_results["val_mae"]
-            val_mse = val_results["val_mse"]
-            val_mre = val_results["val_mre"]
-            val_smape = val_results["val_smape"]
+        if fabric.is_global_zero:
+            print(f"Validation Loss: {val_loss:.6f}")
+            print("---- Validation Summary ----")
+            print(f"Best Validation Loss (so far): {best_val_loss:.6f}")
+            for i, event in enumerate(event_names):
+                print(f"  {event}: val_MAE {val_mae[i]:.4f}, val_MSE {val_mse[i]:.4f}, val_MRE {val_mre[i]:.4f}, val_sMAPE {val_smape[i]:.4f}")
+            print("----------------------------")
+            wandb.log({
+                "val/loss": val_loss,
+                **{f"val/MAE/{event_names[i]}": val_mae[i] for i in range(len(event_names))},
+                **{f"val/MSE/{event_names[i]}": val_mse[i] for i in range(len(event_names))},
+                **{f"val/MRE/{event_names[i]}": val_mre[i] for i in range(len(event_names))},
+                **{f"val/sMAPE/{event_names[i]}": val_smape[i] for i in range(len(event_names))},
+                "epoch": epoch + 1,
+            })
 
-            val_loss_history.append(val_loss)
-            val_mae_history.append(val_mae)
-            val_mse_history.append(val_mse)
-            val_mre_history.append(val_mre)
-            val_smape_history.append(val_smape)
-
-            if fabric.is_global_zero:
-                print(f"Validation Loss: {val_loss:.6f}")
-                print("---- Validation Summary ----")
-                print(f"Best Validation Loss (so far): {best_val_loss:.6f}")
-                for i, event in enumerate(event_names):
-                    print(f"  {event}: val_MAE {val_mae[i]:.4f}, val_MSE {val_mse[i]:.4f}, val_MRE {val_mre[i]:.4f}, val_sMAPE {val_smape[i]:.4f}")
-                print("----------------------------")
-                wandb.log({
-                    "val/loss": val_loss,
-                    **{f"val/MAE/{event_names[i]}": val_mae[i] for i in range(len(event_names))},
-                    **{f"val/MSE/{event_names[i]}": val_mse[i] for i in range(len(event_names))},
-                    **{f"val/MRE/{event_names[i]}": val_mre[i] for i in range(len(event_names))},
-                    **{f"val/sMAPE/{event_names[i]}": val_smape[i] for i in range(len(event_names))},
-                    "epoch": epoch + 1,
-                })
-
-            model.train()
+        model.train()
 
     if fabric.is_global_zero:
-        if prof is not None and fabric.is_global_zero:
-            print(f"[Profiler] Trace written. To view: tensorboard --logdir {profile_dir}")
         torch.save(model.state_dict(), "cophyloformer_custom_model.pth")
 
         end_time = time.time()  # Record end time
@@ -786,39 +661,4 @@ if __name__ == "__main__":
             find_unused_parameters=False,
         )
     )
-
-    # 🔍 SDPA / Flash Attention availability check (run once)
-    if torch.cuda.is_available() and fabric.global_rank == 0:
-        try:
-            # Newer PyTorch exposes these helpers on torch.backends.cuda
-            flash_avail = None
-            mem_avail = None
-            if hasattr(torch.backends.cuda, "is_flash_sdp_available"):
-                flash_avail = torch.backends.cuda.is_flash_sdp_available()
-            if hasattr(torch.backends.cuda, "is_mem_efficient_sdp_available"):
-                mem_avail = torch.backends.cuda.is_mem_efficient_sdp_available()
-
-            # Fallbacks / additional info for other versions
-            if flash_avail is None or mem_avail is None:
-                from torch.backends.cuda import sdp_kernel
-                # In some versions, sdp_kernel is a function/context-manager (no attrs)
-                if hasattr(sdp_kernel, "is_flash_attention_available"):
-                    flash_avail = sdp_kernel.is_flash_attention_available()
-                if hasattr(sdp_kernel, "is_mem_efficient_attention_available"):
-                    mem_avail = sdp_kernel.is_mem_efficient_attention_available()
-
-            # If still None, just report what we can without failing
-            print("Flash available:", flash_avail if flash_avail is not None else "(unknown in this torch version)")
-            print("Mem-efficient available:", mem_avail if mem_avail is not None else "(unknown in this torch version)")
-
-            # Also print whether SDPA backends are enabled (when available)
-            if hasattr(torch.backends.cuda, "flash_sdp_enabled"):
-                print("Flash enabled:", torch.backends.cuda.flash_sdp_enabled())
-            if hasattr(torch.backends.cuda, "mem_efficient_sdp_enabled"):
-                print("Mem-efficient enabled:", torch.backends.cuda.mem_efficient_sdp_enabled())
-            if hasattr(torch.backends.cuda, "math_sdp_enabled"):
-                print("Math enabled:", torch.backends.cuda.math_sdp_enabled())
-        except Exception as e:
-            print("[SDPA check] Skipped due to error:", e)
-
     fabric.launch(main)

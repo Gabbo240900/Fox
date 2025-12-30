@@ -48,7 +48,7 @@ class LazyCophyloformerDataset(Dataset):
         sample = torch.load(pt_path, map_location="cpu", weights_only=False)
 
         # Define mask_sequence inside __getitem__
-        def mask_sequence(sequence, mask_prob=0.1, mask_token=22):
+        def mask_sequence(sequence, mask_prob=0.05, mask_token=22):
             masked = []
             for aa in sequence:
                 if torch.rand(1).item() < mask_prob:
@@ -80,11 +80,11 @@ class LazyCophyloformerDataset(Dataset):
         sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 0.0)], dtype=torch.float32)
         return {
             "host_msa": torch.stack([
-                mask_sequence(encode_sequence(seq), mask_prob=0.1)
+                mask_sequence(encode_sequence(seq), mask_prob=0.05)
                 for seq in sample["host_msas"].values()
             ]),
             "parasite_msa": torch.stack([
-                mask_sequence(encode_sequence(seq), mask_prob=0.1)
+                mask_sequence(encode_sequence(seq), mask_prob=0.05)
                 for seq in sample["parasite_msas"].values()
             ]),
             "mappings": valid_mappings,
@@ -120,21 +120,18 @@ def collate_fn(batch):
     batch = [b for b in batch if b is not None]
     if len(batch) == 0:
         return None
-    host_msas = [torch.cat([torch.full((1, sample["host_msa"].shape[1]), 22), sample["host_msa"]], dim=0) for sample in batch]
-    parasite_msas = [torch.cat([torch.full((1, sample["parasite_msa"].shape[1]), 22), sample["parasite_msa"]], dim=0) for sample in batch]
+    host_msas = [sample["host_msa"] for sample in batch]
+    parasite_msas = [sample["parasite_msa"] for sample in batch]
     labels = torch.stack([sample["labels"] for sample in batch])
     mappings = [sample["mappings"] for sample in batch]  
     sim_time = torch.stack([sample["sim_time"] for sample in batch])
-    sim_time_min = sim_time.min()
-    sim_time_max = sim_time.max()
-    sim_time = (sim_time - sim_time_min) / (sim_time_max - sim_time_min + 1e-8)
 
     #  Fix: Ensure consistent padding for batch processing 
     max_host_len = max(m.shape[0] for m in host_msas)
     max_parasite_len = max(m.shape[0] for m in parasite_msas)
 
-    host_msas = [F.pad(m, (0, 0, 0, max_host_len - m.shape[0]), value=0) for m in host_msas]
-    parasite_msas = [F.pad(m, (0, 0, 0, max_parasite_len - m.shape[0]), value=0) for m in parasite_msas]
+    host_msas = [F.pad(m, (0, 0, 0, max_host_len - m.shape[0]), value=22) for m in host_msas]
+    parasite_msas = [F.pad(m, (0, 0, 0, max_parasite_len - m.shape[0]), value=22) for m in parasite_msas]
 
     host_msas = torch.stack(host_msas)
     parasite_msas = torch.stack(parasite_msas)
@@ -201,8 +198,8 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-5 # lower learning rate (5e-5, or 1e-5).
-    wd = 0
+    lr = 1e-3 # lower learning rate (5e-5, or 1e-5).
+    wd = 0.01
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
     criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
     # criterion = nn.MSELoss(reduction='none')

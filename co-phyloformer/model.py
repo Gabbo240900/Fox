@@ -62,8 +62,6 @@ class MSAEncoder(nn.Module):
         
 
     def forward(self, x):
-        mask = torch.rand_like(x.float()) < 0.1  
-        x = x.masked_fill(mask, self.mask_token_id)
         x = self.embedding(x)  # (batch, num_leaves+1, seq_len, hidden_dim)
 
         weights = F.softmax(self.pool_weights(x).squeeze(-1), dim=2)  # (B, N, S)

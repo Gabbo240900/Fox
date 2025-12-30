@@ -8,7 +8,7 @@
 #SBATCH --constraint=h100 
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1    
-#SBATCH --gres=gpu:2           
+#SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=24
 #SBATCH --time=20:00:00 
 
@@ -56,15 +56,11 @@ set -x
 # STEP 3: Training phase 
 export WANDB_ENTITY=cophylo_team           
 export WANDB_PROJECT=CoPhyloformer
-export WANDB_NAME=1M_less_taxa
+export WANDB_NAME=20H_new_run
 export WANDB_MODE=offline    # "online", "offline", or "disabled" 
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300     
 
-echo "Copying dataset from ALLCCFRSCRATCH to JOBSCRATCH..."
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
-
-export TIMING_PROFILE=1
-export TIMING_EVERY=50
 
 srun python train.py

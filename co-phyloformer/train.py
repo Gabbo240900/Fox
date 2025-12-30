@@ -174,9 +174,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 5
+    epochs = 12
 
-    batch_size = 32
+    batch_size = 80
 
     train_loader = DataLoader(
         train_subset,

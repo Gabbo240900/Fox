@@ -101,17 +101,17 @@ class Cophyloformer(nn.Module):
         self.cospeciation_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
             nn.Linear(self.concat_dim, hidden_dim),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_dim // 2, 1) 
         )
         self.switch_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
             nn.Linear(self.concat_dim, hidden_dim),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_dim // 2, 1)
         )
 
@@ -167,5 +167,4 @@ class Cophyloformer(nn.Module):
         out_cospeciation = self.cospeciation_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
-        outputs = torch.sigmoid(outputs)
         return outputs

@@ -48,7 +48,7 @@ class LazyCophyloformerDataset(Dataset):
         sample = torch.load(pt_path, map_location="cpu", weights_only=False)
 
         # Define mask_sequence inside __getitem__
-        def mask_sequence(sequence, mask_prob=0.1, mask_token=22):
+        def mask_sequence(sequence, mask_prob=0.05, mask_token=22):
             masked = []
             for aa in sequence:
                 if torch.rand(1).item() < mask_prob:
@@ -80,11 +80,11 @@ class LazyCophyloformerDataset(Dataset):
         sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 0.0)], dtype=torch.float32)
         return {
             "host_msa": torch.stack([
-                mask_sequence(encode_sequence(seq), mask_prob=0.1)
+                mask_sequence(encode_sequence(seq), mask_prob=0.05)
                 for seq in sample["host_msas"].values()
             ]),
             "parasite_msa": torch.stack([
-                mask_sequence(encode_sequence(seq), mask_prob=0.1)
+                mask_sequence(encode_sequence(seq), mask_prob=0.05)
                 for seq in sample["parasite_msas"].values()
             ]),
             "mappings": valid_mappings,
@@ -171,9 +171,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 5
+    epochs = 10
 
-    batch_size = 80 
+    batch_size = 80
 
     train_loader = DataLoader(
         train_subset,
@@ -199,10 +199,9 @@ def main(fabric: Fabric):
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
     lr = 1e-3 # lower learning rate (5e-5, or 1e-5).
-    wd = 0.01
-    #criterion = nn.HuberLoss(reduction='none', delta=1.0)
-    criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
-    criterion = nn.BCEWithLogitsLoss()
+    wd = 0
+    criterion = nn.HuberLoss(reduction='none', delta=1.0)
+    #criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
     # criterion = nn.MSELoss(reduction='none')
 
     model = Cophyloformer()
@@ -350,8 +349,8 @@ def main(fabric: Fabric):
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0])
-            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1])
+            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
+            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
             total_loss_tensor = loss_cospeciation + 10 * loss_switches
 
             fabric.backward(total_loss_tensor)

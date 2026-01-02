@@ -101,17 +101,17 @@ class Cophyloformer(nn.Module):
         self.cospeciation_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
             nn.Linear(self.concat_dim, hidden_dim),
-            nn.LeakyReLU(),
+            nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.LeakyReLU(),
+            nn.ReLU(),
             nn.Linear(hidden_dim // 2, 1) 
         )
         self.switch_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
             nn.Linear(self.concat_dim, hidden_dim),
-            nn.LeakyReLU(),
+            nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.LeakyReLU(),
+            nn.ReLU(),
             nn.Linear(hidden_dim // 2, 1)
         )
 

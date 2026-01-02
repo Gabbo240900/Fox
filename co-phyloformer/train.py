@@ -198,10 +198,12 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-5 # lower learning rate (5e-5, or 1e-5).
+    lr = 5e-5 # lower learning rate (5e-5, or 1e-5).
     wd = 0
-    criterion = nn.HuberLoss(reduction='none', delta=1.0)
-    #criterion = nn.L1Loss(reduction='none')# Trying optimizing MAE instead of huber
+    
+    # Per-sample loss so we can weight rare non-zero switch cases
+    criterion = nn.L1Loss(reduction='none')  # MAE per-sample
+    huber_switch = nn.SmoothL1Loss(reduction='none', beta=0.05)
     # criterion = nn.MSELoss(reduction='none')
 
     model = Cophyloformer()
@@ -350,10 +352,20 @@ def main(fabric: Fabric):
                 })
 
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
-            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
-            total_loss_tensor = loss_cospeciation + 10 * loss_switches
+            switch_y = batch["labels"][:, 1]
+            # Weight positives much more than near-zeros (zero-inflated target)
+            switch_w = torch.where(
+                switch_y > 0.02,
+                torch.full_like(switch_y, 10.0),
+                torch.ones_like(switch_y)
+            )
+            loss_switches = (huber_switch(outputs[:, 1], switch_y) * switch_w).mean()
+
+            total_loss_tensor = loss_cospeciation + loss_switches
+
 
             fabric.backward(total_loss_tensor)
+            fabric.clip_gradients(model, optimizer, max_norm=1.0)
             optimizer.step()
             lr_scheduler.step()
 
@@ -418,7 +430,6 @@ def main(fabric: Fabric):
                 rel_err = abs_err / (labels_abs + eps_vec)
                 smape   = 2 * abs_err / (preds.abs() + labels_abs + eps_vec)
 
-                # --- Log per-event metrics every 100 batches ---
                 current_step = batch_idx + 1
                 if fabric.is_global_zero and current_step in val_checkpoints:
                     batch_mae   = abs_err.mean(dim=0).detach().cpu().tolist()
@@ -447,8 +458,6 @@ def main(fabric: Fabric):
         # Compute epoch loss on this rank
         epoch_loss = total_loss / max(1, num_batches)
 
-        # All-reduce epoch loss across all processes so that the logged value
-        # represents the global average and not just rank 0.
         epoch_loss_tensor = torch.tensor(epoch_loss, device=device)
         epoch_loss = fabric.all_reduce(epoch_loss_tensor, reduce_op="mean").item()
 

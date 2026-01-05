@@ -48,7 +48,7 @@ class LazyCophyloformerDataset(Dataset):
         sample = torch.load(pt_path, map_location="cpu", weights_only=False)
 
         # Define mask_sequence inside __getitem__
-        def mask_sequence(sequence, mask_prob=0, mask_token=22):
+        def mask_sequence(sequence, mask_prob=0.1 , mask_token=22):
             masked = []
             for aa in sequence:
                 if torch.rand(1).item() < mask_prob:
@@ -77,14 +77,14 @@ class LazyCophyloformerDataset(Dataset):
             dtype=torch.float32,
         )
 
-        sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 0.0)], dtype=torch.float32)
+        sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 1.0)], dtype=torch.float32)
         return {
             "host_msa": torch.stack([
-                mask_sequence(encode_sequence(seq), mask_prob=0)
+                mask_sequence(encode_sequence(seq), mask_prob=0.1)
                 for seq in sample["host_msas"].values()
             ]),
             "parasite_msa": torch.stack([
-                mask_sequence(encode_sequence(seq), mask_prob=0)
+                mask_sequence(encode_sequence(seq), mask_prob=0.1)
                 for seq in sample["parasite_msas"].values()
             ]),
             "mappings": valid_mappings,
@@ -171,7 +171,7 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 10
+    epochs = 5
 
     batch_size = 80
 
@@ -201,7 +201,6 @@ def main(fabric: Fabric):
     lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     
-    # Use plain L1 (MAE) for both events
     criterion = nn.L1Loss(reduction='none')  
     # criterion = nn.MSELoss(reduction='none')
 
@@ -353,11 +352,10 @@ def main(fabric: Fabric):
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
             loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
 
-            total_loss_tensor = loss_cospeciation + 5* loss_switches
+            total_loss_tensor = loss_cospeciation + 10 * loss_switches
 
 
             fabric.backward(total_loss_tensor)
-            fabric.clip_gradients(model, optimizer, max_norm=1.0)
             optimizer.step()
             lr_scheduler.step()
 

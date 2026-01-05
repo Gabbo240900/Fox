@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint_sequential
 
 # Understand model size where it comes from parameters and bottlenecks for memory 
 class FlashMSAEncoderLayer(nn.Module):
@@ -35,7 +34,7 @@ class FlashMSAEncoderLayer(nn.Module):
         v = v.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
 
         out = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False
+            q, k, v, attn_mask=None, dropout_p=0, is_causal=False
         )
 
         out = out.transpose(1, 2).contiguous().view(B, N, D)
@@ -62,21 +61,27 @@ class MSAEncoder(nn.Module):
         
 
     def forward(self, x):
-        x = self.embedding(x)  # (batch, num_leaves+1, seq_len, hidden_dim)
+        # x: (B, N, S) token ids
+        x_ids = x
+        x = self.embedding(x_ids)  # (B, N, S, D)
 
-        weights = F.softmax(self.pool_weights(x).squeeze(-1), dim=2)  # (B, N, S)
+        # Mask padding positions (PAD token id = 22) so pooling ignores padded tokens
+        pad_mask = (x_ids != 22)  # (B, N, S)
+        logits = self.pool_weights(x).squeeze(-1)  # (B, N, S)
+        logits = logits.masked_fill(~pad_mask, -1e9)
+
+        weights = F.softmax(logits, dim=2)  # (B, N, S)
         x = torch.sum(x * weights.unsqueeze(-1), dim=2)  # (B, N, D)
         x = self.norm(x)
         #x = self.dropout(x)
 
-        cls_token = self.cls_token.expand(x.size(0), -1, -1)  # (B, 1, D), shared learnable CLS
+        cls_token = self.cls_token.expand(x.size(0), -1, -1)  # (B, 1, D)
         x = torch.cat([cls_token, x], dim=1)  # (B, N+1, D)
 
         for layer in self.layers:
             x = layer(x)
         x = self.final_norm(x)
-        return x, x[:, 0]  # Return the full output and CLS token
-
+        return x, x[:, 0]
 
 class Cophyloformer(nn.Module):
     def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):
@@ -101,17 +106,21 @@ class Cophyloformer(nn.Module):
         self.cospeciation_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
             nn.Linear(self.concat_dim, hidden_dim),
-            nn.ReLU(),
+            nn.GELU(),
+            #nn.Dropout(0.1),
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, 1) 
+            nn.GELU(),
+            #nn.Dropout(0.1),
+            nn.Linear(hidden_dim // 2, 1)
         )
         self.switch_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
             nn.Linear(self.concat_dim, hidden_dim),
-            nn.ReLU(),
+            nn.GELU(),
+            #nn.Dropout(0.1),
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
+            nn.GELU(),
+            #nn.Dropout(0.1),
             nn.Linear(hidden_dim // 2, 1)
         )
 
@@ -126,31 +135,33 @@ class Cophyloformer(nn.Module):
         mapped_pair_features = torch.zeros(batch_size, hidden_dim * 3, device=host_msa.device)
 
         for i, mapping in enumerate(mappings):
-            host_nodes = []
-            parasite_nodes = []
+            # Always include CLS↔CLS as a global pair
+            host_nodes = [host_emb[i, 0]]
+            parasite_nodes = [parasite_emb[i, 0]]
+
+            # Add leaf↔leaf pairs from mappings (leaf indices start at 0, but embeddings have CLS at 0)
             for h_idx, p_idx in mapping:
-                if 0 <= h_idx < host_emb.shape[1] and 0 <= p_idx < parasite_emb.shape[1]:
-                    host_nodes.append(host_emb[i, h_idx])
-                    parasite_nodes.append(parasite_emb[i, p_idx])
-            if host_nodes:
-                host_tensor = torch.stack(host_nodes).unsqueeze(1)  # (num_pairs, 1, hidden_dim)
-                parasite_tensor = torch.stack(parasite_nodes).unsqueeze(1)  # (num_pairs, 1, hidden_dim)
+                h = h_idx + 1
+                p = p_idx + 1
+                if 0 <= h < host_emb.shape[1] and 0 <= p < parasite_emb.shape[1]:
+                    host_nodes.append(host_emb[i, h])
+                    parasite_nodes.append(parasite_emb[i, p])
 
-                attn = self.cross_attention
-                cross_attended, _ = attn(host_tensor, parasite_tensor, parasite_tensor)  # (num_pairs, 1, hidden_dim)
+            # Build sequences with length = number of pairs so attention is non-degenerate
+            host_seq = torch.stack(host_nodes, dim=0).unsqueeze(0)      # (1, L, D)
+            parasite_seq = torch.stack(parasite_nodes, dim=0).unsqueeze(0)  # (1, L, D)
 
-                pooled = torch.cat([
-                    host_tensor.squeeze(1).mean(dim=0),
-                    parasite_tensor.squeeze(1).mean(dim=0),
-                    cross_attended.squeeze(1).mean(dim=0)
-                ], dim=-1)  # (3*hidden_dim)
-                mapped_pair_features[i] = pooled
-            else:
-                base_host = host_cls[i]
-                base_parasite = parasite_cls[i]
-                zero_cross = torch.zeros(hidden_dim, device=host_msa.device)
-                pooled = torch.cat([base_host, base_parasite, zero_cross], dim=-1)
-                mapped_pair_features[i] = pooled
+            cross_attended, _ = self.cross_attention(
+                host_seq, parasite_seq, parasite_seq
+            )  # (1, L, D)
+
+            pooled = torch.cat([
+                host_seq.mean(dim=1).squeeze(0),
+                parasite_seq.mean(dim=1).squeeze(0),
+                cross_attended.mean(dim=1).squeeze(0)
+            ], dim=-1)  # (3*hidden_dim)
+
+            mapped_pair_features[i] = pooled
 
         attended_pairs = mapped_pair_features
 

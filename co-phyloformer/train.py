@@ -198,12 +198,11 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 5e-5 # lower learning rate (5e-5, or 1e-5).
+    lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     
-    # Per-sample loss so we can weight rare non-zero switch cases
-    criterion = nn.L1Loss(reduction='none')  # MAE per-sample
-    huber_switch = nn.SmoothL1Loss(reduction='none', beta=0.05)
+    # Use plain L1 (MAE) for both events
+    criterion = nn.L1Loss(reduction='none')  
     # criterion = nn.MSELoss(reduction='none')
 
     model = Cophyloformer()
@@ -352,16 +351,9 @@ def main(fabric: Fabric):
                 })
 
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
-            switch_y = batch["labels"][:, 1]
-            # Weight positives much more than near-zeros (zero-inflated target)
-            switch_w = torch.where(
-                switch_y > 0.02,
-                torch.full_like(switch_y, 10.0),
-                torch.ones_like(switch_y)
-            )
-            loss_switches = (huber_switch(outputs[:, 1], switch_y) * switch_w).mean()
+            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
 
-            total_loss_tensor = loss_cospeciation + loss_switches
+            total_loss_tensor = loss_cospeciation + 5* loss_switches
 
 
             fabric.backward(total_loss_tensor)

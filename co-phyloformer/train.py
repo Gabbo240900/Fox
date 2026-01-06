@@ -352,7 +352,7 @@ def main(fabric: Fabric):
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
             loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
 
-            total_loss_tensor = loss_cospeciation + 10 * loss_switches
+            total_loss_tensor = loss_cospeciation + 20 * loss_switches
 
 
             fabric.backward(total_loss_tensor)

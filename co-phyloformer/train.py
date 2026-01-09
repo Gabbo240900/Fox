@@ -173,7 +173,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 5
 
-    batch_size = 80
+    batch_size = 96
 
     train_loader = DataLoader(
         train_subset,
@@ -198,7 +198,7 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-5 # lower learning rate (5e-5, or 1e-5).
+    lr = 5e-6 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     
     criterion = nn.L1Loss(reduction='none')  

@@ -11,4 +11,4 @@ cd $ALL_CCFRSCRATCH/Co-Phyloformer/generate_treeducken/generated_trees/
 
 
 
-zip -r Dataset_final.zip Dataset_final && mv Dataset_final.zip $ALL_CCFRWORK/Co-Phyloformer/generate_treeducken/generated_trees/
+zip -r preencoded_pt.zip preencoded_pt && mv preencoded_pt.zip $ALL_CCFRWORK/Co-Phyloformer/generate_treeducken/generated_trees/

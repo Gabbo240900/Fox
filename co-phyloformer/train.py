@@ -160,8 +160,8 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
-    preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/preencoded_pt/"
+    #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
     indices = list(range(len(dataset)))
@@ -176,7 +176,7 @@ def main(fabric: Fabric):
     def compute_label_mean_std(subset, num_events: int):
         stats_loader = DataLoader(
             subset,
-            batch_size=4,
+            batch_size=96,
             shuffle=False,
             collate_fn=collate_fn,
             num_workers=0,
@@ -206,7 +206,7 @@ def main(fabric: Fabric):
     if fabric.is_global_zero:
         print(f"[LabelNorm] mean={label_mean_cpu.tolist()} std={label_std_cpu.tolist()}")
 
-    batch_size = 4
+    batch_size = 96
 
     train_loader = DataLoader(
         train_subset,

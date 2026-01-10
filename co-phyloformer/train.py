@@ -198,7 +198,7 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 5e-6 # lower learning rate (5e-5, or 1e-5).
+    lr = 1e-6 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     
     criterion = nn.L1Loss(reduction='none')  

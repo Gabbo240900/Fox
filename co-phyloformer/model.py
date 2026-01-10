@@ -165,15 +165,15 @@ class Cophyloformer(nn.Module):
 
         attended_pairs = mapped_pair_features
 
-        # if sim_time is not None:
-        #     gamma_beta = self.sim_time_fc(sim_time)  # (B, 2 * hidden_dim)
-        #     scale, shift = gamma_beta.chunk(2, dim=-1)  # (B, hidden_dim), (B, hidden_dim)
+        if sim_time is not None:
+            gamma_beta = self.sim_time_fc(sim_time)  # (B, 2 * hidden_dim)
+            scale, shift = gamma_beta.chunk(2, dim=-1)  # (B, hidden_dim), (B, hidden_dim)
 
-        #     base = attended_pairs[:, :hidden_dim]
-        #     rest = attended_pairs[:, hidden_dim:]
+            base = attended_pairs[:, :hidden_dim]
+            rest = attended_pairs[:, hidden_dim:]
 
-        #     modulated = base * (1 + scale) + shift
-        #     attended_pairs = torch.cat([modulated, rest], dim=-1)
+            modulated = base * (1 + scale) + shift
+            attended_pairs = torch.cat([modulated, rest], dim=-1)
 
         out_cospeciation = self.cospeciation_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)

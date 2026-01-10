@@ -1,6 +1,6 @@
 import torch
 # BEST CONFIGURATION SO FAR FOR SMALL DATASETS
-def run_full_validation(fabric, model, val_loader, criterion, event_names, device, label_mean=None, label_std=None, switch_weight: float = 20.0):
+def run_full_validation(fabric, model, val_loader, criterion, event_names, device):
     model.eval()
     val_loss = 0.0
     val_batches = 0
@@ -27,23 +27,12 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
                 batch["sim_time"],
             )
 
+            loss_cosp = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
+            loss_sw   = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
+            loss = loss_cosp + loss_sw
+
             preds = outputs
             labels = batch["labels"]
-
-            # Validation loss: match training objective.
-            # If label_mean/std are provided, normalize inside the loss only.
-            if label_mean is not None and label_std is not None:
-                lm = label_mean.to(device)
-                ls = label_std.to(device)
-                preds_norm  = (preds - lm) / ls
-                labels_norm = (labels - lm) / ls
-                loss_cosp = criterion(preds_norm[:, 0], labels_norm[:, 0]).mean()
-                loss_sw   = criterion(preds_norm[:, 1], labels_norm[:, 1]).mean()
-            else:
-                loss_cosp = criterion(preds[:, 0], labels[:, 0]).mean()
-                loss_sw   = criterion(preds[:, 1], labels[:, 1]).mean()
-
-            loss = loss_cosp + switch_weight * loss_sw
 
             val_loss += loss.item()
             val_batches += 1
@@ -96,7 +85,7 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
     }
 
 
-def compute_val_predictions(model, val_loader, device, label_mean=None, label_std=None):
+def compute_val_predictions(model, val_loader, device):
     preds_list = []
     labels_list = []
     model.eval()

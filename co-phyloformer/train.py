@@ -173,39 +173,6 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 5
 
-    def compute_label_mean_std(subset, num_events: int):
-        stats_loader = DataLoader(
-            subset,
-            batch_size=96,
-            shuffle=False,
-            collate_fn=collate_fn,
-            num_workers=0,
-            persistent_workers=False,
-            pin_memory=False,
-        )
-        sum_ = torch.zeros(num_events, dtype=torch.float64)
-        sumsq = torch.zeros(num_events, dtype=torch.float64)
-        n = 0
-        for b in stats_loader:
-            if b is None:
-                continue
-            y = b["labels"].to(torch.float64)  # (B, E)
-            sum_ += y.sum(dim=0)
-            sumsq += (y * y).sum(dim=0)
-            n += y.shape[0]
-        if n == 0:
-            raise RuntimeError("No valid samples found while computing label statistics.")
-        mean = sum_ / n
-        var = (sumsq / n) - (mean * mean)
-        var = torch.clamp(var, min=0.0)
-        std = torch.sqrt(var)
-        std = torch.clamp(std, min=1e-6)  # avoid divide-by-zero
-        return mean.to(torch.float32), std.to(torch.float32)
-
-    label_mean_cpu, label_std_cpu = compute_label_mean_std(train_subset, num_events=len(event_names))
-    if fabric.is_global_zero:
-        print(f"[LabelNorm] mean={label_mean_cpu.tolist()} std={label_std_cpu.tolist()}")
-
     batch_size = 96
 
     train_loader = DataLoader(
@@ -303,10 +270,6 @@ def main(fabric: Fabric):
             },
         )
 
-        # Log label normalization stats (train split)
-        run.config["label_mean"] = label_mean_cpu.tolist()
-        run.config["label_std"] = label_std_cpu.tolist()
-
         # Log total learnable parameters
         num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         run.config["num_parameters"] = num_params
@@ -386,15 +349,8 @@ def main(fabric: Fabric):
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            # Normalize inside the loss only (keeps outputs/metrics/validation on original scale)
-            label_mean = label_mean_cpu.to(device)
-            label_std  = label_std_cpu.to(device)
-
-            preds_norm  = (outputs - label_mean) / label_std
-            labels_norm = (batch["labels"] - label_mean) / label_std
-
-            loss_cospeciation = criterion(preds_norm[:, 0], labels_norm[:, 0]).mean()
-            loss_switches     = criterion(preds_norm[:, 1], labels_norm[:, 1]).mean()
+            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
+            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
 
             total_loss_tensor = loss_cospeciation + 20 * loss_switches
 

@@ -48,7 +48,7 @@ class LazyCophyloformerDataset(Dataset):
         sample = torch.load(pt_path, map_location="cpu", weights_only=False)
 
         # Define mask_sequence inside __getitem__
-        def mask_sequence(sequence, mask_prob=0.1 , mask_token=22):
+        def mask_sequence(sequence, mask_prob=0.1 , mask_token=23):
             masked = []
             for aa in sequence:
                 if torch.rand(1).item() < mask_prob:
@@ -145,16 +145,16 @@ def collate_fn(batch):
     }
 
 
-def encode_sequence(sequence, max_len=128):
+def encode_sequence(sequence, max_len=500):
     """ Convert an MSA sequence string into a numerical tensor (simple one-hot encoding). """
-    amino_acids = "ACDEFGHIKLMNPQRSTVWY-"  # Standard amino acids + gap
+    amino_acids = "ACDEFGHIKLMNPQRSTVWY-"  # 21 tokens: 20 AAs + gap
     aa_to_index = {aa: i for i, aa in enumerate(amino_acids)}
-    padding_token = 22  # Ensure padding has a consistent index
 
-    encoded = [aa_to_index.get(aa, padding_token) for aa in sequence[:max_len]]
+    UNK_ID = 21
+    PAD_ID = 22
 
-    # Pad to max length
-    encoded += [padding_token] * (max_len - len(encoded))
+    encoded = [aa_to_index.get(aa, UNK_ID) for aa in sequence[:max_len]]
+    encoded += [PAD_ID] * (max_len - len(encoded))
 
     return torch.tensor(encoded, dtype=torch.long)
 

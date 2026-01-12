@@ -42,12 +42,73 @@ class FlashMSAEncoderLayer(nn.Module):
         x = x + self.proj(out)
         x = x + self.ff(self.norm2(x))
         return x
+
+class FlashResidueEncoderLayer(nn.Module):
+    """Self-attention over the residue axis (S) for each leaf independently."""
+    def __init__(self, hidden_dim, num_heads):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.head_dim = hidden_dim // num_heads
+
+        self.qkv = nn.Linear(hidden_dim, hidden_dim * 3)
+        self.proj = nn.Linear(hidden_dim, hidden_dim)
+
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+
+        self.ff = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 4),
+            nn.GELU(),
+            nn.Linear(hidden_dim * 4, hidden_dim)
+        )
+
+    def forward(self, x, key_padding_mask=None):
+        """
+        x: (BN, S, D)
+        key_padding_mask: (BN, S) True where PAD (masked out)
+        """
+        BN, S, D = x.shape
+        x_norm = self.norm1(x)
+
+        qkv = self.qkv(x_norm)
+        q, k, v = qkv.chunk(3, dim=-1)
+
+        q = q.view(BN, S, self.num_heads, self.head_dim).transpose(1, 2)  # (BN, H, S, Hd)
+        k = k.view(BN, S, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(BN, S, self.num_heads, self.head_dim).transpose(1, 2)
+
+        attn_mask = None
+        if key_padding_mask is not None:
+            # Mask keys so PAD positions are not attended to.
+            # broadcastable to (BN, H, S, S)
+            attn_mask = key_padding_mask[:, None, None, :].to(dtype=torch.bool)  # (BN, 1, 1, S)
+
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=0.0,
+            is_causal=False
+        )
+
+        out = out.transpose(1, 2).contiguous().view(BN, S, D)
+
+        x = x + self.proj(out)
+        x = x + self.ff(self.norm2(x))
+        return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=640, num_layers=12, num_heads=8):# increase embedding and layers reduce batch size 
+    def __init__(self, hidden_dim=640, num_layers=12, num_heads=8, num_res_layers=2, num_res_heads=8):# increase embedding and layers reduce batch size 
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
+        # Residue-axis Transformer (runs on (B*N, S, D) before pooling)
+        self.res_layers = nn.ModuleList([
+            FlashResidueEncoderLayer(hidden_dim, num_res_heads)
+            for _ in range(num_res_layers)
+        ])
+        self.res_final_norm = nn.LayerNorm(hidden_dim)
+
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.pool_weights = nn.Linear(hidden_dim, 1)
         self.norm = nn.LayerNorm(hidden_dim)
@@ -57,7 +118,7 @@ class MSAEncoder(nn.Module):
         ])
         self.final_norm = nn.LayerNorm(hidden_dim)
         #self.dropout = nn.Dropout(0.1)
-        self.mask_token_id = 22
+        self.mask_token_id = 23
         
 
     def forward(self, x):
@@ -65,18 +126,34 @@ class MSAEncoder(nn.Module):
         x_ids = x
         x = self.embedding(x_ids)  # (B, N, S, D)
 
-        # Mask padding positions (PAD token id = 22) so pooling ignores padded tokens
-        pad_mask = (x_ids != 22)  # (B, N, S)
-        logits = self.pool_weights(x).squeeze(-1)  # (B, N, S)
-        logits = logits.masked_fill(~pad_mask, -1e9)
+        PAD_ID = 22
+        # True where PAD
+        pad_mask = (x_ids == PAD_ID)  # (B, N, S)
 
-        weights = F.softmax(logits, dim=2)  # (B, N, S)
+        # --- Axial step 1: residue-axis attention per leaf ---
+        B, N, S, D = x.shape
+        x_bn = x.view(B * N, S, D)              # (BN, S, D)
+        pad_bn = pad_mask.view(B * N, S)        # (BN, S)
+
+        for layer in self.res_layers:
+            x_bn = layer(x_bn, key_padding_mask=pad_bn)
+
+        x_bn = self.res_final_norm(x_bn)
+        x = x_bn.view(B, N, S, D)               # back to (B, N, S, D)
+
+        # --- Pool residues -> leaf vectors (B, N, D) ---
+        keep_mask = ~pad_mask                   # True where not PAD
+        logits = self.pool_weights(x).squeeze(-1)  # (B, N, S)
+        logits = logits.masked_fill(~keep_mask, -1e9)
+        weights = F.softmax(logits, dim=2)         # (B, N, S)
         x = torch.sum(x * weights.unsqueeze(-1), dim=2)  # (B, N, D)
+
+        # --- Axial step 2: leaf-axis attention (existing stack) ---
         x = self.norm(x)
         #x = self.dropout(x)
 
         cls_token = self.cls_token.expand(x.size(0), -1, -1)  # (B, 1, D)
-        x = torch.cat([cls_token, x], dim=1)  # (B, N+1, D)
+        x = torch.cat([cls_token, x], dim=1)                  # (B, N+1, D)
 
         for layer in self.layers:
             x = layer(x)
@@ -93,8 +170,8 @@ class Cophyloformer(nn.Module):
         #self.dropout = 0.1
         self.embedding_dim = hidden_dim
         
-        self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
-        self.parasite_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
+        self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads, num_res_layers=2, num_res_heads=num_heads)
+        self.parasite_encoder = MSAEncoder(hidden_dim, num_layers, num_heads, num_res_layers=2, num_res_heads=num_heads)
 
         self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
 
@@ -178,5 +255,4 @@ class Cophyloformer(nn.Module):
         out_cospeciation = self.cospeciation_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
-        outputs = torch.sigmoid(outputs)
         return outputs

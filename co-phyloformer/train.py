@@ -33,6 +33,19 @@ event_names = [
     "Host_spread/Switches"
 ]
 
+# --- Switch label transform helpers (logit-space training) ---
+SWITCH_MAX = 0.4
+SWITCH_EPS = 1e-4
+
+def switch_to_logit(sw: torch.Tensor) -> torch.Tensor:
+    """Map switch probability in [0, SWITCH_MAX] -> logit space (R)."""
+    s = (sw / SWITCH_MAX).clamp(SWITCH_EPS, 1.0 - SWITCH_EPS)
+    return torch.log(s) - torch.log1p(-s)
+
+def logit_to_switch(z: torch.Tensor) -> torch.Tensor:
+    """Map logit-space value (R) -> switch probability in [0, SWITCH_MAX]."""
+    return SWITCH_MAX * torch.sigmoid(z)
+
 start_time = time.time()  # Record start time
 
 class LazyCophyloformerDataset(Dataset):
@@ -199,8 +212,14 @@ def main(fabric: Fabric):
     lr = 1e-5 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     
-    criterion = nn.L1Loss(reduction='none')  
-    # criterion = nn.MSELoss(reduction='none')
+    # Cospeciation loss in original probability space
+    criterion = nn.L1Loss(reduction='none')
+
+    # Switch loss in logit space (helps with heavy mass near 0)
+    switch_criterion = nn.SmoothL1Loss(reduction='mean')
+
+    # Weight for switch loss when trained in logit space (start small; tune later)
+    switch_logit_weight = 1.0
 
     model = Cophyloformer()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
@@ -338,19 +357,28 @@ def main(fabric: Fabric):
                 batch["sim_time"],
             )
 
-            for idx in range(outputs.shape[0]):
+            # Convert switch head (logit) back to probability for logging/plots
+            outputs_for_log = outputs.detach().clone()
+            outputs_for_log[:, 1] = logit_to_switch(outputs_for_log[:, 1])
+
+            for idx in range(outputs_for_log.shape[0]):
                 all_train_prediction_data.append({
-                    "Sample_Index": batch_idx * outputs.shape[0] + idx,
-                    "Cospeciations_Pred": outputs[idx, 0].item(),
+                    "Sample_Index": batch_idx * outputs_for_log.shape[0] + idx,
+                    "Cospeciations_Pred": outputs_for_log[idx, 0].item(),
                     "Cospeciations_GT": batch["labels"][idx, 0].item(),
-                    "Host_switches_Pred": outputs[idx, 1].item(),
+                    "Host_switches_Pred": outputs_for_log[idx, 1].item(),
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
+            # Cospeciation: original space
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
-            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
 
-            total_loss_tensor = loss_cospeciation + 20 * loss_switches
+            # Switches: train in logit space
+            target_sw_logit = switch_to_logit(batch["labels"][:, 1])
+            pred_sw_logit = outputs[:, 1]
+            loss_switches = switch_criterion(pred_sw_logit, target_sw_logit)
+
+            total_loss_tensor = loss_cospeciation + switch_logit_weight * loss_switches
 
 
             fabric.backward(total_loss_tensor)
@@ -401,7 +429,8 @@ def main(fabric: Fabric):
             num_batches += 1
 
             with torch.no_grad():
-                preds = outputs.detach()
+                preds = outputs.detach().clone()
+                preds[:, 1] = logit_to_switch(preds[:, 1])
                 labels = batch["labels"].detach()
 
                 abs_err = (preds - labels).abs()
@@ -583,6 +612,9 @@ def main(fabric: Fabric):
 
         # Compute full validation predictions properly
         val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
+        if val_preds_tensor is not None:
+            val_preds_tensor = val_preds_tensor.clone()
+            val_preds_tensor[:, 1] = logit_to_switch(val_preds_tensor[:, 1])
 
         rows = []
         for i in range(len(val_preds_tensor)):
@@ -605,7 +637,9 @@ def main(fabric: Fabric):
 
         # --- Combined Train + Val Scatter Plots (Pred vs GT) ---
         val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
-
+        if val_preds_tensor is not None:
+            val_preds_tensor = val_preds_tensor.clone()
+            val_preds_tensor[:, 1] = logit_to_switch(val_preds_tensor[:, 1])
 
         # Cospeciations
         plot_labels_vs_predictions(

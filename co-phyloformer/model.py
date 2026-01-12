@@ -42,87 +42,6 @@ class FlashMSAEncoderLayer(nn.Module):
         x = x + self.proj(out)
         x = x + self.ff(self.norm2(x))
         return x
-
-class AxialMSAEncoderLayer(nn.Module):
-    """Axial attention over an MSA tensor.
-
-    x is (B, N, S, D)
-      - residue attention: attention over S within each sequence (per N)
-      - leaf attention: attention over N at each residue position (per S)
-
-    Uses PyTorch scaled_dot_product_attention (FlashAttention when available).
-    """
-
-    def __init__(self, hidden_dim: int, num_heads: int):
-        super().__init__()
-        assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
-        self.hidden_dim = hidden_dim
-        self.num_heads = num_heads
-        self.head_dim = hidden_dim // num_heads
-
-        # Residue-axis attention (over S)
-        self.norm_residue = nn.LayerNorm(hidden_dim)
-        self.qkv_residue = nn.Linear(hidden_dim, hidden_dim * 3)
-        self.proj_residue = nn.Linear(hidden_dim, hidden_dim)
-
-        # Leaf-axis attention (over N)
-        self.norm_leaf = nn.LayerNorm(hidden_dim)
-        self.qkv_leaf = nn.Linear(hidden_dim, hidden_dim * 3)
-        self.proj_leaf = nn.Linear(hidden_dim, hidden_dim)
-
-        # Feed-forward
-        self.norm_ff = nn.LayerNorm(hidden_dim)
-        self.ff = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 4),
-            nn.GELU(),
-            nn.Linear(hidden_dim * 4, hidden_dim),
-        )
-
-    def _sdp_attn(self, q, k, v):
-        # q,k,v: (B, H, L, Hd)
-        return torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, N, S, D)
-        B, N, S, D = x.shape
-
-        # --- Residue attention (over S) ---
-        xr = self.norm_residue(x)
-        xr = xr.contiguous().view(B * N, S, D)  # (B*N, S, D)
-
-        qkv = self.qkv_residue(xr)
-        q, k, v = qkv.chunk(3, dim=-1)
-        q = q.view(B * N, S, self.num_heads, self.head_dim).transpose(1, 2)  # (B*N, H, S, Hd)
-        k = k.view(B * N, S, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.view(B * N, S, self.num_heads, self.head_dim).transpose(1, 2)
-
-        out = self._sdp_attn(q, k, v)
-        out = out.transpose(1, 2).contiguous().view(B * N, S, D)
-        out = self.proj_residue(out)
-        out = out.view(B, N, S, D)
-        x = x + out
-
-        # --- Leaf attention (over N) ---
-        xl = self.norm_leaf(x)
-        xl = xl.permute(0, 2, 1, 3).contiguous().view(B * S, N, D)  # (B*S, N, D)
-
-        qkv = self.qkv_leaf(xl)
-        q, k, v = qkv.chunk(3, dim=-1)
-        q = q.view(B * S, N, self.num_heads, self.head_dim).transpose(1, 2)  # (B*S, H, N, Hd)
-        k = k.view(B * S, N, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.view(B * S, N, self.num_heads, self.head_dim).transpose(1, 2)
-
-        out = self._sdp_attn(q, k, v)
-        out = out.transpose(1, 2).contiguous().view(B * S, N, D)
-        out = self.proj_leaf(out)
-        out = out.view(B, S, N, D).permute(0, 2, 1, 3).contiguous()  # back to (B, N, S, D)
-        x = x + out
-
-        # --- FFN ---
-        x = x + self.ff(self.norm_ff(x))
-        return x
     
 class MSAEncoder(nn.Module):
     def __init__(self, hidden_dim=640, num_layers=12, num_heads=8):# increase embedding and layers reduce batch size 
@@ -133,7 +52,7 @@ class MSAEncoder(nn.Module):
         self.pool_weights = nn.Linear(hidden_dim, 1)
         self.norm = nn.LayerNorm(hidden_dim)
         self.layers = nn.ModuleList([
-            AxialMSAEncoderLayer(hidden_dim, num_heads)
+            FlashMSAEncoderLayer(hidden_dim, num_heads)
             for _ in range(num_layers)
         ])
         self.final_norm = nn.LayerNorm(hidden_dim)
@@ -146,23 +65,21 @@ class MSAEncoder(nn.Module):
         x_ids = x
         x = self.embedding(x_ids)  # (B, N, S, D)
 
-        # Axial attention over (S then N) while still 4D
-        for layer in self.layers:
-            x = layer(x)  # (B, N, S, D)
-
-        # Pool over sequence length S (ignore PAD token id = 22)
+        # Mask padding positions (PAD token id = 22) so pooling ignores padded tokens
         pad_mask = (x_ids != 22)  # (B, N, S)
         logits = self.pool_weights(x).squeeze(-1)  # (B, N, S)
         logits = logits.masked_fill(~pad_mask, -1e9)
+
         weights = F.softmax(logits, dim=2)  # (B, N, S)
         x = torch.sum(x * weights.unsqueeze(-1), dim=2)  # (B, N, D)
-
         x = self.norm(x)
+        #x = self.dropout(x)
 
-        # Add CLS token after pooling so downstream code stays unchanged
         cls_token = self.cls_token.expand(x.size(0), -1, -1)  # (B, 1, D)
         x = torch.cat([cls_token, x], dim=1)  # (B, N+1, D)
 
+        for layer in self.layers:
+            x = layer(x)
         x = self.final_norm(x)
         return x, x[:, 0]
 

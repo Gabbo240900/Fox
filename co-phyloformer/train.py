@@ -169,7 +169,7 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 10
+    epochs = 5
 
     batch_size = 80
 
@@ -349,7 +349,7 @@ def main(fabric: Fabric):
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
             loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
 
-            total_loss_tensor = loss_cospeciation + 20 * loss_switches
+            total_loss_tensor = loss_cospeciation + 50 * loss_switches
 
 
             fabric.backward(total_loss_tensor)

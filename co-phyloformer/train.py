@@ -196,7 +196,7 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-5 # lower learning rate (5e-5, or 1e-5).
+    lr = 1e-7 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     
     criterion = nn.L1Loss(reduction='none')  
@@ -295,7 +295,6 @@ def main(fabric: Fabric):
         steps_per_epoch = len(train_loader)
         # Validation trigger points at 25%, 50%, 75% of the epoch
         val_checkpoints = {
-            1,
             int(0.10 * steps_per_epoch),
             int(0.20 * steps_per_epoch),
             int(0.30 * steps_per_epoch),

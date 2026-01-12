@@ -154,6 +154,7 @@ def encode_sequence(sequence, max_len=500):
 
     encoded = [aa_to_index.get(aa, UNK_ID) for aa in sequence[:max_len]]
     encoded += [PAD_ID] * (max_len - len(encoded))
+    return torch.tensor(encoded, dtype=torch.long)
 
 def main(fabric: Fabric):
     # Load Data
@@ -170,7 +171,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 10
 
-    batch_size = 96
+    batch_size = 32
 
     train_loader = DataLoader(
         train_subset,

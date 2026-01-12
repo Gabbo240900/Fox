@@ -144,7 +144,7 @@ def collate_fn(batch):
     }
 
 
-def encode_sequence(sequence, max_len=500):
+def encode_sequence(sequence, max_len=128):
     """ Convert an MSA sequence string into a numerical tensor (simple one-hot encoding). """
     amino_acids = "ACDEFGHIKLMNPQRSTVWY-"  # 21 tokens: 20 AAs + gap
     aa_to_index = {aa: i for i, aa in enumerate(amino_acids)}
@@ -171,7 +171,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 10
 
-    batch_size = 32
+    batch_size = 80
 
     train_loader = DataLoader(
         train_subset,

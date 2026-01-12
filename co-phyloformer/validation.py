@@ -1,20 +1,6 @@
 import torch
-
-# --- Switch label transform helpers (logit-space training) ---
-SWITCH_MAX = 0.4
-SWITCH_EPS = 1e-4
-
-def switch_to_logit(sw: torch.Tensor) -> torch.Tensor:
-    """Map switch probability in [0, SWITCH_MAX] -> logit space (R)."""
-    s = (sw / SWITCH_MAX).clamp(SWITCH_EPS, 1.0 - SWITCH_EPS)
-    return torch.log(s) - torch.log1p(-s)
-
-def logit_to_switch(z: torch.Tensor) -> torch.Tensor:
-    """Map logit-space value (R) -> switch probability in [0, SWITCH_MAX]."""
-    return SWITCH_MAX * torch.sigmoid(z)
-
 # BEST CONFIGURATION SO FAR FOR SMALL DATASETS
-def run_full_validation(fabric, model, val_loader, criterion, event_names, device, switch_logit_weight: float = 1.0):
+def run_full_validation(fabric, model, val_loader, criterion, event_names, device):
     model.eval()
     val_loss = 0.0
     val_batches = 0
@@ -41,19 +27,11 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
                 batch["sim_time"],
             )
 
-            # Cospeciation: original probability space
             loss_cosp = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
+            loss_sw   = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
+            loss = loss_cosp + loss_sw
 
-            # Switches: model outputs logits; validate loss in logit space
-            target_sw_logit = switch_to_logit(batch["labels"][:, 1])
-            pred_sw_logit = outputs[:, 1]
-            loss_sw = torch.nn.functional.smooth_l1_loss(pred_sw_logit, target_sw_logit, reduction="mean")
-
-            loss = loss_cosp + switch_logit_weight * loss_sw
-
-            # Metrics should be computed in original probability space
-            preds = outputs.detach().clone()
-            preds[:, 1] = logit_to_switch(preds[:, 1])
+            preds = outputs
             labels = batch["labels"]
 
             val_loss += loss.item()
@@ -104,7 +82,6 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
         "val_mse": val_mse,
         "val_mre": val_mre,
         "val_smape": val_smape,
-        "switch_logit_weight": switch_logit_weight,
     }
 
 
@@ -127,10 +104,6 @@ def compute_val_predictions(model, val_loader, device):
                 batch["mappings"],
                 batch["sim_time"],
             )
-
-            # Convert switch head (logit) back to probability for downstream code
-            outputs = outputs.detach().clone()
-            outputs[:, 1] = logit_to_switch(outputs[:, 1])
 
             preds_list.append(outputs.cpu())
             labels_list.append(batch["labels"].cpu())

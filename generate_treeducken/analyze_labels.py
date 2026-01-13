@@ -93,6 +93,13 @@ print("\nSanity check (counts should equal number of samples):")
 for label in EXPECTED_LABELS:
     print(f"  {label}: {len(label_values[label])} / {num_samples}")
 
+def count_values_in_range(values, target, tol=1e-6):
+    """
+    Count how many values fall within [target - tol, target + tol].
+    """
+    arr = np.array(values, dtype=float)
+    return int(np.sum((arr >= target - tol) & (arr <= target + tol)))
+
 stats = {}
 for label, values in label_values.items():
     arr = np.array(values, dtype=float)
@@ -158,6 +165,18 @@ for label, s in stats.items():
         f"mean={s['mean']:.6f} std={s['std']:.6f} "
         f"min={s['min']:.6f} max={s['max']:.6f}"
     )
+
+# =========================
+# Specific Cospeciation value counts
+# =========================
+if "Cospeciations" in label_values:
+    tol = 1e-6
+    c_005 = count_values_in_range(label_values["Cospeciations"], 0.05, tol=tol)
+    c_095 = count_values_in_range(label_values["Cospeciations"], 0.95, tol=tol)
+
+    print("\nCospeciation specific value counts:")
+    print(f"  Cospeciations ≈ 0.05: {c_005}")
+    print(f"  Cospeciations ≈ 0.95: {c_095}")
 
 print("\nNaN values replaced with 0.0:")
 for label, cnt in nan_counts.items():

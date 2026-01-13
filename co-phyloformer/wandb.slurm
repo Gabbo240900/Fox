@@ -2,7 +2,7 @@
 #SBATCH --account=vcu@cpu
 #SBATCH --job-name=wandb_sync
 #SBATCH --time=20:00:00    # adjust as needed
-#SBATCH --partition=cpu_p1
+#SBATCH --partition=prepost
 #SBATCH --output=wandb_sync.log
 
 module purge

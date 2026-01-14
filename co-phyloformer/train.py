@@ -76,7 +76,8 @@ class LazyCophyloformerDataset(Dataset):
             dtype=torch.float32,
         )
 
-        sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 1.0)], dtype=torch.float32)
+        # --- sim_time disabled ---
+        # sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 1.0)], dtype=torch.float32)
         return {
             "host_msa": torch.stack([
                 mask_sequence(encode_sequence(seq), mask_prob=0.1)
@@ -88,7 +89,7 @@ class LazyCophyloformerDataset(Dataset):
             ]),
             "mappings": valid_mappings,
             "labels": labels,
-            "sim_time": sim_time,
+            # "sim_time": sim_time,  # --- sim_time disabled ---
         }
 def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir, filename, batch_idx=None):
     """Save model and optimizer state."""
@@ -123,7 +124,8 @@ def collate_fn(batch):
     parasite_msas = [sample["parasite_msa"] for sample in batch]
     labels = torch.stack([sample["labels"] for sample in batch])
     mappings = [sample["mappings"] for sample in batch]  
-    sim_time = torch.stack([sample["sim_time"] for sample in batch])
+    # --- sim_time disabled ---
+    # sim_time = torch.stack([sample["sim_time"] for sample in batch])
 
     #  Fix: Ensure consistent padding for batch processing 
     max_host_len = max(m.shape[0] for m in host_msas)
@@ -140,7 +142,7 @@ def collate_fn(batch):
         "parasite_msa": parasite_msas,
         "labels": labels,
         "mappings": mappings,  
-        "sim_time": sim_time,
+        # "sim_time": sim_time,  # --- sim_time disabled ---
     }
 
 
@@ -326,7 +328,7 @@ def main(fabric: Fabric):
                 print(f"[Resume] Continuing from epoch {start_epoch+1}, batch {start_batch+1}")
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device)
+            # batch["sim_time"] = batch["sim_time"].to(device)  # --- sim_time disabled ---
             batch["labels"] = batch["labels"].to(device)
             optimizer.zero_grad(set_to_none=True)
 
@@ -334,26 +336,8 @@ def main(fabric: Fabric):
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch["sim_time"],
+                None,  # --- sim_time disabled ---
             )
-
-            # --- Debug: mapping density stats (# mapped pairs per sample) ---
-            if fabric.is_global_zero:
-                mref = getattr(model, "module", model)
-                counts = getattr(mref, "last_pair_counts", None)  # Tensor[B]
-                if counts is not None and counts.numel() > 0:
-                    n = counts.numel()
-                    k25 = max(1, int(0.25 * n))
-                    k75 = max(1, int(0.75 * n))
-                    print(
-                        "mapped pairs:",
-                        f"min={counts.min().item()}",
-                        f"p25={counts.kthvalue(k25).values.item()}",
-                        f"median={counts.median().item()}",
-                        f"p75={counts.kthvalue(k75).values.item()}",
-                        f"max={counts.max().item()}",
-                        f"mean={counts.float().mean().item():.2f}",
-                    )
 
             for idx in range(outputs.shape[0]):
                 all_train_prediction_data.append({
@@ -522,23 +506,6 @@ def main(fabric: Fabric):
 
         # VALIDATION PHASE replaced by function
         val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
-        # --- Debug: mapping density stats (# mapped pairs per sample) ---
-        if fabric.is_global_zero:
-            mref = getattr(model, "module", model)
-            counts = getattr(mref, "last_pair_counts", None)  # Tensor[B]
-            if counts is not None and counts.numel() > 0:
-                n = counts.numel()
-                k25 = max(1, int(0.25 * n))
-                k75 = max(1, int(0.75 * n))
-                print(
-                    "mapped pairs:",
-                    f"min={counts.min().item()}",
-                    f"p25={counts.kthvalue(k25).values.item()}",
-                    f"median={counts.median().item()}",
-                    f"p75={counts.kthvalue(k75).values.item()}",
-                    f"max={counts.max().item()}",
-                    f"mean={counts.float().mean().item():.2f}",
-                )
         val_loss = val_results["val_loss"]
         val_mae = val_results["val_mae"]
         val_mse = val_results["val_mse"]
@@ -690,3 +657,5 @@ if __name__ == "__main__":
         )
     )
     fabric.launch(main)
+
+            # If there are any other references to batch["sim_time"] later in main, comment them out (keep the lines, just prefix with #).

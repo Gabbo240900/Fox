@@ -98,16 +98,32 @@ class Cophyloformer(nn.Module):
 
         self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
 
-        self.sim_time_fc = nn.Sequential(
-            nn.Linear(1, hidden_dim * 2),
-            nn.Identity()
-        )
+        # --- sim_time modulation disabled ---
+        # self.sim_time_fc = nn.Sequential(
+        #     nn.Linear(1, hidden_dim * 2),
+        #     nn.Identity()
+        # )
         self.concat_dim = 3 * hidden_dim
-        # Single shared head for quick capacity/bottleneck test
-        self.cosp_head = nn.Linear(self.concat_dim, 1)
-        self.switch_head = nn.Linear(self.concat_dim, 1)
-        # Expose last batch mapping stats for debugging/logging
-        self.last_pair_counts = None  # Tensor[B]
+        self.cospeciation_head = nn.Sequential(
+            nn.LayerNorm(self.concat_dim),
+            nn.Linear(self.concat_dim, hidden_dim),
+            nn.GELU(),
+            #nn.Dropout(0.1),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            #nn.Dropout(0.1),
+            nn.Linear(hidden_dim // 2, 1)
+        )
+        self.switch_head = nn.Sequential(
+            nn.LayerNorm(self.concat_dim),
+            nn.Linear(self.concat_dim, hidden_dim),
+            nn.GELU(),
+            #nn.Dropout(0.1),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            #nn.Dropout(0.1),
+            nn.Linear(hidden_dim // 2, 1)
+        )
 
     def forward(self, host_msa, parasite_msa, mappings, sim_time):
         # Encode host and parasite MSAs
@@ -117,84 +133,51 @@ class Cophyloformer(nn.Module):
 
         batch_size = host_msa.shape[0]
         hidden_dim = host_emb.shape[-1]
-
-        # Build padded index tensors so we can run cross-attention in batch.
-        # Always include CLS at position 0.
-        host_indices_list = []
-        parasite_indices_list = []
-        host_valid_list = []
-        parasite_valid_list = []
-        pair_counts = []
+        mapped_pair_features = torch.zeros(batch_size, hidden_dim * 3, device=host_msa.device)
 
         for i, mapping in enumerate(mappings):
-            h_idx = [0]
-            p_idx = [0]
-            valid_pairs = 0
+            # Always include CLS↔CLS as a global pair
+            host_nodes = [host_emb[i, 0]]
+            parasite_nodes = [parasite_emb[i, 0]]
 
-            for h_leaf, p_leaf in mapping:
-                h = int(h_leaf) + 1
-                p = int(p_leaf) + 1
+            # Add leaf↔leaf pairs from mappings (leaf indices start at 0, but embeddings have CLS at 0)
+            for h_idx, p_idx in mapping:
+                h = h_idx + 1
+                p = p_idx + 1
                 if 0 <= h < host_emb.shape[1] and 0 <= p < parasite_emb.shape[1]:
-                    h_idx.append(h)
-                    p_idx.append(p)
-                    valid_pairs += 1
+                    host_nodes.append(host_emb[i, h])
+                    parasite_nodes.append(parasite_emb[i, p])
 
-            # counts = number of mapped pairs (excluding CLS)
-            pair_counts.append(valid_pairs)
-            host_indices_list.append(torch.tensor(h_idx, device=host_emb.device, dtype=torch.long))
-            parasite_indices_list.append(torch.tensor(p_idx, device=parasite_emb.device, dtype=torch.long))
+            # Build sequences with length = number of pairs so attention is non-degenerate
+            host_seq = torch.stack(host_nodes, dim=0).unsqueeze(0)      # (1, L, D)
+            parasite_seq = torch.stack(parasite_nodes, dim=0).unsqueeze(0)  # (1, L, D)
 
-        max_len = max(t.numel() for t in host_indices_list) if host_indices_list else 1
+            cross_attended, _ = self.cross_attention(
+                host_seq, parasite_seq, parasite_seq
+            )  # (1, L, D)
 
-        host_idx = torch.zeros((batch_size, max_len), device=host_emb.device, dtype=torch.long)
-        parasite_idx = torch.zeros((batch_size, max_len), device=parasite_emb.device, dtype=torch.long)
-        host_valid = torch.zeros((batch_size, max_len), device=host_emb.device, dtype=torch.bool)
-        parasite_valid = torch.zeros((batch_size, max_len), device=host_emb.device, dtype=torch.bool)
+            pooled = torch.cat([
+                host_seq.mean(dim=1).squeeze(0),
+                parasite_seq.mean(dim=1).squeeze(0),
+                cross_attended.mean(dim=1).squeeze(0)
+            ], dim=-1)  # (3*hidden_dim)
 
-        for i in range(batch_size):
-            hl = host_indices_list[i].numel()
-            pl = parasite_indices_list[i].numel()
-            # hl == pl by construction
-            host_idx[i, :hl] = host_indices_list[i]
-            parasite_idx[i, :pl] = parasite_indices_list[i]
-            host_valid[i, :hl] = True
-            parasite_valid[i, :pl] = True
-
-        # Gather sequences: (B, L, D)
-        b = torch.arange(batch_size, device=host_emb.device)[:, None]
-        host_seq = host_emb[b, host_idx]
-        parasite_seq = parasite_emb[b, parasite_idx]
-
-        # Cross-attention in batch. Key/value padding mask uses True for pads.
-        key_pad = ~parasite_valid
-        cross_attended, _ = self.cross_attention(host_seq, parasite_seq, parasite_seq, key_padding_mask=key_pad)
-
-        # Masked means over the sequence dimension
-        host_den = host_valid.sum(dim=1, keepdim=True).clamp(min=1)
-        parasite_den = parasite_valid.sum(dim=1, keepdim=True).clamp(min=1)
-
-        host_mean = (host_seq * host_valid.unsqueeze(-1)).sum(dim=1) / host_den
-        parasite_mean = (parasite_seq * parasite_valid.unsqueeze(-1)).sum(dim=1) / parasite_den
-        cross_mean = (cross_attended * host_valid.unsqueeze(-1)).sum(dim=1) / host_den
-
-        mapped_pair_features = torch.cat([host_mean, parasite_mean, cross_mean], dim=-1)  # (B, 3*D)
+            mapped_pair_features[i] = pooled
 
         attended_pairs = mapped_pair_features
 
-        # Save mapping stats for external logging
-        self.last_pair_counts = torch.tensor(pair_counts, device=host_emb.device, dtype=torch.long)
+        # --- sim_time modulation disabled ---
+        # if sim_time is not None:
+        #     gamma_beta = self.sim_time_fc(sim_time)  # (B, 2 * hidden_dim)
+        #     scale, shift = gamma_beta.chunk(2, dim=-1)  # (B, hidden_dim), (B, hidden_dim)
+        #
+        #     base = attended_pairs[:, :hidden_dim]
+        #     rest = attended_pairs[:, hidden_dim:]
+        #
+        #     modulated = base * (1 + scale) + shift
+        #     attended_pairs = torch.cat([modulated, rest], dim=-1)
 
-        if sim_time is not None:
-            gamma_beta = self.sim_time_fc(sim_time)  # (B, 2 * hidden_dim)
-            scale, shift = gamma_beta.chunk(2, dim=-1)  # (B, hidden_dim), (B, hidden_dim)
-
-            base = attended_pairs[:, :hidden_dim]
-            rest = attended_pairs[:, hidden_dim:]
-
-            modulated = base * (1 + scale) + shift
-            attended_pairs = torch.cat([modulated, rest], dim=-1)
-
-        out_cospeciation = self.cosp_head(attended_pairs)
+        out_cospeciation = self.cospeciation_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
         outputs = torch.sigmoid(outputs)

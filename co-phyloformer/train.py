@@ -658,4 +658,3 @@ if __name__ == "__main__":
     )
     fabric.launch(main)
 
-            # If there are any other references to batch["sim_time"] later in main, comment them out (keep the lines, just prefix with #).

@@ -17,14 +17,14 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
                 continue
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device)
+            # batch["sim_time"] = batch["sim_time"].to(device)  # --- sim_time disabled ---
             batch["labels"] = batch["labels"].to(device)
 
             outputs = model(
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch["sim_time"],
+                None,  # --- sim_time disabled ---
             )
 
             loss_cosp = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
@@ -96,13 +96,13 @@ def compute_val_predictions(model, val_loader, device):
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
             batch["labels"] = batch["labels"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device)
+            # batch["sim_time"] = batch["sim_time"].to(device)  # --- sim_time disabled ---
 
             outputs = model(
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch["sim_time"],
+                None,  # --- sim_time disabled ---
             )
 
             preds_list.append(outputs.cpu())

@@ -167,16 +167,17 @@ for label, s in stats.items():
     )
 
 # =========================
-# Specific Cospeciation value counts
+# Specific Cospeciation value counts (open intervals)
 # =========================
 if "Cospeciations" in label_values:
-    tol = 1e-6
-    c_005 = count_values_in_range(label_values["Cospeciations"], 0.05, tol=tol)
-    c_095 = count_values_in_range(label_values["Cospeciations"], 0.95, tol=tol)
+    arr = np.array(label_values["Cospeciations"], dtype=float)
 
-    print("\nCospeciation specific value counts:")
-    print(f"  Cospeciations ≈ 0.05: {c_005}")
-    print(f"  Cospeciations ≈ 0.95: {c_095}")
+    c_low = int(np.sum((arr > 0.0) & (arr < 0.05)))
+    c_high = int(np.sum((arr > 0.95) & (arr < 1.0)))
+
+    print("\nCospeciation open-interval counts:")
+    print(f"  0 < Cospeciations < 0.05: {c_low}")
+    print(f"  0.95 < Cospeciations < 1.0: {c_high}")
 
 print("\nNaN values replaced with 0.0:")
 for label, cnt in nan_counts.items():

@@ -104,8 +104,8 @@ class Cophyloformer(nn.Module):
         )
         self.concat_dim = 3 * hidden_dim
         # Single shared head for quick capacity/bottleneck test
-        self.single_head = nn.Linear(self.concat_dim, 1)
-
+        self.cosp_head = nn.Linear(self.concat_dim, 1)
+        self.switch_head = nn.Linear(self.concat_dim, 1)
         # Expose last batch mapping stats for debugging/logging
         self.last_pair_counts = None  # Tensor[B]
 
@@ -194,6 +194,8 @@ class Cophyloformer(nn.Module):
             modulated = base * (1 + scale) + shift
             attended_pairs = torch.cat([modulated, rest], dim=-1)
 
-        outputs = self.single_head(attended_pairs)
+        out_cospeciation = self.cospeciation_head(attended_pairs)
+        out_switch = self.switch_head(attended_pairs)
+        outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
         outputs = torch.sigmoid(outputs)
         return outputs

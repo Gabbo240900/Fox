@@ -194,7 +194,7 @@ class Cophyloformer(nn.Module):
             modulated = base * (1 + scale) + shift
             attended_pairs = torch.cat([modulated, rest], dim=-1)
 
-        out_cospeciation = self.cospeciation_head(attended_pairs)
+        out_cospeciation = self.cosp_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
         outputs = torch.sigmoid(outputs)

@@ -24,6 +24,7 @@ import glob
 
 # BEST CONFIGURATION SO FAR FOR SMALL DATASETS
 # Log host switch 
+#try new overfitting example again 
 
 torch.set_float32_matmul_precision('high')
 
@@ -185,6 +186,7 @@ def main(fabric: Fabric):
         prefetch_factor=4,
         pin_memory=False
     )
+    
     # Create validation loader
     val_loader = DataLoader(
         val_subset,

@@ -337,6 +337,24 @@ def main(fabric: Fabric):
                 batch["sim_time"],
             )
 
+            # --- Debug: mapping density stats (# mapped pairs per sample) ---
+            if fabric.is_global_zero:
+                mref = getattr(model, "module", model)
+                counts = getattr(mref, "last_pair_counts", None)  # Tensor[B]
+                if counts is not None and counts.numel() > 0:
+                    n = counts.numel()
+                    k25 = max(1, int(0.25 * n))
+                    k75 = max(1, int(0.75 * n))
+                    print(
+                        "mapped pairs:",
+                        f"min={counts.min().item()}",
+                        f"p25={counts.kthvalue(k25).values.item()}",
+                        f"median={counts.median().item()}",
+                        f"p75={counts.kthvalue(k75).values.item()}",
+                        f"max={counts.max().item()}",
+                        f"mean={counts.float().mean().item():.2f}",
+                    )
+
             for idx in range(outputs.shape[0]):
                 all_train_prediction_data.append({
                     "Sample_Index": batch_idx * outputs.shape[0] + idx,
@@ -504,6 +522,23 @@ def main(fabric: Fabric):
 
         # VALIDATION PHASE replaced by function
         val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
+        # --- Debug: mapping density stats (# mapped pairs per sample) ---
+        if fabric.is_global_zero:
+            mref = getattr(model, "module", model)
+            counts = getattr(mref, "last_pair_counts", None)  # Tensor[B]
+            if counts is not None and counts.numel() > 0:
+                n = counts.numel()
+                k25 = max(1, int(0.25 * n))
+                k75 = max(1, int(0.75 * n))
+                print(
+                    "mapped pairs:",
+                    f"min={counts.min().item()}",
+                    f"p25={counts.kthvalue(k25).values.item()}",
+                    f"median={counts.median().item()}",
+                    f"p75={counts.kthvalue(k75).values.item()}",
+                    f"max={counts.max().item()}",
+                    f"mean={counts.float().mean().item():.2f}",
+                )
         val_loss = val_results["val_loss"]
         val_mae = val_results["val_mae"]
         val_mse = val_results["val_mse"]

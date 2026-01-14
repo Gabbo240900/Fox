@@ -98,11 +98,11 @@ class Cophyloformer(nn.Module):
 
         self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
 
-        # --- sim_time modulation disabled ---
-        # self.sim_time_fc = nn.Sequential(
-        #     nn.Linear(1, hidden_dim * 2),
-        #     nn.Identity()
-        # )
+        #--- sim_time modulation disabled ---
+        self.sim_time_fc = nn.Sequential(
+            nn.Linear(1, hidden_dim * 2),
+            nn.Identity()
+        )
         self.concat_dim = 3 * hidden_dim
         self.cospeciation_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
@@ -167,15 +167,15 @@ class Cophyloformer(nn.Module):
         attended_pairs = mapped_pair_features
 
         # --- sim_time modulation disabled ---
-        # if sim_time is not None:
-        #     gamma_beta = self.sim_time_fc(sim_time)  # (B, 2 * hidden_dim)
-        #     scale, shift = gamma_beta.chunk(2, dim=-1)  # (B, hidden_dim), (B, hidden_dim)
-        #
-        #     base = attended_pairs[:, :hidden_dim]
-        #     rest = attended_pairs[:, hidden_dim:]
-        #
-        #     modulated = base * (1 + scale) + shift
-        #     attended_pairs = torch.cat([modulated, rest], dim=-1)
+        if sim_time is not None:
+            gamma_beta = self.sim_time_fc(sim_time)  # (B, 2 * hidden_dim)
+            scale, shift = gamma_beta.chunk(2, dim=-1)  # (B, hidden_dim), (B, hidden_dim)
+        
+            base = attended_pairs[:, :hidden_dim]
+            rest = attended_pairs[:, hidden_dim:]
+        
+            modulated = base * (1 + scale) + shift
+            attended_pairs = torch.cat([modulated, rest], dim=-1)
 
         out_cospeciation = self.cospeciation_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)

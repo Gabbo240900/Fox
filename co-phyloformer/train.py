@@ -78,7 +78,7 @@ class LazyCophyloformerDataset(Dataset):
         )
 
         # --- sim_time disabled ---
-        # sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 1.0)], dtype=torch.float32)
+        sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 1.0)], dtype=torch.float32)
         return {
             "host_msa": torch.stack([
                 mask_sequence(encode_sequence(seq), mask_prob=0.1)
@@ -90,7 +90,7 @@ class LazyCophyloformerDataset(Dataset):
             ]),
             "mappings": valid_mappings,
             "labels": labels,
-            # "sim_time": sim_time,  # --- sim_time disabled ---
+            "sim_time": sim_time  # --- sim_time disabled ---
         }
 def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir, filename, batch_idx=None):
     """Save model and optimizer state."""
@@ -126,7 +126,7 @@ def collate_fn(batch):
     labels = torch.stack([sample["labels"] for sample in batch])
     mappings = [sample["mappings"] for sample in batch]  
     # --- sim_time disabled ---
-    # sim_time = torch.stack([sample["sim_time"] for sample in batch])
+    sim_time = torch.stack([sample["sim_time"] for sample in batch])
 
     #  Fix: Ensure consistent padding for batch processing 
     max_host_len = max(m.shape[0] for m in host_msas)
@@ -143,7 +143,7 @@ def collate_fn(batch):
         "parasite_msa": parasite_msas,
         "labels": labels,
         "mappings": mappings,  
-        # "sim_time": sim_time,  # --- sim_time disabled ---
+        "sim_time": sim_time,  # --- sim_time disabled ---
     }
 
 
@@ -204,6 +204,7 @@ def main(fabric: Fabric):
     wd = 0
     
     criterion = nn.L1Loss(reduction='none')  
+    criterion = nn.HuberLoss(reduction='none', delta=1.0)
     # criterion = nn.MSELoss(reduction='none')
 
     model = Cophyloformer()
@@ -330,7 +331,7 @@ def main(fabric: Fabric):
                 print(f"[Resume] Continuing from epoch {start_epoch+1}, batch {start_batch+1}")
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
-            # batch["sim_time"] = batch["sim_time"].to(device)  # --- sim_time disabled ---
+            batch["sim_time"] = batch["sim_time"].to(device)  # --- sim_time disabled ---
             batch["labels"] = batch["labels"].to(device)
             optimizer.zero_grad(set_to_none=True)
 
@@ -338,7 +339,7 @@ def main(fabric: Fabric):
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                None,  # --- sim_time disabled ---
+                batch['sim_time'],  # --- sim_time disabled ---
             )
 
             for idx in range(outputs.shape[0]):

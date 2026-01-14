@@ -83,6 +83,43 @@ class MSAEncoder(nn.Module):
         x = self.final_norm(x)
         return x, x[:, 0]
 
+class HeadPairEncoder(nn.Module):
+    """Per-head lightweight Transformer + attention pooling over mapped pair features."""
+    def __init__(self, d_model: int, num_heads: int, num_layers: int = 2, ff_mult: int = 4):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+
+        self.in_norm = nn.LayerNorm(d_model)
+
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=num_heads,
+            dim_feedforward=d_model * ff_mult,
+            activation="gelu",
+            batch_first=True,
+            dropout=0.0,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
+
+        # Learned attention pooling
+        self.pool_score = nn.Linear(d_model, 1)
+        self.out_norm = nn.LayerNorm(d_model)
+
+    def forward(self, pair_seq: torch.Tensor) -> torch.Tensor:
+        """
+        pair_seq: (1, L, d_model) for a single sample (we loop per-sample anyway)
+        returns: (d_model,)
+        """
+        x = self.in_norm(pair_seq)
+        x = self.encoder(x)  # (1, L, d_model)
+
+        scores = self.pool_score(x).squeeze(-1)  # (1, L)
+        weights = torch.softmax(scores, dim=-1).unsqueeze(-1)  # (1, L, 1)
+        pooled = (x * weights).sum(dim=1).squeeze(0)  # (d_model,)
+        return self.out_norm(pooled)
+
 class Cophyloformer(nn.Module):
     def __init__(self, hidden_dim=896, num_layers=16, num_heads=8):
         super(Cophyloformer, self).__init__()
@@ -104,6 +141,9 @@ class Cophyloformer(nn.Module):
         #     nn.Identity()
         # )
         self.concat_dim = 3 * hidden_dim
+        # Each head gets its own small Transformer + attention pooling over mapped pair features
+        self.cospec_pair_encoder = HeadPairEncoder(d_model=self.concat_dim, num_heads=num_heads, num_layers=2)
+        self.switch_pair_encoder = HeadPairEncoder(d_model=self.concat_dim, num_heads=num_heads, num_layers=2)
         self.cospeciation_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
             nn.Linear(self.concat_dim, hidden_dim),
@@ -133,7 +173,9 @@ class Cophyloformer(nn.Module):
 
         batch_size = host_msa.shape[0]
         hidden_dim = host_emb.shape[-1]
-        mapped_pair_features = torch.zeros(batch_size, hidden_dim * 3, device=host_msa.device)
+
+        cospec_features = torch.zeros(batch_size, self.concat_dim, device=host_msa.device)
+        switch_features = torch.zeros(batch_size, self.concat_dim, device=host_msa.device)
 
         for i, mapping in enumerate(mappings):
             # Always include CLS↔CLS as a global pair
@@ -149,22 +191,18 @@ class Cophyloformer(nn.Module):
                     parasite_nodes.append(parasite_emb[i, p])
 
             # Build sequences with length = number of pairs so attention is non-degenerate
-            host_seq = torch.stack(host_nodes, dim=0).unsqueeze(0)      # (1, L, D)
+            host_seq = torch.stack(host_nodes, dim=0).unsqueeze(0)          # (1, L, D)
             parasite_seq = torch.stack(parasite_nodes, dim=0).unsqueeze(0)  # (1, L, D)
 
-            cross_attended, _ = self.cross_attention(
-                host_seq, parasite_seq, parasite_seq
-            )  # (1, L, D)
+            # Cross-attend host pairs to parasite pairs (token-wise)
+            cross_attended, _ = self.cross_attention(host_seq, parasite_seq, parasite_seq)  # (1, L, D)
 
-            pooled = torch.cat([
-                host_seq.mean(dim=1).squeeze(0),
-                parasite_seq.mean(dim=1).squeeze(0),
-                cross_attended.mean(dim=1).squeeze(0)
-            ], dim=-1)  # (3*hidden_dim)
+            # Token-wise pair features: (1, L, 3D)
+            pair_seq = torch.cat([host_seq, parasite_seq, cross_attended], dim=-1)  # (1, L, 3*D)
 
-            mapped_pair_features[i] = pooled
-
-        attended_pairs = mapped_pair_features
+            # Each head gets its own Transformer+pooling over the pair sequence
+            cospec_features[i] = self.cospec_pair_encoder(pair_seq)
+            switch_features[i] = self.switch_pair_encoder(pair_seq)
 
         # --- sim_time modulation disabled ---
         # if sim_time is not None:
@@ -177,8 +215,8 @@ class Cophyloformer(nn.Module):
         #     modulated = base * (1 + scale) + shift
         #     attended_pairs = torch.cat([modulated, rest], dim=-1)
 
-        out_cospeciation = self.cospeciation_head(attended_pairs)
-        out_switch = self.switch_head(attended_pairs)
+        out_cospeciation = self.cospeciation_head(cospec_features)
+        out_switch = self.switch_head(switch_features)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
         outputs = torch.sigmoid(outputs)
         return outputs

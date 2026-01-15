@@ -329,6 +329,9 @@ def main(fabric: Fabric):
                 continue
             elif epoch == start_epoch and batch_idx == start_batch:
                 print(f"[Resume] Continuing from epoch {start_epoch+1}, batch {start_batch+1}")
+            # Guard: skip empty batches returned by collate_fn
+            if batch is None:
+                continue
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
             batch["sim_time"] = batch["sim_time"].to(device)  # --- sim_time disabled ---
@@ -351,10 +354,18 @@ def main(fabric: Fabric):
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
-            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
+            # DDP-safe loss: use SUM on each rank, then divide by global sample count.
+            # This avoids rank-imbalance when your collate_fn drops invalid samples (variable batch sizes per rank).
+            local_bs = batch["labels"].shape[0]
+            loss_sum_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).sum()
+            loss_sum_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).sum()
+            loss_sum = loss_sum_cospeciation + loss_sum_switches
 
-            total_loss_tensor = loss_cospeciation + loss_switches
+            # Global number of samples across ranks for this step
+            local_bs_t = torch.tensor(float(local_bs), device=device)
+            global_bs = fabric.all_reduce(local_bs_t, reduce_op="sum").clamp(min=1.0)
+
+            total_loss_tensor = loss_sum / global_bs
 
 
             fabric.backward(total_loss_tensor)
@@ -401,7 +412,8 @@ def main(fabric: Fabric):
                     )
                     print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
 
-            total_loss += total_loss_tensor.item()
+            # Log a comparable per-sample loss
+            total_loss += float(total_loss_tensor.detach().item())
             num_batches += 1
 
             with torch.no_grad():

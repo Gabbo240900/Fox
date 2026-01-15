@@ -13,19 +13,19 @@ import os
 from plot import plot_event_metric_over_epochs, plot_epoch_loss_curve, plot_labels_vs_predictions
 from sklearn.model_selection import train_test_split
 from transformers import get_linear_schedule_with_warmup
+
 from tqdm import tqdm
 from itertools import islice
+
 import wandb
 from lightning.fabric import Fabric
 from lightning.fabric.utilities.seed import seed_everything
 from lightning.fabric.strategies import DDPStrategy
-from validation import run_full_validation, compute_val_predictions
+
 import glob
 
-# BEST CONFIGURATION SO FAR FOR SMALL DATASETS
-# Log host switch 
-#try new overfitting example again 
-
+# sotre loss more often than once every epoch 
+#try 1e-4 also for batch size 48
 torch.set_float32_matmul_precision('high')
 
 seed_everything(42)
@@ -48,7 +48,8 @@ class LazyCophyloformerDataset(Dataset):
         pt_path = self.pt_files[idx]
         sample = torch.load(pt_path, map_location="cpu", weights_only=False)
 
-        def mask_sequence(sequence, mask_prob=0.1 , mask_token=23):
+        # Define mask_sequence inside __getitem__
+        def mask_sequence(sequence, mask_prob=0.1, mask_token=22):
             masked = []
             for aa in sequence:
                 if torch.rand(1).item() < mask_prob:
@@ -72,17 +73,12 @@ class LazyCophyloformerDataset(Dataset):
             if p in parasite_idx_map and h in host_idx_map
         ]
 
-        # Skip samples with no valid host-parasite mappings (avoids unused-parameter branches in DDP)
-        if len(valid_mappings) == 0:
-            return None
-
         labels = torch.tensor(
             [sample["event_frequencies"].get(event, 0.0) for event in event_names],
             dtype=torch.float32,
         )
 
-        # --- sim_time disabled ---
-        sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 1.0)], dtype=torch.float32)
+        sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 0.0)], dtype=torch.float32)
         return {
             "host_msa": torch.stack([
                 mask_sequence(encode_sequence(seq), mask_prob=0.1)
@@ -94,7 +90,7 @@ class LazyCophyloformerDataset(Dataset):
             ]),
             "mappings": valid_mappings,
             "labels": labels,
-            "sim_time": sim_time  # --- sim_time disabled ---
+            "sim_time": sim_time,
         }
 def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir, filename, batch_idx=None):
     """Save model and optimizer state."""
@@ -125,19 +121,21 @@ def collate_fn(batch):
     batch = [b for b in batch if b is not None]
     if len(batch) == 0:
         return None
-    host_msas = [sample["host_msa"] for sample in batch]
-    parasite_msas = [sample["parasite_msa"] for sample in batch]
+    host_msas = [torch.cat([torch.full((1, sample["host_msa"].shape[1]), 22), sample["host_msa"]], dim=0) for sample in batch]
+    parasite_msas = [torch.cat([torch.full((1, sample["parasite_msa"].shape[1]), 22), sample["parasite_msa"]], dim=0) for sample in batch]
     labels = torch.stack([sample["labels"] for sample in batch])
     mappings = [sample["mappings"] for sample in batch]  
-    # --- sim_time disabled ---
     sim_time = torch.stack([sample["sim_time"] for sample in batch])
+    sim_time_min = sim_time.min()
+    sim_time_max = sim_time.max()
+    sim_time = (sim_time - sim_time_min) / (sim_time_max - sim_time_min + 1e-8)
 
     #  Fix: Ensure consistent padding for batch processing 
     max_host_len = max(m.shape[0] for m in host_msas)
     max_parasite_len = max(m.shape[0] for m in parasite_msas)
 
-    host_msas = [F.pad(m, (0, 0, 0, max_host_len - m.shape[0]), value=22) for m in host_msas]
-    parasite_msas = [F.pad(m, (0, 0, 0, max_parasite_len - m.shape[0]), value=22) for m in parasite_msas]
+    host_msas = [F.pad(m, (0, 0, 0, max_host_len - m.shape[0]), value=0) for m in host_msas]
+    parasite_msas = [F.pad(m, (0, 0, 0, max_parasite_len - m.shape[0]), value=0) for m in parasite_msas]
 
     host_msas = torch.stack(host_msas)
     parasite_msas = torch.stack(parasite_msas)
@@ -147,21 +145,23 @@ def collate_fn(batch):
         "parasite_msa": parasite_msas,
         "labels": labels,
         "mappings": mappings,  
-        "sim_time": sim_time,  # --- sim_time disabled ---
+        "sim_time": sim_time,
     }
 
 
 def encode_sequence(sequence, max_len=128):
     """ Convert an MSA sequence string into a numerical tensor (simple one-hot encoding). """
-    amino_acids = "ACDEFGHIKLMNPQRSTVWY-"  # 21 tokens: 20 AAs + gap
+    amino_acids = "ACDEFGHIKLMNPQRSTVWY-"  # Standard amino acids + gap
     aa_to_index = {aa: i for i, aa in enumerate(amino_acids)}
+    padding_token = 22  # Ensure padding has a consistent index
 
-    UNK_ID = 21
-    PAD_ID = 22
+    encoded = [aa_to_index.get(aa, padding_token) for aa in sequence[:max_len]]
 
-    encoded = [aa_to_index.get(aa, UNK_ID) for aa in sequence[:max_len]]
-    encoded += [PAD_ID] * (max_len - len(encoded))
+    # Pad to max length
+    encoded += [padding_token] * (max_len - len(encoded))
+
     return torch.tensor(encoded, dtype=torch.long)
+
 
 def main(fabric: Fabric):
     # Load Data

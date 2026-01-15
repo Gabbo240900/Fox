@@ -6,7 +6,7 @@ from torch.utils.checkpoint import checkpoint_sequential
 
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=896, num_layers=8, num_heads=8):
+    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
@@ -20,8 +20,8 @@ class MSAEncoder(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)  # Reduce from 8 to 4 layers
         self.norm = nn.LayerNorm(hidden_dim)  # Stabilize training
-        #self.dropout = nn.Dropout(0.1)
-        self.mask_token_id = 23
+        self.dropout = nn.Dropout(0.1)
+        self.mask_token_id = 22
         
 
     def forward(self, x):
@@ -34,7 +34,7 @@ class MSAEncoder(nn.Module):
         weights = F.softmax(self.pool_weights(x).squeeze(-1), dim=2)  # (B, N, S)
         x = torch.sum(x * weights.unsqueeze(-1), dim=2)  # (B, N, D)
         x = self.norm(x)
-        #x = self.dropout(x)
+        x = self.dropout(x)
 
         cls_token = torch.zeros(x.size(0), 1, x.size(-1), device=x.device)  # (B, 1, D)
         x = torch.cat([cls_token, x], dim=1)  # (B, N+1, D)
@@ -55,13 +55,13 @@ class MSAEncoder(nn.Module):
 
 
 class Cophyloformer(nn.Module):
-    def __init__(self, hidden_dim=896, num_layers=8, num_heads=8):
+    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):
         super(Cophyloformer, self).__init__()
         # Store hyperparameters for W&B logging
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.num_heads = num_heads
-        #self.dropout = 0.1
+        self.dropout = 0.1
         self.embedding_dim = hidden_dim
         
         self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
@@ -143,5 +143,6 @@ class Cophyloformer(nn.Module):
         out_cospeciation = self.cospeciation_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
-        outputs = torch.sigmoid(outputs)
+        if self.training:
+    	    return outputs  # raw values (unbounded) 
         return outputs.clamp(0.0,1.0)

@@ -13,19 +13,19 @@ import os
 from plot import plot_event_metric_over_epochs, plot_epoch_loss_curve, plot_labels_vs_predictions
 from sklearn.model_selection import train_test_split
 from transformers import get_linear_schedule_with_warmup
-
 from tqdm import tqdm
 from itertools import islice
-
 import wandb
 from lightning.fabric import Fabric
 from lightning.fabric.utilities.seed import seed_everything
 from lightning.fabric.strategies import DDPStrategy
-
+from validation import run_full_validation, compute_val_predictions
 import glob
+# BEST CONFIGURATION SO FAR FOR SMALL DATASETS
+# Log host switch 
+#try new overfitting example again 
 
-# sotre loss more often than once every epoch 
-#try 1e-4 also for batch size 48
+
 torch.set_float32_matmul_precision('high')
 
 seed_everything(42)

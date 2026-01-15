@@ -292,6 +292,9 @@ def main(fabric: Fabric):
     val_smape_history = []
     val_loss_history = []
 
+    val_predictions_data = []  
+    best_step_predictions = None
+
     # Training loop over all batches per epoch (no micro-epochs)
     for epoch in range(start_epoch, epochs):
         steps_per_epoch = len(train_loader)

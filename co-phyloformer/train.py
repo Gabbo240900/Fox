@@ -72,6 +72,10 @@ class LazyCophyloformerDataset(Dataset):
             if p in parasite_idx_map and h in host_idx_map
         ]
 
+        # Skip samples with no valid host-parasite mappings (avoids unused-parameter branches in DDP)
+        if len(valid_mappings) == 0:
+            return None
+
         labels = torch.tensor(
             [sample["event_frequencies"].get(event, 0.0) for event in event_names],
             dtype=torch.float32,
@@ -161,8 +165,8 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/small_preencoded_pt/"
-    #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
+    #preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/small_preencoded_pt/"
+    preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
     indices = list(range(len(dataset)))
@@ -174,7 +178,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 500
 
-    batch_size = 50
+    batch_size = 4
 
     train_loader = DataLoader(
         train_subset,
@@ -362,44 +366,50 @@ def main(fabric: Fabric):
             lr_scheduler.step()
 
             current_step = batch_idx + 1
-            if fabric.is_global_zero and current_step in val_checkpoints:
+            if current_step in val_checkpoints:
+                # IMPORTANT: run validation on ALL ranks to keep DDP in sync.
+                # Only rank 0 logs and writes checkpoints.
                 val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
-                wandb.log({
-                    "train/loss_step": total_loss_tensor.item(),
-                    "lr": optimizer.param_groups[0]['lr'],
-                    "step": epoch * len(train_loader) + batch_idx,
-                    "val/loss_step": val_results["val_loss"],
-                    **{f"val/MAE_step/{event_names[i]}": val_results["val_mae"][i] for i in range(len(event_names))},
-                    **{f"val/MSE_step/{event_names[i]}": val_results["val_mse"][i] for i in range(len(event_names))},
-                    **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
-                    **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))}
-                })
-                ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
-                save_checkpoint(
-                    model,
-                    optimizer,
-                    epoch,
-                    val_results["val_loss"],
-                    checkpoint_dir,
-                    ckpt_name,
-                    batch_idx=batch_idx
-                )
-                print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
-                # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
-                if val_results["val_loss"] < best_val_loss:
-                    best_val_loss = val_results["val_loss"]
-                    val_predictions_data = val_results
-                    ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
+
+                if fabric.is_global_zero:
+                    wandb.log({
+                        "train/loss_step": total_loss_tensor.item(),
+                        "lr": optimizer.param_groups[0]['lr'],
+                        "step": epoch * len(train_loader) + batch_idx,
+                        "val/loss_step": val_results["val_loss"],
+                        **{f"val/MAE_step/{event_names[i]}": val_results["val_mae"][i] for i in range(len(event_names))},
+                        **{f"val/MSE_step/{event_names[i]}": val_results["val_mse"][i] for i in range(len(event_names))},
+                        **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
+                        **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))}
+                    })
+
+                    ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
                     save_checkpoint(
                         model,
                         optimizer,
                         epoch,
-                        best_val_loss,
+                        val_results["val_loss"],
                         checkpoint_dir,
                         ckpt_name,
                         batch_idx=batch_idx
                     )
-                    print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
+                    print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
+
+                    # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
+                    if val_results["val_loss"] < best_val_loss:
+                        best_val_loss = val_results["val_loss"]
+                        val_predictions_data = val_results
+                        ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
+                        save_checkpoint(
+                            model,
+                            optimizer,
+                            epoch,
+                            best_val_loss,
+                            checkpoint_dir,
+                            ckpt_name,
+                            batch_idx=batch_idx
+                        )
+                        print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
 
             total_loss += total_loss_tensor.item()
             num_batches += 1
@@ -656,7 +666,7 @@ if __name__ == "__main__":
         devices="auto",
         precision="bf16-mixed",
         strategy=DDPStrategy(
-            find_unused_parameters=False,
+            find_unused_parameters=True,
         )
     )
     fabric.launch(main)

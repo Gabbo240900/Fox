@@ -354,18 +354,10 @@ def main(fabric: Fabric):
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            # DDP-safe loss: use SUM on each rank, then divide by global sample count.
-            # This avoids rank-imbalance when your collate_fn drops invalid samples (variable batch sizes per rank).
-            local_bs = batch["labels"].shape[0]
-            loss_sum_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).sum()
-            loss_sum_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).sum()
-            loss_sum = loss_sum_cospeciation + loss_sum_switches
+            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
+            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
 
-            # Global number of samples across ranks for this step
-            local_bs_t = torch.tensor(float(local_bs), device=device)
-            global_bs = fabric.all_reduce(local_bs_t, reduce_op="sum").clamp(min=1.0)
-
-            total_loss_tensor = loss_sum / global_bs
+            total_loss_tensor = loss_cospeciation + loss_switches
 
 
             fabric.backward(total_loss_tensor)
@@ -412,8 +404,7 @@ def main(fabric: Fabric):
                     )
                     print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
 
-            # Log a comparable per-sample loss
-            total_loss += float(total_loss_tensor.detach().item())
+            total_loss += total_loss_tensor.item()
             num_batches += 1
 
             with torch.no_grad():

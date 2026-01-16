@@ -17,10 +17,10 @@ module load pytorch-gpu/py3/2.4.0
 module load miniforge/24.9.0
 conda activate cophylo
 
-python pt_to_tgl.py \
+python de_encode.py \
   --in_dir /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/extreme_cosp_data/cosp_0 \
   --out_dir /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/extreme_cosp_data_tgl/cosp_0
 
-python pt_to_tgl.py \
+python de_encode.py \
   --in_dir /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/extreme_cosp_data/cosp_1 \
   --out_dir /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/extreme_cosp_data_tgl/cosp_1

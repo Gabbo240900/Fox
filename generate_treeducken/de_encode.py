@@ -4,116 +4,95 @@ import glob
 import argparse
 import torch
 
-def _pick(d, keys):
-    for k in keys:
-        if k in d and d[k] is not None:
-            return d[k]
-    return None
 
-def _as_newick(x):
-    if x is None:
-        return None
-    if isinstance(x, str):
-        return x.strip()
-    # sometimes stored as bytes
-    if isinstance(x, (bytes, bytearray)):
-        return x.decode("utf-8").strip()
-    return str(x).strip()
-
-def _normalize_associations(assoc):
+def write_tgl(out_path, host_msas, parasite_msas, mappings, event_frequencies):
     """
-    Return list of (host_leaf, parasite_leaf).
-    Supports:
-      - list of pairs: [("H1","P1"), ...] or [["H1","P1"], ...]
-      - list of dicts: [{"host_leaf":"H1","parasite_leaf":"P1"}, ...]
-      - dict mapping: {"H1":"P1", "H2":"P9", ...}
+    Writes a .tgl compatible with your CophylogenyDataset._parse_tgl_file().
     """
-    if assoc is None:
-        return []
-
-    pairs = []
-
-    if isinstance(assoc, dict):
-        # could be {"H1":"P1"} or {"H1":["P1","P2"]}
-        for h, p in assoc.items():
-            if isinstance(p, (list, tuple)):
-                for pi in p:
-                    pairs.append((str(h), str(pi)))
-            else:
-                pairs.append((str(h), str(p)))
-        return pairs
-
-    if isinstance(assoc, (list, tuple)):
-        for item in assoc:
-            if isinstance(item, dict):
-                h = item.get("host_leaf") or item.get("host") or item.get("h")
-                p = item.get("parasite_leaf") or item.get("parasite") or item.get("p")
-                if h is not None and p is not None:
-                    pairs.append((str(h), str(p)))
-            elif isinstance(item, (list, tuple)) and len(item) >= 2:
-                pairs.append((str(item[0]), str(item[1])))
-        return pairs
-
-    return []
-
-def write_tgl(out_path, host_newick, parasite_newick, associations, event_freqs):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    # Ensure deterministic ordering (nice for diffs)
+    host_items = sorted(host_msas.items(), key=lambda x: x[0])
+    para_items = sorted(parasite_msas.items(), key=lambda x: x[0])
+
+    # mappings expected as list of (parasite, host)
+    # ensure strings, and keep only P\d / H\d style if you want strictness
+    cleaned_mappings = []
+    for p, h in mappings:
+        p = str(p).strip().strip(",")
+        h = str(h).strip().strip(",")
+        cleaned_mappings.append((p, h))
+
     with open(out_path, "w") as f:
-        f.write("# HOST_TREE\n")
-        f.write((host_newick or "") + ("\n" if (host_newick or "").endswith("\n") else "\n"))
-        f.write("\n# PARASITE_TREE\n")
-        f.write((parasite_newick or "") + ("\n" if (parasite_newick or "").endswith("\n") else "\n"))
+        # ---- HOST ----
+        f.write("BEGIN HOST;\n")
+        # Optional: frequencies can be anywhere; your parser scans all lines
+        if "Cospeciations" in event_frequencies:
+            f.write(f"Cospeciations {event_frequencies['Cospeciations']}\n")
+        if "Host_spread/Switches" in event_frequencies:
+            f.write(f"Host_Spread/Switches {event_frequencies['Host_spread/Switches']}\n")
+        if "Sim_time" in event_frequencies:
+            f.write(f"Sim_time {event_frequencies['Sim_time']}\n")
 
-        f.write("\n# ASSOCIATIONS (host, parasite)\n")
-        for h, p in associations:
-            f.write(f"{h},{p}\n")
+        for sp, seq in host_items:
+            f.write(f"{sp} {seq}\n")
+        f.write("ENDBLOCK;\n\n")
 
-        if isinstance(event_freqs, dict) and len(event_freqs) > 0:
-            f.write("\n# EVENT_FREQUENCIES\n")
-            for k, v in event_freqs.items():
-                f.write(f"{k}:{v}\n")
+        # ---- PARASITE ----
+        f.write("BEGIN PARASITE;\n")
+        for sp, seq in para_items:
+            f.write(f"{sp} {seq}\n")
+        f.write("ENDBLOCK;\n\n")
+
+        # ---- DISTRIBUTION / MAPPING ----
+        f.write("BEGIN DISTRIBUTION;\n")
+        # Your parser expects: "P123: H45"
+        for p, h in cleaned_mappings:
+            f.write(f"{p}: {h}\n")
+        f.write("ENDBLOCK;\n")
+
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--in_dir", required=True, help="Folder containing .pt files")
-    ap.add_argument("--out_dir", required=True, help="Output folder for .tgl files")
+    ap.add_argument("--in_dir", required=True, help="Directory containing .pt files")
+    ap.add_argument("--out_dir", required=True, help="Directory to write .tgl files")
+    ap.add_argument("--pattern", default="*.pt", help="Glob pattern (default: *.pt)")
     args = ap.parse_args()
 
-    pt_files = sorted(glob.glob(os.path.join(args.in_dir, "*.pt")))
+    pt_files = sorted(glob.glob(os.path.join(args.in_dir, args.pattern)))
     if not pt_files:
-        raise SystemExit(f"No .pt files found in: {args.in_dir}")
+        raise SystemExit(f"No .pt files found in {args.in_dir} with pattern {args.pattern}")
 
-    n_ok = 0
-    n_skip = 0
+    ok = 0
+    skip = 0
 
-    for pt in pt_files:
+    for pt_path in pt_files:
         try:
-            sample = torch.load(pt, map_location="cpu", weights_only=False)
+            s = torch.load(pt_path, map_location="cpu", weights_only=False)
         except Exception as e:
-            print(f"[SKIP] {pt} (torch.load failed: {e})")
-            n_skip += 1
+            print(f"[SKIP] {pt_path} (load failed: {e})")
+            skip += 1
             continue
 
-        host_newick = _as_newick(_pick(sample, ["host_newick", "host_tree_newick", "host_tree"]))
-        parasite_newick = _as_newick(_pick(sample, ["parasite_newick", "parasite_tree_newick", "parasite_tree"]))
+        # Required by your pipeline
+        host_msas = s.get("host_msas", None)
+        parasite_msas = s.get("parasite_msas", None)
+        mappings = s.get("mappings", None)
+        event_frequencies = s.get("event_frequencies", {}) or {}
 
-        assoc_raw = _pick(sample, ["associations", "mapping", "host_parasite_mapping", "links"])
-        associations = _normalize_associations(assoc_raw)
-
-        event_freqs = _pick(sample, ["event_frequencies", "events", "rates"])
-
-        # Hard requirement to rebuild a meaningful .tgl:
-        if not host_newick or not parasite_newick or len(associations) == 0:
-            print(f"[SKIP] {os.path.basename(pt)} missing host/parasite/mapping in .pt")
-            n_skip += 1
+        if not isinstance(host_msas, dict) or not isinstance(parasite_msas, dict) or mappings is None:
+            print(f"[SKIP] {os.path.basename(pt_path)} missing host_msas/parasite_msas/mappings")
+            skip += 1
             continue
 
-        base = os.path.splitext(os.path.basename(pt))[0]
+        base = os.path.splitext(os.path.basename(pt_path))[0]
         out_path = os.path.join(args.out_dir, base + ".tgl")
-        write_tgl(out_path, host_newick, parasite_newick, associations, event_freqs)
-        n_ok += 1
 
-    print(f"\nDone. Wrote {n_ok} .tgl files. Skipped {n_skip}.")
+        write_tgl(out_path, host_msas, parasite_msas, mappings, event_frequencies)
+        ok += 1
+
+    print(f"\nDone. Wrote {ok} .tgl files. Skipped {skip}.")
+
 
 if __name__ == "__main__":
     main()

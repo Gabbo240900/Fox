@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, re, argparse, numpy as np, csv
+import os, re, argparse, numpy as np, csv, shutil
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -10,6 +10,8 @@ ALIGN_BLOCK_RE = re.compile(
     r"ALIGNMENT\s*\*\s*(?P<label>\w+)\s*=\s*'(?P<body>.*?)'",
     re.DOTALL | re.IGNORECASE,
 )
+
+COSP_RE = re.compile(r"^Cospeciations\s+([\-\d.eE+,]+|NaN)$", re.IGNORECASE | re.MULTILINE)
 
 def parse_align_block(body: str):
     taxa = []
@@ -31,6 +33,17 @@ def parse_align_block(body: str):
 def scan_file(path: str):
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         text = f.read()
+
+        # Extract Cospeciations (if present)
+        cospeciation = None
+        m = COSP_RE.search(text)
+        if m:
+            val_str = m.group(1).strip()
+            if val_str.lower() != "nan":
+                try:
+                    cospeciation = float(val_str.replace(",", "."))
+                except ValueError:
+                    cospeciation = None
 
     # Find all ALIGNMENT blocks
     blocks = ALIGN_BLOCK_RE.findall(text)
@@ -54,6 +67,7 @@ def scan_file(path: str):
     return {
         "host_taxa": host_taxa,
         "parasite_taxa": parasite_taxa,
+        "cospeciation": cospeciation,
     }
 
 def summarize(arr):
@@ -131,6 +145,10 @@ def main():
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 8) // 2),
                     help="Number of threads for parallel parsing (default: half of CPUs)")
     ap.add_argument("--out_dir", default="analysis_plots", help="Directory where PNGs will be written (default: analysis_plots)")
+    ap.add_argument("--extract_extreme_cosp", action="store_true",
+                    help="If set, move datasets with Cospeciations exactly 0 or 1 into an extreme_cosp_data folder")
+    ap.add_argument("--extreme_dir", default="/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/extreme_cosp_data",
+                    help="Destination root for extreme cospeciation datasets (default: Jean-Zay fsn1 path)")
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -138,7 +156,8 @@ def main():
     # Collect all candidate files first
     files_to_scan = []
     for fname in os.listdir(args.root):
-        if any(fname.lower().endswith(e.lower()) for e in 'tgl'):
+        low = fname.lower()
+        if low.endswith(".tgl") or low.endswith(".nex"):
             files_to_scan.append(os.path.join(args.root, fname))
 
     if not files_to_scan:
@@ -166,6 +185,47 @@ def main():
 
     if not rows:
         return
+
+    # Optionally move extreme cospeciation datasets
+    if args.extract_extreme_cosp:
+        c0_dir = os.path.join(args.extreme_dir, "cosp_0")
+        c1_dir = os.path.join(args.extreme_dir, "cosp_1")
+        os.makedirs(c0_dir, exist_ok=True)
+        os.makedirs(c1_dir, exist_ok=True)
+
+        moved0 = moved1 = 0
+        for r in rows:
+            cosp = r.get("cospeciation", None)
+            src = r.get("path")
+            if src is None or cosp is None:
+                continue
+
+            # Exact equality as requested
+            if cosp == 0.0:
+                dst = os.path.join(c0_dir, os.path.basename(src))
+                try:
+                    shutil.move(src, dst)
+                    moved0 += 1
+                    r["path"] = dst
+                except Exception:
+                    # Fallback: copy + remove
+                    shutil.copy2(src, dst)
+                    os.remove(src)
+                    moved0 += 1
+                    r["path"] = dst
+            elif cosp == 1.0:
+                dst = os.path.join(c1_dir, os.path.basename(src))
+                try:
+                    shutil.move(src, dst)
+                    moved1 += 1
+                    r["path"] = dst
+                except Exception:
+                    shutil.copy2(src, dst)
+                    os.remove(src)
+                    moved1 += 1
+                    r["path"] = dst
+
+        print(f"Moved extreme cospeciation datasets: cosp_0={moved0}, cosp_1={moved1} -> {args.extreme_dir}")
 
     host_taxa = [r["host_taxa"] for r in rows if r["host_taxa"] > 0]
     para_taxa = [r["parasite_taxa"] for r in rows if r["parasite_taxa"] > 0]

@@ -10,6 +10,7 @@ import glob
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
 import matplotlib.pyplot as plt
+import shutil
 
 # Investigate cospeciation 1 scenarios - also cospeciation  0
 
@@ -74,6 +75,15 @@ def read_event_frequencies(pt_path):
 label_values = defaultdict(list)
 nan_counts = defaultdict(int)
 
+# =========================
+# Extract extreme cospeciation datasets (exactly 0 or exactly 1)
+# =========================
+EXTREME_COSP_DIR = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/extreme_cosp_data"
+# EXTREME_COSP_DIR = "/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/extreme_cosp_data"
+
+extreme_cosp_0 = []
+extreme_cosp_1 = []
+
 num_samples = len(dataset.pt_files)
 
 if args.workers is not None:
@@ -84,15 +94,26 @@ else:
 print(f"Using {max_workers} threads for label extraction")
 
 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-    futures = [
-        executor.submit(read_event_frequencies, pt_path)
+    future_to_path = {
+        executor.submit(read_event_frequencies, pt_path): pt_path
         for pt_path in dataset.pt_files
-    ]
+    }
 
-    for fut in as_completed(futures):
+    for fut in as_completed(future_to_path):
+        pt_path = future_to_path[fut]
         events = fut.result()
         if not events:
             continue
+
+        # Track extreme cospeciation datasets (exact equality requested)
+        cosp = events.get("Cospeciations", 0.0)
+        if isinstance(cosp, float) and math.isnan(cosp):
+            cosp = 0.0
+        if cosp == 0.0:
+            extreme_cosp_0.append(pt_path)
+        elif cosp == 1.0:
+            extreme_cosp_1.append(pt_path)
+
         # Fill missing labels with 0.0
         for label in EXPECTED_LABELS:
             if label in events:
@@ -279,6 +300,38 @@ if "Cospeciations" in label_values:
 print("\nNaN values replaced with 0.0:")
 for label, cnt in nan_counts.items():
     print(f"  {label}: {cnt}")
+
+# =========================
+# Copy extreme cospeciation datasets into EXTREME_COSP_DIR
+# =========================
+os.makedirs(EXTREME_COSP_DIR, exist_ok=True)
+
+c0_dir = os.path.join(EXTREME_COSP_DIR, "cosp_0")
+c1_dir = os.path.join(EXTREME_COSP_DIR, "cosp_1")
+os.makedirs(c0_dir, exist_ok=True)
+os.makedirs(c1_dir, exist_ok=True)
+
+print("\nExtreme cospeciation extraction:")
+print(f"  Cospeciations == 0.0: {len(extreme_cosp_0)}")
+print(f"  Cospeciations == 1.0: {len(extreme_cosp_1)}")
+
+manifest_csv = os.path.join(EXTREME_COSP_DIR, "manifest.csv")
+with open(manifest_csv, "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["source_pt", "target_pt", "cospeciations_value"])
+
+    for src in extreme_cosp_0:
+        dst = os.path.join(c0_dir, os.path.basename(src))
+        shutil.copy2(src, dst)
+        w.writerow([src, dst, 0.0])
+
+    for src in extreme_cosp_1:
+        dst = os.path.join(c1_dir, os.path.basename(src))
+        shutil.copy2(src, dst)
+        w.writerow([src, dst, 1.0])
+
+print(f"  Copied files into: {EXTREME_COSP_DIR}")
+print(f"  Wrote manifest: {manifest_csv}")
 
 # Optional CSV output
 out_csv = os.path.join("/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/label_analysis/", "test_label_stats.csv")

@@ -20,8 +20,8 @@ conda activate cophylo
 python analyze_trees.py /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final \
   --workers 20 \
   --csv_out /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/trees_analysis/analysis_trees.csv\
-  --out_dir  /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/trees_analysis/
-
+  --out_dir  /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/trees_analysis/ \
+  --extract_extreme_cosp
 
 
 

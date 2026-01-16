@@ -201,7 +201,7 @@ def main():
                 continue
 
             # Exact equality as requested
-            if cosp == 0.0:
+            if cosp == 0.0 | cosp is None | cosp == float('nan'):
                 dst = os.path.join(c0_dir, os.path.basename(src))
                 try:
                     shutil.move(src, dst)

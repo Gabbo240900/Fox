@@ -76,81 +76,6 @@ label_values = defaultdict(list)
 nan_counts = defaultdict(int)
 
 # =========================
-# Extract extreme cospeciation datasets (exactly 0 or exactly 1)
-# =========================
-EXTREME_COSP_DIR = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/extreme_cosp_data"
-# EXTREME_COSP_DIR = "/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/extreme_cosp_data"
-
-extreme_cosp_0 = []
-extreme_cosp_1 = []
-
-num_samples = len(dataset.pt_files)
-
-if args.workers is not None:
-    max_workers = args.workers
-else:
-    max_workers = min(32, os.cpu_count() or 1)
-
-print(f"Using {max_workers} threads for label extraction")
-
-with ThreadPoolExecutor(max_workers=max_workers) as executor:
-    future_to_path = {
-        executor.submit(read_event_frequencies, pt_path): pt_path
-        for pt_path in dataset.pt_files
-    }
-
-    for fut in as_completed(future_to_path):
-        pt_path = future_to_path[fut]
-        events = fut.result()
-        if not events:
-            continue
-
-        # Track extreme cospeciation datasets (exact equality requested)
-        cosp = events.get("Cospeciations", 0.0)
-        if isinstance(cosp, float) and math.isnan(cosp):
-            cosp = 0.0
-        if cosp == 0.0:
-            extreme_cosp_0.append(pt_path)
-        elif cosp == 1.0:
-            extreme_cosp_1.append(pt_path)
-
-        # Fill missing labels with 0.0
-        for label in EXPECTED_LABELS:
-            if label in events:
-                v = events[label]
-                if isinstance(v, float) and math.isnan(v):
-                    nan_counts[label] += 1
-                    v = 0.0
-            else:
-                # Label missing entirely → interpret as 0.0
-                v = 0.0
-                nan_counts[label] += 1
-
-            label_values[label].append(v)
-
-print("\nSanity check (counts should equal number of samples):")
-for label in EXPECTED_LABELS:
-    print(f"  {label}: {len(label_values[label])} / {num_samples}")
-
-def count_values_in_range(values, target, tol=1e-6):
-    """
-    Count how many values fall within [target - tol, target + tol].
-    """
-    arr = np.array(values, dtype=float)
-    return int(np.sum((arr >= target - tol) & (arr <= target + tol)))
-
-stats = {}
-for label, values in label_values.items():
-    arr = np.array(values, dtype=float)
-    stats[label] = {
-        "count": int(arr.size),
-        "mean": float(arr.mean()),
-        "std": float(arr.std()),
-        "min": float(arr.min()),
-        "max": float(arr.max()),
-    }
-
-# =========================
 # Histogram plots (bins of 0.05)
 # =========================
 hist_out_dir = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/label_analysis/test_histograms"
@@ -300,6 +225,82 @@ if "Cospeciations" in label_values:
 print("\nNaN values replaced with 0.0:")
 for label, cnt in nan_counts.items():
     print(f"  {label}: {cnt}")
+
+# =========================
+# Extract extreme cospeciation datasets (exactly 0 or exactly 1)
+# =========================
+EXTREME_COSP_DIR = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/extreme_cosp_data"
+# EXTREME_COSP_DIR = "/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/extreme_cosp_data"
+
+extreme_cosp_0 = []
+extreme_cosp_1 = []
+
+num_samples = len(dataset.pt_files)
+
+if args.workers is not None:
+    max_workers = args.workers
+else:
+    max_workers = min(32, os.cpu_count() or 1)
+
+print(f"Using {max_workers} threads for label extraction")
+
+with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    future_to_path = {
+        executor.submit(read_event_frequencies, pt_path): pt_path
+        for pt_path in dataset.pt_files
+    }
+
+    for fut in as_completed(future_to_path):
+        pt_path = future_to_path[fut]
+        events = fut.result()
+        if not events:
+            continue
+
+        # Track extreme cospeciation datasets (exact equality requested)
+        cosp = events.get("Cospeciations", 0.0)
+        if isinstance(cosp, float) and math.isnan(cosp):
+            cosp = 0.0
+        if cosp == 0.0:
+            extreme_cosp_0.append(pt_path)
+        elif cosp == 1.0:
+            extreme_cosp_1.append(pt_path)
+
+        # Fill missing labels with 0.0
+        for label in EXPECTED_LABELS:
+            if label in events:
+                v = events[label]
+                if isinstance(v, float) and math.isnan(v):
+                    nan_counts[label] += 1
+                    v = 0.0
+            else:
+                # Label missing entirely → interpret as 0.0
+                v = 0.0
+                nan_counts[label] += 1
+
+            label_values[label].append(v)
+
+print("\nSanity check (counts should equal number of samples):")
+for label in EXPECTED_LABELS:
+    print(f"  {label}: {len(label_values[label])} / {num_samples}")
+
+def count_values_in_range(values, target, tol=1e-6):
+    """
+    Count how many values fall within [target - tol, target + tol].
+    """
+    arr = np.array(values, dtype=float)
+    return int(np.sum((arr >= target - tol) & (arr <= target + tol)))
+
+stats = {}
+for label, values in label_values.items():
+    arr = np.array(values, dtype=float)
+    stats[label] = {
+        "count": int(arr.size),
+        "mean": float(arr.mean()),
+        "std": float(arr.std()),
+        "min": float(arr.min()),
+        "max": float(arr.max()),
+    }
+
 
 # =========================
 # Copy extreme cospeciation datasets into EXTREME_COSP_DIR

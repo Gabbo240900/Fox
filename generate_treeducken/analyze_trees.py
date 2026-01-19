@@ -190,29 +190,44 @@ def main():
     if args.extract_extreme_cosp:
         c0_dir = os.path.join(args.extreme_dir, "cosp_0")
         c1_dir = os.path.join(args.extreme_dir, "cosp_1")
+        cnone_dir = os.path.join(args.extreme_dir, "cosp_none")
         os.makedirs(c0_dir, exist_ok=True)
         os.makedirs(c1_dir, exist_ok=True)
+        os.makedirs(cnone_dir, exist_ok=True)
 
-        moved0 = moved1 = 0
+        moved0 = moved1 = moved_none = 0
         for r in rows:
             cosp = r.get("cospeciation", None)
             src = r.get("path")
-            if src is None or cosp is None:
+            if src is None:
                 continue
 
+            # Missing cospeciation
+            if cosp is None:
+                dst = os.path.join(cnone_dir, os.path.basename(src))
+                try:
+                    shutil.move(src, dst)
+                    moved_none += 1
+                    r["path"] = dst
+                except Exception:
+                    shutil.copy2(src, dst)
+                    os.remove(src)
+                    moved_none += 1
+                    r["path"] = dst
+
             # Exact equality as requested
-            if cosp == 0.0 | cosp is None | cosp == float('nan'):
+            elif cosp == 0.0:
                 dst = os.path.join(c0_dir, os.path.basename(src))
                 try:
                     shutil.move(src, dst)
                     moved0 += 1
                     r["path"] = dst
                 except Exception:
-                    # Fallback: copy + remove
                     shutil.copy2(src, dst)
                     os.remove(src)
                     moved0 += 1
                     r["path"] = dst
+
             elif cosp == 1.0:
                 dst = os.path.join(c1_dir, os.path.basename(src))
                 try:
@@ -225,7 +240,10 @@ def main():
                     moved1 += 1
                     r["path"] = dst
 
-        print(f"Moved extreme cospeciation datasets: cosp_0={moved0}, cosp_1={moved1} -> {args.extreme_dir}")
+        print(
+            f"Moved extreme cospeciation datasets: "
+            f"cosp_0={moved0}, cosp_1={moved1}, cosp_none={moved_none} -> {args.extreme_dir}"
+        )
 
     host_taxa = [r["host_taxa"] for r in rows if r["host_taxa"] > 0]
     para_taxa = [r["parasite_taxa"] for r in rows if r["parasite_taxa"] > 0]

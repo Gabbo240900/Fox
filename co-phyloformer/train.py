@@ -24,7 +24,6 @@ import glob
 
 # BEST CONFIGURATION SO FAR FOR SMALL DATASETS
 # Log host switch 
-#try new overfitting example again 
 
 torch.set_float32_matmul_precision('high')
 

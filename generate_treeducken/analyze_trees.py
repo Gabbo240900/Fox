@@ -5,6 +5,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
+import math
 
 ALIGN_BLOCK_RE = re.compile(
     r"ALIGNMENT\s*\*\s*(?P<label>\w+)\s*=\s*'(?P<body>.*?)'",
@@ -197,26 +198,14 @@ def main():
 
         moved0 = moved1 = moved_none = 0
         for r in rows:
-            cosp = r.get("cospeciation", None)
+            cosp = r.get("cospeciation", 0)
+            if isinstance(cosp, float) and math.isnan(cosp):
+                cosp = 0.0
             src = r.get("path")
             if src is None:
                 continue
-
-            # Missing cospeciation
-            if cosp is None:
-                dst = os.path.join(cnone_dir, os.path.basename(src))
-                try:
-                    shutil.move(src, dst)
-                    moved_none += 1
-                    r["path"] = dst
-                except Exception:
-                    shutil.copy2(src, dst)
-                    os.remove(src)
-                    moved_none += 1
-                    r["path"] = dst
-
             # Exact equality as requested
-            elif cosp == 0.0:
+            if cosp == 0.0:
                 dst = os.path.join(c0_dir, os.path.basename(src))
                 try:
                     shutil.move(src, dst)

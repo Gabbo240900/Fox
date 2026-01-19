@@ -14,22 +14,6 @@ import shutil
 
 # Investigate cospeciation 1 scenarios - also cospeciation  0
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 parser = argparse.ArgumentParser(description="Compute mean/std of labels from pre-encoded .pt datasets")
 parser.add_argument(
     "--workers",

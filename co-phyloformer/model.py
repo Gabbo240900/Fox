@@ -44,7 +44,7 @@ class FlashMSAEncoderLayer(nn.Module):
         return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=896, num_layers=16, num_heads=8):# increase embedding and layers reduce batch size 
+    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):# increase embedding and layers reduce batch size 
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
@@ -84,7 +84,7 @@ class MSAEncoder(nn.Module):
         return x, x[:, 0]
 
 class Cophyloformer(nn.Module):
-    def __init__(self, hidden_dim=896, num_layers=16, num_heads=8):
+    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):
         super(Cophyloformer, self).__init__()
         # Store hyperparameters for W&B logging
         self.hidden_dim = hidden_dim
@@ -133,38 +133,83 @@ class Cophyloformer(nn.Module):
 
         batch_size = host_msa.shape[0]
         hidden_dim = host_emb.shape[-1]
-        mapped_pair_features = torch.zeros(batch_size, hidden_dim * 3, device=host_msa.device)
 
+        # --- Batched cross-attention over variable-length (host, parasite) mapped pairs ---
+        # We pad to L_max within the batch and use key_padding_mask so attention ignores padding.
+        # This removes the per-sample Python loop around MultiheadAttention (major speedup on multi-GPU).
+
+        # Compute per-sample lengths: always include CLS↔CLS plus valid mapping pairs
+        lengths = []
+        valid_pairs_per_sample = []
         for i, mapping in enumerate(mappings):
-            # Always include CLS↔CLS as a global pair
-            host_nodes = [host_emb[i, 0]]
-            parasite_nodes = [parasite_emb[i, 0]]
-
-            # Add leaf↔leaf pairs from mappings (leaf indices start at 0, but embeddings have CLS at 0)
+            pairs = []
             for h_idx, p_idx in mapping:
-                h = h_idx + 1
+                h = h_idx + 1  # +1 because CLS is at position 0
                 p = p_idx + 1
                 if 0 <= h < host_emb.shape[1] and 0 <= p < parasite_emb.shape[1]:
-                    host_nodes.append(host_emb[i, h])
-                    parasite_nodes.append(parasite_emb[i, p])
+                    pairs.append((h, p))
+            valid_pairs_per_sample.append(pairs)
+            lengths.append(1 + len(pairs))  # +1 for CLS↔CLS
 
-            # Build sequences with length = number of pairs so attention is non-degenerate
-            host_seq = torch.stack(host_nodes, dim=0).unsqueeze(0)      # (1, L, D)
-            parasite_seq = torch.stack(parasite_nodes, dim=0).unsqueeze(0)  # (1, L, D)
+        L_max = max(lengths) if lengths else 1
 
-            cross_attended, _ = self.cross_attention(
-                host_seq, parasite_seq, parasite_seq
-            )  # (1, L, D)
+        host_seq_batch = torch.zeros(
+            batch_size, L_max, hidden_dim,
+            device=host_emb.device,
+            dtype=host_emb.dtype,
+        )
+        parasite_seq_batch = torch.zeros(
+            batch_size, L_max, hidden_dim,
+            device=parasite_emb.device,
+            dtype=parasite_emb.dtype,
+        )
 
-            pooled = torch.cat([
-                host_seq.mean(dim=1).squeeze(0),
-                parasite_seq.mean(dim=1).squeeze(0),
-                cross_attended.mean(dim=1).squeeze(0)
-            ], dim=-1)  # (3*hidden_dim)
+        # valid_mask: True where token is real, False where it is padding
+        valid_mask = torch.zeros(
+            batch_size, L_max,
+            device=host_emb.device,
+            dtype=torch.bool,
+        )
 
-            mapped_pair_features[i] = pooled
+        # Fill CLS↔CLS at position 0 for all samples
+        host_seq_batch[:, 0] = host_emb[:, 0]
+        parasite_seq_batch[:, 0] = parasite_emb[:, 0]
+        valid_mask[:, 0] = True
 
-        attended_pairs = mapped_pair_features
+        # Fill mapped leaf↔leaf pairs
+        for i, pairs in enumerate(valid_pairs_per_sample):
+            pos = 1
+            for h, p in pairs:
+                if pos >= L_max:
+                    break
+                host_seq_batch[i, pos] = host_emb[i, h]
+                parasite_seq_batch[i, pos] = parasite_emb[i, p]
+                valid_mask[i, pos] = True
+                pos += 1
+
+        # key_padding_mask expects True for positions that should be ignored
+        key_padding_mask = ~valid_mask  # (B, L_max)
+
+        cross_attended, _ = self.cross_attention(
+            host_seq_batch,
+            parasite_seq_batch,
+            parasite_seq_batch,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+        )  # (B, L_max, D)
+
+        def masked_mean(x, mask):
+            # x: (B, L, D), mask: (B, L) with True for valid
+            mask_f = mask.unsqueeze(-1).to(dtype=x.dtype)
+            summed = (x * mask_f).sum(dim=1)
+            denom = mask_f.sum(dim=1).clamp(min=1.0)
+            return summed / denom
+
+        host_pooled = masked_mean(host_seq_batch, valid_mask)          # (B, D)
+        parasite_pooled = masked_mean(parasite_seq_batch, valid_mask)  # (B, D)
+        cross_pooled = masked_mean(cross_attended, valid_mask)         # (B, D)
+
+        attended_pairs = torch.cat([host_pooled, parasite_pooled, cross_pooled], dim=-1)  # (B, 3*D)
 
         # --- sim_time modulation disabled ---
         if sim_time is not None:

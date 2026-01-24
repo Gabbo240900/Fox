@@ -198,14 +198,44 @@ def main():
 
         moved0 = moved1 = moved_none = 0
         for r in rows:
-            cosp = r.get("cospeciation", 0)
-            if isinstance(cosp, float) and math.isnan(cosp):
-                cosp = 0.0
+            cosp = r.get("cospeciation", None)
             src = r.get("path")
             if src is None:
                 continue
-            # Exact equality as requested
-            if cosp == 0.0:
+
+            # Treat missing/NaN cospeciation as "none"
+            if cosp is None or (isinstance(cosp, float) and math.isnan(cosp)):
+                dst = os.path.join(cnone_dir, os.path.basename(src))
+                try:
+                    shutil.move(src, dst)
+                    moved_none += 1
+                    r["path"] = dst
+                except Exception:
+                    shutil.copy2(src, dst)
+                    os.remove(src)
+                    moved_none += 1
+                    r["path"] = dst
+                continue
+
+            # Numerical comparisons (with small tolerance)
+            try:
+                cosp_f = float(cosp)
+            except Exception:
+                # If it cannot be parsed, treat as none
+                dst = os.path.join(cnone_dir, os.path.basename(src))
+                try:
+                    shutil.move(src, dst)
+                    moved_none += 1
+                    r["path"] = dst
+                except Exception:
+                    shutil.copy2(src, dst)
+                    os.remove(src)
+                    moved_none += 1
+                    r["path"] = dst
+                continue
+
+            eps = 1e-12
+            if abs(cosp_f - 0.0) <= eps:
                 dst = os.path.join(c0_dir, os.path.basename(src))
                 try:
                     shutil.move(src, dst)
@@ -217,7 +247,7 @@ def main():
                     moved0 += 1
                     r["path"] = dst
 
-            elif cosp == 1.0:
+            elif abs(cosp_f - 1.0) <= eps:
                 dst = os.path.join(c1_dir, os.path.basename(src))
                 try:
                     shutil.move(src, dst)

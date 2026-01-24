@@ -144,8 +144,8 @@ class Cophyloformer(nn.Module):
         for i, mapping in enumerate(mappings):
             pairs = []
             for h_idx, p_idx in mapping:
-                h = h_idx + 1  # +1 because CLS is at position 0
-                p = p_idx + 1
+                h = h_idx  # +1 because CLS is at position 0
+                p = p_idx 
                 if 0 <= h < host_emb.shape[1] and 0 <= p < parasite_emb.shape[1]:
                     pairs.append((h, p))
             valid_pairs_per_sample.append(pairs)

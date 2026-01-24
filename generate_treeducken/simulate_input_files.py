@@ -47,19 +47,23 @@ class GenerateTGLFiles:
         symb_file = f"/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/symb_tree/symb_tree_{sim_index}.nwk"
         assoc_file = f"/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/associations/association_{sim_index}.csv"
         summary_file = f"/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/summaries/summary_{sim_index}.csv"
+        
+        # host_file = f"/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/host_tree/host_tree_{sim_index}.nwk"
+        # symb_file = f"/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/symb_tree/symb_tree_{sim_index}.nwk"
+        # assoc_file = f"/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/associations/association_{sim_index}.csv"
+        # summary_file = f"/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/summaries/summary_{sim_index}.csv"
 
         if not all(os.path.exists(f) for f in [host_file, symb_file, assoc_file, summary_file]):
             print(f"[WARN] One or more files missing for sim_index {sim_index}, skipping TGL generation.")
             return
         
         with open(host_file) as f:
-            host_tree = f.read().strip()
-        # Replace 'X' with 'H' in host_tree
-        host_tree = host_tree.replace('X', 'H')
+            host_tree = f.read().strip() 
+        host_tree = host_tree.replace('X', '')
         with open(symb_file) as f:
             symb_tree = f.read().strip()
         # Replace 'X' with 'P' and 'S' with 'P' in symb_tree
-        symb_tree = symb_tree.replace('X', 'P')
+        symb_tree = symb_tree.replace('X', '')
         symb_tree = symb_tree.replace('S', 'P')
         assoc_df = pd.read_csv(assoc_file)
         # Replace 'S' with 'P' in symbiont and host columns
@@ -73,7 +77,10 @@ class GenerateTGLFiles:
         event_keys = [
             "Cospeciations",
             "Host_Spread/Switches",
-            "Symbiont_Speciations"
+            "Symbiont_Speciations",
+            'Host_Speciations',
+            "Host_Extinctions",
+            "Symbiont_Extinctions"
         ]
         total_events = summary_df[event_keys].sum()
         for key in event_keys:
@@ -107,8 +114,10 @@ END;
 {summary_df.to_string(index=True, header=False)}
 """
         out_dir = '/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Datasets'
+        #out_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/Datasets'
         os.makedirs(out_dir, exist_ok=True)
         out_path = os.path.join('/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Datasets', f'Dataset{sim_index}.tgl')
+        #out_path = os.path.join('/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/Datasets', f'Dataset{sim_index}.tgl')
         with open(out_path, 'w') as out_file:
             out_file.write(content)
 

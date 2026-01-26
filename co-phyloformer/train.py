@@ -171,7 +171,7 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 20
+    epochs = 50
 
     batch_size = 64
 

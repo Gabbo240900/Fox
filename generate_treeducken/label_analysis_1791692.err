@@ -748,3 +748,4 @@ export CONDA_PYTHON_EXE='\''/lustre/fshomisc/sup/pub/miniforge/24.9.0/bin/python
 + '[' -n '' ']'
 + hash -r
 + python analyze_labels.py --workers 20
+Matplotlib created a temporary cache directory at /tmp/matplotlib-aqeei6wj because the default path (/linkhome/rech/genewd01/ulf51vy/.cache/matplotlib) is not a writable directory; it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.

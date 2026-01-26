@@ -136,8 +136,8 @@ def main():
     para_len  = [r["parasite_len"] for r in rows if r["parasite_len"] > 0]
 
     # Percentiles and outliers
-    p90_host = int(np.percentile(host_taxa, 90)) if host_taxa else 0
-    p90_para = int(np.percentile(para_taxa, 90)) if para_taxa else 0
+    p90_host = int(np.percentile(host_taxa, 95)) if host_taxa else 0
+    p90_para = int(np.percentile(para_taxa, 95)) if para_taxa else 0
     min_taxa = int(args.min_taxa)
 
     outliers_host_hi = [r for r in rows if r["host_taxa"] > p90_host]

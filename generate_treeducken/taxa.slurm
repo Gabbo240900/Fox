@@ -20,8 +20,8 @@ conda activate cophylo
 
 python taxa.py /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final \
   --workers 20 \
-  --csv_out taxa_summary.csv \
-  --outliers_csv taxa_outliers_p99.csv \
+  --csv_out taxa_summary_new.csv \
+  --outliers_csv taxa_outliers_new_p90.csv \
   --remove
 
 

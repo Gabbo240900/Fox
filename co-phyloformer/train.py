@@ -24,6 +24,7 @@ import glob
 
 # BEST CONFIGURATION SO FAR FOR SMALL DATASETS
 # Log host switch 
+#try new overfitting example again 
 
 torch.set_float32_matmul_precision('high')
 
@@ -160,7 +161,7 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/small_preencoded_pt/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
@@ -171,9 +172,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 50
+    epochs = 500
 
-    batch_size = 64
+    batch_size = 50
 
     train_loader = DataLoader(
         train_subset,
@@ -199,11 +200,11 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
+    lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     
-    criterion = nn.L1Loss(reduction='none')  
-    #criterion = nn.HuberLoss(reduction='none', delta=1.0)
+    #criterion = nn.L1Loss(reduction='none')  
+    criterion = nn.HuberLoss(reduction='none', delta=1.0)
     # criterion = nn.MSELoss(reduction='none')
 
     model = Cophyloformer()
@@ -328,9 +329,6 @@ def main(fabric: Fabric):
                 continue
             elif epoch == start_epoch and batch_idx == start_batch:
                 print(f"[Resume] Continuing from epoch {start_epoch+1}, batch {start_batch+1}")
-            # Guard: skip empty batches returned by collate_fn
-            if batch is None:
-                continue
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
             batch["sim_time"] = batch["sim_time"].to(device)  # --- sim_time disabled ---

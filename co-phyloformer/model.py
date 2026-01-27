@@ -7,15 +7,13 @@ class AxialMSABlockLite(nn.Module):
     """Lightweight axial attention over a single MSA (B, N, S, D).
 
     - Residue attention: along S, per leaf (B*N, S, D)
-    - Optional leaf attention: along N, per residue column (B*S, N, D)
+    - Leaf attention: along N, per residue column (B*S, N, D)
 
-    To avoid heavy compute when N is large (e.g., >300), leaf-attention is skipped above a threshold.
+    Leaf-attention is skipped when N > leaf_attn_max_leaves to stay lightweight.
     """
 
     def __init__(self, hidden_dim: int, num_heads: int, ff_mult: int = 4, dropout: float = 0.0, leaf_attn_max_leaves: int = 128):
         super().__init__()
-        self.hidden_dim = hidden_dim
-        self.num_heads = num_heads
         self.leaf_attn_max_leaves = int(leaf_attn_max_leaves)
 
         self.res_attn = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True, dropout=dropout)
@@ -41,28 +39,23 @@ class AxialMSABlockLite(nn.Module):
         # x: (B, N, S, D), x_ids: (B, N, S)
         B, N, S, D = x.shape
 
-        # --- Residue attention (along S) ---
-        # Pre-norm
-        xr = self.norm_r1(x)
-        xr = xr.view(B * N, S, D)
+        # Residue attention (along S) per leaf
+        xr = self.norm_r1(x).view(B * N, S, D)
         pad_mask_r = (x_ids.view(B * N, S) == 22)  # True where PAD
-
         attn_r, _ = self.res_attn(xr, xr, xr, key_padding_mask=pad_mask_r, need_weights=False)
         xr = xr + attn_r
         xr = xr + self.ff_r(self.norm_r2(xr))
         x = xr.view(B, N, S, D)
 
-        # --- Leaf attention (along N) ---
-        # Skip if too many leaves (keeps this block lightweight for N up to 300+)
-        if N <= self.leaf_attn_max_leaves:
+        # Leaf attention (along N) per residue column (skip for large N)
+        if self.leaf_attn_max_leaves > 0 and N <= self.leaf_attn_max_leaves:
             xl = self.norm_l1(x)
             # (B, N, S, D) -> (B, S, N, D) -> (B*S, N, D)
             xl = xl.permute(0, 2, 1, 3).contiguous().view(B * S, N, D)
 
-            # Mask padded leaves (entire leaf sequences that are all PAD)
-            leaf_present = (x_ids != 22).any(dim=2)  # (B, N) True if leaf has any non-PAD residue
-            pad_mask_l = ~leaf_present  # True where PAD leaf
-            pad_mask_l = pad_mask_l.unsqueeze(1).expand(B, S, N).contiguous().view(B * S, N)
+            # Mask padded leaves (leaf is padded if all residues are PAD)
+            leaf_present = (x_ids != 22).any(dim=2)  # (B, N)
+            pad_mask_l = (~leaf_present).unsqueeze(1).expand(B, S, N).contiguous().view(B * S, N)
 
             attn_l, _ = self.leaf_attn(xl, xl, xl, key_padding_mask=pad_mask_l, need_weights=False)
             xl = xl + attn_l
@@ -119,9 +112,7 @@ class MSAEncoder(nn.Module):
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
-
-        # MSA-Transformer-style axial attention blocks BEFORE pooling.
-        # Residue-attn always runs; leaf-attn runs only if N <= leaf_attn_max_leaves.
+        # MSA-Transformer-style axial attention blocks BEFORE pooling
         self.axial_layers = int(axial_layers)
         self.axial_blocks = nn.ModuleList([
             AxialMSABlockLite(hidden_dim, num_heads, ff_mult=4, dropout=0.0, leaf_attn_max_leaves=leaf_attn_max_leaves)
@@ -154,7 +145,7 @@ class MSAEncoder(nn.Module):
         logits = self.pool_weights(x).squeeze(-1)  # (B, N, S)
         logits = logits.masked_fill(~pad_mask, -1e4)
 
-        # softmax in fp32 + renorm avoids NaNs when a leaf is fully PAD
+        # softmax in fp32 + renorm prevents NaNs when an entire leaf is PAD
         weights = F.softmax(logits.float(), dim=2).to(dtype=x.dtype)
         weights = weights * pad_mask.to(dtype=x.dtype)
         denom = weights.sum(dim=2, keepdim=True).clamp(min=1e-6)
@@ -182,12 +173,15 @@ class Cophyloformer(nn.Module):
         #self.dropout = 0.1
         self.embedding_dim = hidden_dim
         
-        # Axial MSA blocks per alignment: residue-attn always; leaf-attn only for N <= 128 (configurable)
-        self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads, axial_layers=1, leaf_attn_max_leaves=128)
-        self.parasite_encoder = MSAEncoder(hidden_dim, num_layers, num_heads, axial_layers=1, leaf_attn_max_leaves=128)
+        self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
+        self.parasite_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
 
         self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
 
+        # Learnable pooling over (CLS + mapped pair tokens)
+        self.pair_pool_score = nn.Linear(hidden_dim, 1) 
+
+        #--- sim_time modulation disabled ---
         self.sim_time_fc = nn.Sequential(
             nn.Linear(1, hidden_dim * 2),
             nn.Identity()
@@ -222,84 +216,45 @@ class Cophyloformer(nn.Module):
 
         batch_size = host_msa.shape[0]
         hidden_dim = host_emb.shape[-1]
+        mapped_pair_features = torch.zeros(batch_size, hidden_dim * 3, device=host_msa.device)
 
-        # --- Batched cross-attention over variable-length (host, parasite) mapped pairs ---
-        # We pad to L_max within the batch and use key_padding_mask so attention ignores padding.
-        # This removes the per-sample Python loop around MultiheadAttention (major speedup on multi-GPU).
-
-        # Compute per-sample lengths: always include CLS↔CLS plus valid mapping pairs
-        lengths = []
-        valid_pairs_per_sample = []
         for i, mapping in enumerate(mappings):
-            pairs = []
+            # Always include CLS↔CLS as a global pair
+            host_nodes = [host_emb[i, 0]]
+            parasite_nodes = [parasite_emb[i, 0]]
+
+            # Add leaf↔leaf pairs from mappings (leaf indices start at 0, but embeddings have CLS at 0)
             for h_idx, p_idx in mapping:
-                h = h_idx + 1  # shift by +1 because CLS is at position 0
+                h = h_idx + 1
                 p = p_idx + 1
                 if 0 <= h < host_emb.shape[1] and 0 <= p < parasite_emb.shape[1]:
-                    pairs.append((h, p))
-            valid_pairs_per_sample.append(pairs)
-            lengths.append(1 + len(pairs))  # +1 for CLS↔CLS
+                    host_nodes.append(host_emb[i, h])
+                    parasite_nodes.append(parasite_emb[i, p])
 
-        L_max = max(lengths) if lengths else 1
+            # Build sequences with length = number of pairs so attention is non-degenerate
+            host_seq = torch.stack(host_nodes, dim=0).unsqueeze(0)      # (1, L, D)
+            parasite_seq = torch.stack(parasite_nodes, dim=0).unsqueeze(0)  # (1, L, D)
 
-        host_seq_batch = torch.zeros(
-            batch_size, L_max, hidden_dim,
-            device=host_emb.device,
-            dtype=host_emb.dtype,
-        )
-        parasite_seq_batch = torch.zeros(
-            batch_size, L_max, hidden_dim,
-            device=parasite_emb.device,
-            dtype=parasite_emb.dtype,
-        )
+            cross_attended, _ = self.cross_attention(
+                host_seq, parasite_seq, parasite_seq
+            )  # (1, L, D)
 
-        # valid_mask: True where token is real, False where it is padding
-        valid_mask = torch.zeros(
-            batch_size, L_max,
-            device=host_emb.device,
-            dtype=torch.bool,
-        )
+            # Learnable pooling over the pair tokens (CLS + mapped pairs)
+            pool_logits = self.pair_pool_score(cross_attended).squeeze(-1)  # (1, L)
+            pool_weights = F.softmax(pool_logits.float(), dim=1).to(dtype=cross_attended.dtype)  # fp32 softmax
+            cross_pooled = torch.sum(cross_attended * pool_weights.unsqueeze(-1), dim=1).squeeze(0)  # (D)
 
-        # Fill CLS↔CLS at position 0 for all samples
-        host_seq_batch[:, 0] = host_emb[:, 0]
-        parasite_seq_batch[:, 0] = parasite_emb[:, 0]
-        valid_mask[:, 0] = True
+            pooled = torch.cat([
+                host_seq.mean(dim=1).squeeze(0),
+                parasite_seq.mean(dim=1).squeeze(0),
+                cross_pooled
+            ], dim=-1)  # (3*hidden_dim)
 
-        # Fill mapped leaf↔leaf pairs
-        for i, pairs in enumerate(valid_pairs_per_sample):
-            pos = 1
-            for h, p in pairs:
-                if pos >= L_max:
-                    break
-                host_seq_batch[i, pos] = host_emb[i, h]
-                parasite_seq_batch[i, pos] = parasite_emb[i, p]
-                valid_mask[i, pos] = True
-                pos += 1
+            mapped_pair_features[i] = pooled
 
-        # key_padding_mask expects True for positions that should be ignored
-        key_padding_mask = ~valid_mask  # (B, L_max)
+        attended_pairs = mapped_pair_features
 
-        cross_attended, _ = self.cross_attention(
-            host_seq_batch,
-            parasite_seq_batch,
-            parasite_seq_batch,
-            key_padding_mask=key_padding_mask,
-            need_weights=False,
-        )  # (B, L_max, D)
-
-        def masked_mean(x, mask):
-            # x: (B, L, D), mask: (B, L) with True for valid
-            mask_f = mask.unsqueeze(-1).to(dtype=x.dtype)
-            summed = (x * mask_f).sum(dim=1)
-            denom = mask_f.sum(dim=1).clamp(min=1.0)
-            return summed / denom
-
-        host_pooled = masked_mean(host_seq_batch, valid_mask)          # (B, D)
-        parasite_pooled = masked_mean(parasite_seq_batch, valid_mask)  # (B, D)
-        cross_pooled = masked_mean(cross_attended, valid_mask)         # (B, D)
-
-        attended_pairs = torch.cat([host_pooled, parasite_pooled, cross_pooled], dim=-1)  # (B, 3*D)
-
+        # --- sim_time modulation disabled ---
         if sim_time is not None:
             gamma_beta = self.sim_time_fc(sim_time)  # (B, 2 * hidden_dim)
             scale, shift = gamma_beta.chunk(2, dim=-1)  # (B, hidden_dim), (B, hidden_dim)
@@ -313,4 +268,5 @@ class Cophyloformer(nn.Module):
         out_cospeciation = self.cospeciation_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
+        outputs = torch.sigmoid(outputs)
         return outputs

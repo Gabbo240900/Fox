@@ -656,7 +656,7 @@ if __name__ == "__main__":
         devices="auto",
         precision="bf16-mixed",
         strategy=DDPStrategy(
-            find_unused_parameters=False,
+            find_unused_parameters=True,
         )
     )
     fabric.launch(main)

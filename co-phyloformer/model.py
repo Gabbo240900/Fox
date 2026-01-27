@@ -44,10 +44,28 @@ class FlashMSAEncoderLayer(nn.Module):
         return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):# increase embedding and layers reduce batch size 
+    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8, residue_layers=2, residue_ff_mult=4, residue_dropout=0.0):# increase embedding and layers reduce batch size 
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
+
+        # Residue-level contextualization (per leaf, over S) before pooling.
+        # This adds MSA-Transformer-like power without positional encodings.
+        self.residue_layers = residue_layers
+        if residue_layers > 0:
+            enc_layer = nn.TransformerEncoderLayer(
+                d_model=hidden_dim,
+                nhead=num_heads,
+                dim_feedforward=hidden_dim * residue_ff_mult,
+                dropout=residue_dropout,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,
+            )
+            self.residue_encoder = nn.TransformerEncoder(enc_layer, num_layers=residue_layers)
+        else:
+            self.residue_encoder = None
+
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.pool_weights = nn.Linear(hidden_dim, 1)
         self.norm = nn.LayerNorm(hidden_dim)
@@ -64,6 +82,15 @@ class MSAEncoder(nn.Module):
         # x: (B, N, S) token ids
         x_ids = x
         x = self.embedding(x_ids)  # (B, N, S, D)
+
+        # Residue-level Transformer over S for each leaf independently.
+        # We reshape (B, N, S, D) -> (B*N, S, D) and use padding mask so PAD tokens are ignored.
+        if self.residue_encoder is not None:
+            B, N, S, D = x.shape
+            x_bn = x.view(B * N, S, D)
+            pad_mask_bn = (x_ids.view(B * N, S) == 22)  # True where PAD
+            x_bn = self.residue_encoder(x_bn, src_key_padding_mask=pad_mask_bn)
+            x = x_bn.view(B, N, S, D)
 
         # Mask padding positions (PAD token id = 22) so pooling ignores padded tokens
         pad_mask = (x_ids != 22)  # (B, N, S)
@@ -93,10 +120,26 @@ class Cophyloformer(nn.Module):
         #self.dropout = 0.1
         self.embedding_dim = hidden_dim
         
-        self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
-        self.parasite_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
+        # Add residue-level context before pooling (set residue_layers=0 to disable)
+        self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads, residue_layers=2)
+        self.parasite_encoder = MSAEncoder(hidden_dim, num_layers, num_heads, residue_layers=2)
 
         self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+
+        # Bi-directional cross-attention refinement over mapped pair tokens
+        self.pair_fuse = nn.Linear(2 * hidden_dim, hidden_dim)
+
+        pair_enc_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=num_heads,
+            dim_feedforward=hidden_dim * 4,
+            dropout=0.0,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        # 2 lightweight layers over the (CLS + mapped pairs) token sequence
+        self.pair_encoder = nn.TransformerEncoder(pair_enc_layer, num_layers=2)
 
         #--- sim_time modulation disabled ---
         self.sim_time_fc = nn.Sequential(
@@ -144,8 +187,8 @@ class Cophyloformer(nn.Module):
         for i, mapping in enumerate(mappings):
             pairs = []
             for h_idx, p_idx in mapping:
-                h = h_idx  # +1 because CLS is at position 0
-                p = p_idx 
+                h = h_idx +1 
+                p = p_idx +1 
                 if 0 <= h < host_emb.shape[1] and 0 <= p < parasite_emb.shape[1]:
                     pairs.append((h, p))
             valid_pairs_per_sample.append(pairs)
@@ -190,13 +233,29 @@ class Cophyloformer(nn.Module):
         # key_padding_mask expects True for positions that should be ignored
         key_padding_mask = ~valid_mask  # (B, L_max)
 
-        cross_attended, _ = self.cross_attention(
+        # Bi-directional cross-attention: host→parasite and parasite→host
+        host_to_para, _ = self.cross_attention(
             host_seq_batch,
             parasite_seq_batch,
             parasite_seq_batch,
             key_padding_mask=key_padding_mask,
             need_weights=False,
         )  # (B, L_max, D)
+
+        para_to_host, _ = self.cross_attention(
+            parasite_seq_batch,
+            host_seq_batch,
+            host_seq_batch,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+        )  # (B, L_max, D)
+
+        # Fuse both directions into a single pair-token representation
+        pair_tokens = self.pair_fuse(torch.cat([host_to_para, para_to_host], dim=-1))  # (B, L_max, D)
+
+        # Refine pair tokens with a small Transformer over the token axis (CLS + pairs)
+        # TransformerEncoder uses src_key_padding_mask=True to ignore pads.
+        pair_tokens = self.pair_encoder(pair_tokens, src_key_padding_mask=key_padding_mask)  # (B, L_max, D)
 
         def masked_mean(x, mask):
             # x: (B, L, D), mask: (B, L) with True for valid
@@ -207,7 +266,7 @@ class Cophyloformer(nn.Module):
 
         host_pooled = masked_mean(host_seq_batch, valid_mask)          # (B, D)
         parasite_pooled = masked_mean(parasite_seq_batch, valid_mask)  # (B, D)
-        cross_pooled = masked_mean(cross_attended, valid_mask)         # (B, D)
+        cross_pooled = masked_mean(pair_tokens, valid_mask)            # (B, D)
 
         attended_pairs = torch.cat([host_pooled, parasite_pooled, cross_pooled], dim=-1)  # (B, 3*D)
 

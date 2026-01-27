@@ -174,7 +174,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 500
 
-    batch_size = 50
+    batch_size = 8
 
     train_loader = DataLoader(
         train_subset,

@@ -158,7 +158,7 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/small_preencoded_pt/"
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
@@ -188,7 +188,7 @@ def main(fabric: Fabric):
         )
 
     device = fabric.device
-    epochs = 500
+    epochs = 20
 
     batch_size = 80
 
@@ -219,8 +219,8 @@ def main(fabric: Fabric):
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
     # Defaults for large-scale training (override with env vars LR and WEIGHT_DECAY)
-    lr = 5e-4
-    wd = 0.01
+    lr = 2e-4
+    wd = 0
     criterion = nn.L1Loss(reduction='none')  
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
     # criterion = nn.MSELoss(reduction='none')

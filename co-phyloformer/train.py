@@ -169,24 +169,6 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
 
-    train_sampler = None
-    val_sampler = None
-    if fabric.world_size > 1:
-        train_sampler = DistributedSampler(
-            train_subset,
-            num_replicas=fabric.world_size,
-            rank=fabric.global_rank,
-            shuffle=True,
-            drop_last=False,
-        )
-        val_sampler = DistributedSampler(
-            val_subset,
-            num_replicas=fabric.world_size,
-            rank=fabric.global_rank,
-            shuffle=False,
-            drop_last=False,
-        )
-
     device = fabric.device
     epochs = 20
 
@@ -195,8 +177,7 @@ def main(fabric: Fabric):
     train_loader = DataLoader(
         train_subset,
         batch_size=batch_size,
-        shuffle=(train_sampler is None),
-        sampler=train_sampler,
+        sampler=True,
         collate_fn=collate_fn,
         num_workers=8,
         persistent_workers=True,
@@ -209,7 +190,6 @@ def main(fabric: Fabric):
         val_subset,
         batch_size=batch_size,
         shuffle=False,
-        sampler=val_sampler,
         collate_fn=collate_fn,
         num_workers=4,
         persistent_workers=True,

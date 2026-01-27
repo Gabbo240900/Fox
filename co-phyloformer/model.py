@@ -2,6 +2,77 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+class AxialMSABlockLite(nn.Module):
+    """Lightweight axial attention over a single MSA (B, N, S, D).
+
+    - Residue attention: along S, per leaf (B*N, S, D)
+    - Optional leaf attention: along N, per residue column (B*S, N, D)
+
+    To avoid heavy compute when N is large (e.g., >300), leaf-attention is skipped above a threshold.
+    """
+
+    def __init__(self, hidden_dim: int, num_heads: int, ff_mult: int = 4, dropout: float = 0.0, leaf_attn_max_leaves: int = 128):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.leaf_attn_max_leaves = int(leaf_attn_max_leaves)
+
+        self.res_attn = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True, dropout=dropout)
+        self.leaf_attn = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True, dropout=dropout)
+
+        self.norm_r1 = nn.LayerNorm(hidden_dim)
+        self.norm_r2 = nn.LayerNorm(hidden_dim)
+        self.norm_l1 = nn.LayerNorm(hidden_dim)
+        self.norm_l2 = nn.LayerNorm(hidden_dim)
+
+        self.ff_r = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * ff_mult),
+            nn.GELU(),
+            nn.Linear(hidden_dim * ff_mult, hidden_dim),
+        )
+        self.ff_l = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * ff_mult),
+            nn.GELU(),
+            nn.Linear(hidden_dim * ff_mult, hidden_dim),
+        )
+
+    def forward(self, x: torch.Tensor, x_ids: torch.Tensor) -> torch.Tensor:
+        # x: (B, N, S, D), x_ids: (B, N, S)
+        B, N, S, D = x.shape
+
+        # --- Residue attention (along S) ---
+        # Pre-norm
+        xr = self.norm_r1(x)
+        xr = xr.view(B * N, S, D)
+        pad_mask_r = (x_ids.view(B * N, S) == 22)  # True where PAD
+
+        attn_r, _ = self.res_attn(xr, xr, xr, key_padding_mask=pad_mask_r, need_weights=False)
+        xr = xr + attn_r
+        xr = xr + self.ff_r(self.norm_r2(xr))
+        x = xr.view(B, N, S, D)
+
+        # --- Leaf attention (along N) ---
+        # Skip if too many leaves (keeps this block lightweight for N up to 300+)
+        if N <= self.leaf_attn_max_leaves:
+            xl = self.norm_l1(x)
+            # (B, N, S, D) -> (B, S, N, D) -> (B*S, N, D)
+            xl = xl.permute(0, 2, 1, 3).contiguous().view(B * S, N, D)
+
+            # Mask padded leaves (entire leaf sequences that are all PAD)
+            leaf_present = (x_ids != 22).any(dim=2)  # (B, N) True if leaf has any non-PAD residue
+            pad_mask_l = ~leaf_present  # True where PAD leaf
+            pad_mask_l = pad_mask_l.unsqueeze(1).expand(B, S, N).contiguous().view(B * S, N)
+
+            attn_l, _ = self.leaf_attn(xl, xl, xl, key_padding_mask=pad_mask_l, need_weights=False)
+            xl = xl + attn_l
+            xl = xl + self.ff_l(self.norm_l2(xl))
+
+            # Back to (B, N, S, D)
+            x = xl.view(B, S, N, D).permute(0, 2, 1, 3).contiguous()
+
+        return x
+
 # Understand model size where it comes from parameters and bottlenecks for memory 
 class FlashMSAEncoderLayer(nn.Module):
     def __init__(self, hidden_dim, num_heads):
@@ -44,10 +115,19 @@ class FlashMSAEncoderLayer(nn.Module):
         return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):# increase embedding and layers reduce batch size 
+    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8, axial_layers=1, leaf_attn_max_leaves=128):# increase embedding and layers reduce batch size 
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
+
+        # MSA-Transformer-style axial attention blocks BEFORE pooling.
+        # Residue-attn always runs; leaf-attn runs only if N <= leaf_attn_max_leaves.
+        self.axial_layers = int(axial_layers)
+        self.axial_blocks = nn.ModuleList([
+            AxialMSABlockLite(hidden_dim, num_heads, ff_mult=4, dropout=0.0, leaf_attn_max_leaves=leaf_attn_max_leaves)
+            for _ in range(self.axial_layers)
+        ])
+
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.pool_weights = nn.Linear(hidden_dim, 1)
         self.norm = nn.LayerNorm(hidden_dim)
@@ -65,12 +145,21 @@ class MSAEncoder(nn.Module):
         x_ids = x
         x = self.embedding(x_ids)  # (B, N, S, D)
 
+        # Axial attention over the MSA grid (N x S) before pooling
+        for blk in self.axial_blocks:
+            x = blk(x, x_ids)
+
         # Mask padding positions (PAD token id = 22) so pooling ignores padded tokens
         pad_mask = (x_ids != 22)  # (B, N, S)
         logits = self.pool_weights(x).squeeze(-1)  # (B, N, S)
-        logits = logits.masked_fill(~pad_mask, -1e9)
+        logits = logits.masked_fill(~pad_mask, -1e4)
 
-        weights = F.softmax(logits, dim=2)  # (B, N, S)
+        # softmax in fp32 + renorm avoids NaNs when a leaf is fully PAD
+        weights = F.softmax(logits.float(), dim=2).to(dtype=x.dtype)
+        weights = weights * pad_mask.to(dtype=x.dtype)
+        denom = weights.sum(dim=2, keepdim=True).clamp(min=1e-6)
+        weights = weights / denom
+
         x = torch.sum(x * weights.unsqueeze(-1), dim=2)  # (B, N, D)
         x = self.norm(x)
         #x = self.dropout(x)
@@ -93,8 +182,9 @@ class Cophyloformer(nn.Module):
         #self.dropout = 0.1
         self.embedding_dim = hidden_dim
         
-        self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
-        self.parasite_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
+        # Axial MSA blocks per alignment: residue-attn always; leaf-attn only for N <= 128 (configurable)
+        self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads, axial_layers=1, leaf_attn_max_leaves=128)
+        self.parasite_encoder = MSAEncoder(hidden_dim, num_layers, num_heads, axial_layers=1, leaf_attn_max_leaves=128)
 
         self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
 
@@ -143,8 +233,8 @@ class Cophyloformer(nn.Module):
         for i, mapping in enumerate(mappings):
             pairs = []
             for h_idx, p_idx in mapping:
-                h = h_idx  # +1 because CLS is at position 0
-                p = p_idx 
+                h = h_idx + 1  # shift by +1 because CLS is at position 0
+                p = p_idx + 1
                 if 0 <= h < host_emb.shape[1] and 0 <= p < parasite_emb.shape[1]:
                     pairs.append((h, p))
             valid_pairs_per_sample.append(pairs)

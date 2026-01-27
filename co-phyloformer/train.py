@@ -381,7 +381,21 @@ def main(fabric: Fabric):
 
 
             fabric.backward(total_loss_tensor)
-            fabric.clip_gradients(model, optimizer, max_norm=1.0)
+
+            # If loss blows up (NaN/Inf), skip the update instead of crashing
+            if not torch.isfinite(total_loss_tensor.detach()):
+                optimizer.zero_grad(set_to_none=True)
+                if fabric.is_global_zero:
+                    print(f"[WARN] Non-finite loss at epoch {epoch+1} batch {batch_idx+1}: {total_loss_tensor.item()}")
+                continue
+
+            # Clip gradients but do not error on non-finite norms
+            torch.nn.utils.clip_grad_norm_(
+                getattr(model, "module", model).parameters(),
+                max_norm=1.0,
+                error_if_nonfinite=False,
+            )
+
             optimizer.step()
             lr_scheduler.step()
 

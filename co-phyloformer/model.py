@@ -87,7 +87,16 @@ class MSAEncoder(nn.Module):
             pad_mask = (x_ids != 22)  # (B, N, S)
             x = x * pad_mask.unsqueeze(-1).to(dtype=x.dtype)
             x_bn = x.reshape(B * N, S, D).transpose(1, 2)  # (B*N, D, S)
-            x_bn = self.residue_conv(x_bn)
+            # Chunk to avoid Conv1d 32-bit indexing limit when (B*N) is large
+            chunk = 2048
+            if x_bn.shape[0] > chunk:
+                outs = []
+                for start in range(0, x_bn.shape[0], chunk):
+                    end = min(start + chunk, x_bn.shape[0])
+                    outs.append(self.residue_conv(x_bn[start:end]))
+                x_bn = torch.cat(outs, dim=0)
+            else:
+                x_bn = self.residue_conv(x_bn)
             x = x_bn.transpose(1, 2).reshape(B, N, S, D)
             x = x * pad_mask.unsqueeze(-1).to(dtype=x.dtype)
 

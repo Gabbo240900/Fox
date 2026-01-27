@@ -44,26 +44,10 @@ class FlashMSAEncoderLayer(nn.Module):
         return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8, use_residue_conv=True, conv_kernel_size=3):# increase embedding and layers reduce batch size 
+    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):# increase embedding and layers reduce batch size 
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
-        # Cheap residue-level context over S (no attention, very low memory).
-        # Depthwise conv (per channel) + pointwise conv for mixing.
-        self.use_residue_conv = use_residue_conv
-        if use_residue_conv:
-            k = int(conv_kernel_size)
-            if k % 2 == 0:
-                k += 1  # enforce odd kernel for symmetric padding
-            pad = k // 2
-            self.residue_conv = nn.Sequential(
-                nn.Conv1d(hidden_dim, hidden_dim, kernel_size=k, padding=pad, groups=hidden_dim, bias=False),
-                nn.GELU(),
-                nn.Conv1d(hidden_dim, hidden_dim, kernel_size=1, bias=True),
-            )
-        else:
-            self.residue_conv = None
-
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.pool_weights = nn.Linear(hidden_dim, 1)
         self.norm = nn.LayerNorm(hidden_dim)
@@ -80,25 +64,6 @@ class MSAEncoder(nn.Module):
         # x: (B, N, S) token ids
         x_ids = x
         x = self.embedding(x_ids)  # (B, N, S, D)
-
-        # Cheap residue mixing along S (applied per leaf). Handles PAD by zeroing padded positions.
-        if self.residue_conv is not None:
-            B, N, S, D = x.shape
-            pad_mask = (x_ids != 22)  # (B, N, S)
-            x = x * pad_mask.unsqueeze(-1).to(dtype=x.dtype)
-            x_bn = x.reshape(B * N, S, D).transpose(1, 2)  # (B*N, D, S)
-            # Chunk to avoid Conv1d 32-bit indexing limit when (B*N) is large
-            chunk = 2048
-            if x_bn.shape[0] > chunk:
-                outs = []
-                for start in range(0, x_bn.shape[0], chunk):
-                    end = min(start + chunk, x_bn.shape[0])
-                    outs.append(self.residue_conv(x_bn[start:end]))
-                x_bn = torch.cat(outs, dim=0)
-            else:
-                x_bn = self.residue_conv(x_bn)
-            x = x_bn.transpose(1, 2).reshape(B, N, S, D)
-            x = x * pad_mask.unsqueeze(-1).to(dtype=x.dtype)
 
         # Mask padding positions (PAD token id = 22) so pooling ignores padded tokens
         pad_mask = (x_ids != 22)  # (B, N, S)
@@ -128,14 +93,11 @@ class Cophyloformer(nn.Module):
         #self.dropout = 0.1
         self.embedding_dim = hidden_dim
         
-        self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads, use_residue_conv=True)
-        self.parasite_encoder = MSAEncoder(hidden_dim, num_layers, num_heads, use_residue_conv=True)
+        self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
+        self.parasite_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
 
         self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
-        # Learnable pooling over (CLS + mapped pair tokens)
-        self.pair_pool_score = nn.Linear(hidden_dim, 1)
 
-        #--- sim_time modulation disabled ---
         self.sim_time_fc = nn.Sequential(
             nn.Linear(1, hidden_dim * 2),
             nn.Identity()
@@ -181,8 +143,8 @@ class Cophyloformer(nn.Module):
         for i, mapping in enumerate(mappings):
             pairs = []
             for h_idx, p_idx in mapping:
-                h = h_idx + 1  # shift by +1 because CLS is at position 0
-                p = p_idx + 1
+                h = h_idx  # +1 because CLS is at position 0
+                p = p_idx 
                 if 0 <= h < host_emb.shape[1] and 0 <= p < parasite_emb.shape[1]:
                     pairs.append((h, p))
             valid_pairs_per_sample.append(pairs)
@@ -244,14 +206,7 @@ class Cophyloformer(nn.Module):
 
         host_pooled = masked_mean(host_seq_batch, valid_mask)          # (B, D)
         parasite_pooled = masked_mean(parasite_seq_batch, valid_mask)  # (B, D)
-        # Learnable attention pooling over pair tokens (uses valid_mask to ignore padding)
-        pool_logits = self.pair_pool_score(cross_attended).squeeze(-1)  # (B, L_max)
-        pool_logits = pool_logits.masked_fill(~valid_mask, -1e4)
-        pool_weights = F.softmax(pool_logits.float(), dim=1).to(dtype=cross_attended.dtype)  # fp32 softmax
-        pool_weights = pool_weights * valid_mask.to(dtype=cross_attended.dtype)
-        denom = pool_weights.sum(dim=1, keepdim=True).clamp(min=1e-6)
-        pool_weights = pool_weights / denom
-        cross_pooled = torch.sum(cross_attended * pool_weights.unsqueeze(-1), dim=1)  # (B, D)
+        cross_pooled = masked_mean(cross_attended, valid_mask)         # (B, D)
 
         attended_pairs = torch.cat([host_pooled, parasite_pooled, cross_pooled], dim=-1)  # (B, 3*D)
 

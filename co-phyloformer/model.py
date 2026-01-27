@@ -44,7 +44,7 @@ class FlashMSAEncoderLayer(nn.Module):
         return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8, residue_layers=2, residue_ff_mult=4, residue_dropout=0.0):# increase embedding and layers reduce batch size 
+    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8, residue_layers=1, residue_ff_mult=4, residue_dropout=0.0):# increase embedding and layers reduce batch size 
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
@@ -132,14 +132,14 @@ class Cophyloformer(nn.Module):
         pair_enc_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
             nhead=num_heads,
-            dim_feedforward=hidden_dim * 4,
+            dim_feedforward=hidden_dim * 2,
             dropout=0.0,
             activation="gelu",
             batch_first=True,
             norm_first=True,
         )
         # 2 lightweight layers over the (CLS + mapped pairs) token sequence
-        self.pair_encoder = nn.TransformerEncoder(pair_enc_layer, num_layers=2)
+        self.pair_encoder = nn.TransformerEncoder(pair_enc_layer, num_layers=1)
 
         #--- sim_time modulation disabled ---
         self.sim_time_fc = nn.Sequential(

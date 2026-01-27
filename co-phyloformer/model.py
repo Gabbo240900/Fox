@@ -42,9 +42,24 @@ class AxialMSABlockLite(nn.Module):
         # Residue attention (along S) per leaf
         xr = self.norm_r1(x).view(B * N, S, D)
         pad_mask_r = (x_ids.view(B * N, S) == 22)  # True where PAD
+
+        # If an entire row is PAD, MultiheadAttention can produce NaNs.
+        # We neutralize those rows by (a) zeroing inputs, (b) disabling the mask for that row,
+        # and (c) zeroing outputs afterward.
+        all_pad_r = pad_mask_r.all(dim=1)  # (B*N,)
+        if all_pad_r.any():
+            xr = xr.clone()
+            pad_mask_r = pad_mask_r.clone()
+            xr[all_pad_r] = 0
+            pad_mask_r[all_pad_r] = False
+
         attn_r, _ = self.res_attn(xr, xr, xr, key_padding_mask=pad_mask_r, need_weights=False)
         xr = xr + attn_r
         xr = xr + self.ff_r(self.norm_r2(xr))
+
+        if all_pad_r.any():
+            xr[all_pad_r] = 0
+
         x = xr.view(B, N, S, D)
 
         # Leaf attention (along N) per residue column (skip for large N)
@@ -57,9 +72,20 @@ class AxialMSABlockLite(nn.Module):
             leaf_present = (x_ids != 22).any(dim=2)  # (B, N)
             pad_mask_l = (~leaf_present).unsqueeze(1).expand(B, S, N).contiguous().view(B * S, N)
 
+            # Same NaN guard for fully-masked rows
+            all_pad_l = pad_mask_l.all(dim=1)  # (B*S,)
+            if all_pad_l.any():
+                xl = xl.clone()
+                pad_mask_l = pad_mask_l.clone()
+                xl[all_pad_l] = 0
+                pad_mask_l[all_pad_l] = False
+
             attn_l, _ = self.leaf_attn(xl, xl, xl, key_padding_mask=pad_mask_l, need_weights=False)
             xl = xl + attn_l
             xl = xl + self.ff_l(self.norm_l2(xl))
+
+            if all_pad_l.any():
+                xl[all_pad_l] = 0
 
             # Back to (B, N, S, D)
             x = xl.view(B, S, N, D).permute(0, 2, 1, 3).contiguous()

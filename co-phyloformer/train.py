@@ -190,7 +190,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 500
 
-    batch_size = 64
+    batch_size = 80
 
     train_loader = DataLoader(
         train_subset,
@@ -219,7 +219,7 @@ def main(fabric: Fabric):
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
     # Defaults for large-scale training (override with env vars LR and WEIGHT_DECAY)
-    lr = 1e-3
+    lr = 2e-4
     wd = 0.01
     criterion = nn.L1Loss(reduction='none')  
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)

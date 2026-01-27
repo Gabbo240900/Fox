@@ -188,7 +188,7 @@ def main(fabric: Fabric):
         )
 
     device = fabric.device
-    epochs = 50
+    epochs = 5
 
     batch_size = 64
 

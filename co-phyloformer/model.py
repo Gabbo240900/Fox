@@ -44,7 +44,7 @@ class FlashMSAEncoderLayer(nn.Module):
         return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=1024, num_layers=8, num_heads=8):# increase embedding and layers reduce batch size 
+    def __init__(self, hidden_dim=512, num_layers=4, num_heads=8):# increase embedding and layers reduce batch size 
         super(MSAEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
@@ -84,7 +84,7 @@ class MSAEncoder(nn.Module):
         return x, x[:, 0]
 
 class Cophyloformer(nn.Module):
-    def __init__(self, hidden_dim=1024, num_layers=8, num_heads=8):
+    def __init__(self, hidden_dim=512, num_layers=4, num_heads=8):
         super(Cophyloformer, self).__init__()
         # Store hyperparameters for W&B logging
         self.hidden_dim = hidden_dim
@@ -225,4 +225,5 @@ class Cophyloformer(nn.Module):
         out_cospeciation = self.cospeciation_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
+        outputs = torch.sigmoid(outputs)
         return outputs

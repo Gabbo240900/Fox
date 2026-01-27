@@ -3,7 +3,7 @@ import torch
 import pandas as pd
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset, DistributedSampler
+from torch.utils.data import DataLoader, Dataset
 from model import Cophyloformer
 from data import CophylogenyDataset
 from torch.nn import functional as F
@@ -177,7 +177,7 @@ def main(fabric: Fabric):
     train_loader = DataLoader(
         train_subset,
         batch_size=batch_size,
-        sampler=True,
+        shuffle=True,
         collate_fn=collate_fn,
         num_workers=8,
         persistent_workers=True,
@@ -295,8 +295,6 @@ def main(fabric: Fabric):
 
     # Training loop over all batches per epoch (no micro-epochs)
     for epoch in range(start_epoch, epochs):
-        if train_sampler is not None:
-            train_sampler.set_epoch(epoch)
         steps_per_epoch = len(train_loader)
         # Validation trigger points at 25%, 50%, 75% of the epoch
         val_checkpoints = {

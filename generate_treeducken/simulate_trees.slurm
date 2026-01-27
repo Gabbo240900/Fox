@@ -15,6 +15,7 @@
 set -euo pipefail
 module purge
 module load r/4.4.1
+module load gcc/11.3.1
 export R_LIBS_USER=$ALL_CCFRWORK/r_envs/treeducken_env/lib
 export MPLCONFIGDIR=$ALL_CCFRWORK/tmp/mpl_cache
 export TRANSFORMERS_CACHE=$ALL_CCFRWORK/tmp/transformers_cache
@@ -37,7 +38,7 @@ set -x
 # STEP 0: remove former datasets
 find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/associations/ -mindepth 1 -delete
 find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Datasets/ -mindepth 1 -delete
-find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/host_trees/ -mindepth 1 -delete
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/host_tree/ -mindepth 1 -delete
 find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/summaries/ -mindepth 1 -delete
 find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/symb_tree/ -mindepth 1 -delete
 

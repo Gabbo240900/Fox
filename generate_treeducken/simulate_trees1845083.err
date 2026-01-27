@@ -1,0 +1,2 @@
++ find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/associations/ -mindepth 1 -delete
+slurmstepd: error: *** JOB 1845083 ON r1i2n14 CANCELLED AT 2026-01-27T10:07:03 ***

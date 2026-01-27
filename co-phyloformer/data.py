@@ -26,7 +26,7 @@ class CophylogenyDataset(Dataset):
 
         event_name_map = {
             "Cospeciations": "Cospeciations",
-            "Host_Spread/Switches": "Host_spread/Switches",
+            "Host_Spreads/switches": "Host_spread/Switches",
             "Sim_time": "Sim_time",
         }
 

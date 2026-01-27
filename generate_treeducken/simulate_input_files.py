@@ -76,7 +76,7 @@ class GenerateTGLFiles:
         # Normalize event counts to proportions
         event_keys = [
             "Cospeciations",
-            "Host_Spread/Switches",
+            "Host_Spreads/switches",
             "Symbiont_Speciations",
             'Host_Speciations',
             "Host_Extinctions",

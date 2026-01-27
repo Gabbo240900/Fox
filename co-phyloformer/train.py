@@ -47,12 +47,14 @@ class LazyCophyloformerDataset(Dataset):
         pt_path = self.pt_files[idx]
         sample = torch.load(pt_path, map_location="cpu", weights_only=False)
 
-        def mask_sequence(sequence: torch.Tensor, mask_prob: float = 0.1, mask_token: int = 23) -> torch.Tensor:
-            # sequence: (L,) long tensor
-            if mask_prob <= 0:
-                return sequence
-            mask = torch.rand_like(sequence.float()) < mask_prob
-            return torch.where(mask, torch.full_like(sequence, mask_token), sequence)
+        def mask_sequence(sequence, mask_prob=0.1 , mask_token=23):
+            masked = []
+            for aa in sequence:
+                if torch.rand(1).item() < mask_prob:
+                    masked.append(mask_token)
+                else:
+                    masked.append(aa)
+            return torch.tensor(masked, dtype=torch.long)
 
         # Skip empty samples
         if len(sample["host_msas"]) == 0 or len(sample["parasite_msas"]) == 0:
@@ -158,7 +160,7 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/small_preencoded_pt/"
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/test_preencoded_pt/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
@@ -168,9 +170,8 @@ def main(fabric: Fabric):
     )
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
-
     device = fabric.device
-    epochs = 500
+    epochs = 50
 
     batch_size = 64
 
@@ -198,9 +199,9 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    # Defaults for large-scale training (override with env vars LR and WEIGHT_DECAY)
-    lr = 2e-4
+    lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
+    
     criterion = nn.L1Loss(reduction='none')  
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
     # criterion = nn.MSELoss(reduction='none')
@@ -332,7 +333,7 @@ def main(fabric: Fabric):
                 continue
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device) 
+            batch["sim_time"] = batch["sim_time"].to(device)  # --- sim_time disabled ---
             batch["labels"] = batch["labels"].to(device)
             optimizer.zero_grad(set_to_none=True)
 
@@ -340,42 +341,25 @@ def main(fabric: Fabric):
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch["sim_time"]
+                batch['sim_time'],  # --- sim_time disabled ---
             )
-            
-            outputs_clamped = outputs.clamp(0.0, 1.0)
 
             for idx in range(outputs.shape[0]):
                 all_train_prediction_data.append({
                     "Sample_Index": batch_idx * outputs.shape[0] + idx,
-                    "Cospeciations_Pred": outputs_clamped[idx, 0].item(),
+                    "Cospeciations_Pred": outputs[idx, 0].item(),
                     "Cospeciations_GT": batch["labels"][idx, 0].item(),
-                    "Host_switches_Pred": outputs_clamped[idx, 1].item(),
+                    "Host_switches_Pred": outputs[idx, 1].item(),
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
             loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
 
-            total_loss_tensor = loss_cospeciation + 8* loss_switches
+            total_loss_tensor = loss_cospeciation + loss_switches
 
 
             fabric.backward(total_loss_tensor)
-
-            # Skip update if loss is NaN/Inf
-            if not torch.isfinite(total_loss_tensor.detach()):
-                optimizer.zero_grad(set_to_none=True)
-                if fabric.is_global_zero:
-                    print(f"[WARN] Non-finite loss at epoch {epoch+1} batch {batch_idx+1}: {total_loss_tensor.item()}")
-                continue
-
-            # Non-finite-tolerant gradient clipping (Fabric's helper raises on non-finite norms)
-            torch.nn.utils.clip_grad_norm_(
-                getattr(model, "module", model).parameters(),
-                max_norm=1.0,
-                error_if_nonfinite=False,
-            )
-
             optimizer.step()
             lr_scheduler.step()
 
@@ -423,7 +407,7 @@ def main(fabric: Fabric):
             num_batches += 1
 
             with torch.no_grad():
-                preds = outputs_clamped.detach()
+                preds = outputs.detach()
                 labels = batch["labels"].detach()
 
                 abs_err = (preds - labels).abs()
@@ -465,15 +449,11 @@ def main(fabric: Fabric):
                 sum_smape   += smape.sum(dim=0)
                 sample_count += preds.shape[0]
 
-        # Robust epoch loss: all-reduce SUM(loss) and SUM(num_batches)
-        loss_sum_tensor = torch.tensor(float(total_loss), device=device, dtype=torch.float32)
-        batch_count_tensor = torch.tensor(float(num_batches), device=device, dtype=torch.float32)
+        # Compute epoch loss on this rank
+        epoch_loss = total_loss / max(1, num_batches)
 
-        loss_sum_tensor = fabric.all_reduce(loss_sum_tensor, reduce_op="sum")
-        batch_count_tensor = fabric.all_reduce(batch_count_tensor, reduce_op="sum")
-
-        denom = max(batch_count_tensor.item(), 1.0)
-        epoch_loss = (loss_sum_tensor / denom).item()
+        epoch_loss_tensor = torch.tensor(epoch_loss, device=device)
+        epoch_loss = fabric.all_reduce(epoch_loss_tensor, reduce_op="mean").item()
 
         epoch_losses.append(epoch_loss)
 
@@ -515,7 +495,7 @@ def main(fabric: Fabric):
                 for sample_idx in range(min(3, outputs.shape[0])):
                     print(f"\nEpoch {epoch+1}, Sample {sample_idx} - Predictions vs Ground Truth:")
                     for i, event in enumerate(event_names):
-                        pred_val = outputs_clamped[sample_idx, i].item()
+                        pred_val = outputs[sample_idx, i].item()
                         gt_val = batch["labels"][sample_idx, i].item()
                         print(f"  {event}: Pred {pred_val:.4f}, GT {gt_val:.4f}")
             else:

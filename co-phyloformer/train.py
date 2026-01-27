@@ -3,7 +3,7 @@ import torch
 import pandas as pd
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from model import Cophyloformer
 from data import CophylogenyDataset
 from torch.nn import functional as F
@@ -47,14 +47,12 @@ class LazyCophyloformerDataset(Dataset):
         pt_path = self.pt_files[idx]
         sample = torch.load(pt_path, map_location="cpu", weights_only=False)
 
-        def mask_sequence(sequence, mask_prob=0.1 , mask_token=23):
-            masked = []
-            for aa in sequence:
-                if torch.rand(1).item() < mask_prob:
-                    masked.append(mask_token)
-                else:
-                    masked.append(aa)
-            return torch.tensor(masked, dtype=torch.long)
+        def mask_sequence(sequence: torch.Tensor, mask_prob: float = 0.1, mask_token: int = 23) -> torch.Tensor:
+            # sequence: (L,) long tensor
+            if mask_prob <= 0:
+                return sequence
+            mask = torch.rand_like(sequence.float()) < mask_prob
+            return torch.where(mask, torch.full_like(sequence, mask_token), sequence)
 
         # Skip empty samples
         if len(sample["host_msas"]) == 0 or len(sample["parasite_msas"]) == 0:
@@ -170,6 +168,25 @@ def main(fabric: Fabric):
     )
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
+
+    train_sampler = None
+    val_sampler = None
+    if fabric.world_size > 1:
+        train_sampler = DistributedSampler(
+            train_subset,
+            num_replicas=fabric.world_size,
+            rank=fabric.global_rank,
+            shuffle=True,
+            drop_last=False,
+        )
+        val_sampler = DistributedSampler(
+            val_subset,
+            num_replicas=fabric.world_size,
+            rank=fabric.global_rank,
+            shuffle=False,
+            drop_last=False,
+        )
+
     device = fabric.device
     epochs = 50
 
@@ -178,7 +195,8 @@ def main(fabric: Fabric):
     train_loader = DataLoader(
         train_subset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
         collate_fn=collate_fn,
         num_workers=8,
         persistent_workers=True,
@@ -191,6 +209,7 @@ def main(fabric: Fabric):
         val_subset,
         batch_size=batch_size,
         shuffle=False,
+        sampler=val_sampler,
         collate_fn=collate_fn,
         num_workers=4,
         persistent_workers=True,
@@ -199,8 +218,9 @@ def main(fabric: Fabric):
     )
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
-    wd = 0
+    # Defaults for large-scale training (override with env vars LR and WEIGHT_DECAY)
+    lr = float(os.environ.get("LR", "1e-3"))
+    wd = float(os.environ.get("WEIGHT_DECAY", "0.01"))
     
     criterion = nn.L1Loss(reduction='none')  
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
@@ -296,6 +316,8 @@ def main(fabric: Fabric):
 
     # Training loop over all batches per epoch (no micro-epochs)
     for epoch in range(start_epoch, epochs):
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         steps_per_epoch = len(train_loader)
         # Validation trigger points at 25%, 50%, 75% of the epoch
         val_checkpoints = {
@@ -333,7 +355,7 @@ def main(fabric: Fabric):
                 continue
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device)  # --- sim_time disabled ---
+            batch["sim_time"] = batch["sim_time"].to(device) 
             batch["labels"] = batch["labels"].to(device)
             optimizer.zero_grad(set_to_none=True)
 
@@ -341,7 +363,7 @@ def main(fabric: Fabric):
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch['sim_time'],  # --- sim_time disabled ---
+                batch["sim_time"]
             )
 
             for idx in range(outputs.shape[0]):
@@ -360,6 +382,7 @@ def main(fabric: Fabric):
 
 
             fabric.backward(total_loss_tensor)
+            fabric.clip_gradients(model, optimizer, max_norm=1.0)
             optimizer.step()
             lr_scheduler.step()
 

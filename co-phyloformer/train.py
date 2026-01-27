@@ -188,7 +188,7 @@ def main(fabric: Fabric):
         )
 
     device = fabric.device
-    epochs = 5
+    epochs = 20
 
     batch_size = 64
 
@@ -219,9 +219,8 @@ def main(fabric: Fabric):
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
     # Defaults for large-scale training (override with env vars LR and WEIGHT_DECAY)
-    lr = float(os.environ.get("LR", "1e-3"))
-    wd = float(os.environ.get("WEIGHT_DECAY", "0.01"))
-    
+    lr = 1e-3
+    wd = 0.01
     criterion = nn.L1Loss(reduction='none')  
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
     # criterion = nn.MSELoss(reduction='none')

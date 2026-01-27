@@ -24,14 +24,15 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch['sim_time']  # --- sim_time disabled ---
+                batch['sim_time']  
             )
+            outputs_clamped = outputs.clamp(0.0, 1.0)
 
             loss_cosp = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
             loss_sw   = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
             loss = loss_cosp + loss_sw
 
-            preds = outputs
+            preds = outputs_clamped
             labels = batch["labels"]
 
             val_loss += loss.item()
@@ -102,10 +103,11 @@ def compute_val_predictions(model, val_loader, device):
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                None,  # --- sim_time disabled ---
+                batch["sim_time"],  
             )
+            outputs_clamped = outputs.clamp(0.0, 1.0)
 
-            preds_list.append(outputs.cpu())
+            preds_list.append(outputs_clamped.cpu())
             labels_list.append(batch["labels"].cpu())
 
     if len(preds_list) == 0:

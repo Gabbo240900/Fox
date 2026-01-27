@@ -35,18 +35,20 @@ export BLIS_NUM_THREADS=$OMP_NUM_THREADS
 set -x 
 
 # STEP 0: remove former datasets
-rm -rf /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/associations/*
-rm -rf /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Datasets/*
-rm -rf /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/host_trees/*
-rm -rf /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/summaries/*
-rm -rf /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/symb_tree/*
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/associations/ -mindepth 1 -delete
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Datasets/ -mindepth 1 -delete
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/host_trees/ -mindepth 1 -delete
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/summaries/ -mindepth 1 -delete
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/symb_tree/ -mindepth 1 -delete
+
+
 # STEP 1: generate host trees
 python /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/simulate_input_files.py \
   --h_lambda 0.5 1.2 \
   --c_lambda 0.2 1.6 \
   --s_lambda 0.5 1.2 \
   --s_her 0.05 0.3 \
-  --num_trees 30000 \
+  --num_trees 200000 \
   --n_cores ${SLURM_CPUS_PER_TASK}
 
 # STEP 2: Simulate alignments 

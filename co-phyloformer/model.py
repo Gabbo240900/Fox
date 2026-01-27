@@ -211,7 +211,6 @@ class Cophyloformer(nn.Module):
 
         attended_pairs = torch.cat([host_pooled, parasite_pooled, cross_pooled], dim=-1)  # (B, 3*D)
 
-        # --- sim_time modulation disabled ---
         if sim_time is not None:
             gamma_beta = self.sim_time_fc(sim_time)  # (B, 2 * hidden_dim)
             scale, shift = gamma_beta.chunk(2, dim=-1)  # (B, hidden_dim), (B, hidden_dim)

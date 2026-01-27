@@ -219,7 +219,7 @@ def main(fabric: Fabric):
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
     # Defaults for large-scale training (override with env vars LR and WEIGHT_DECAY)
-    lr = 2e-4
+    lr = 5e-4
     wd = 0.01
     criterion = nn.L1Loss(reduction='none')  
     #criterion = nn.HuberLoss(reduction='none', delta=1.0)
@@ -381,21 +381,7 @@ def main(fabric: Fabric):
 
 
             fabric.backward(total_loss_tensor)
-
-            # If loss blows up (NaN/Inf), skip the update instead of crashing
-            if not torch.isfinite(total_loss_tensor.detach()):
-                optimizer.zero_grad(set_to_none=True)
-                if fabric.is_global_zero:
-                    print(f"[WARN] Non-finite loss at epoch {epoch+1} batch {batch_idx+1}: {total_loss_tensor.item()}")
-                continue
-
-            # Clip gradients but do not error on non-finite norms
-            torch.nn.utils.clip_grad_norm_(
-                getattr(model, "module", model).parameters(),
-                max_norm=1.0,
-                error_if_nonfinite=False,
-            )
-
+            fabric.clip_gradients(model, optimizer, max_norm=1.0)
             optimizer.step()
             lr_scheduler.step()
 

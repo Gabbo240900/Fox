@@ -18,7 +18,8 @@ module load miniforge/24.9.0
 conda activate cophylo
 
 python analyze_labels.py \
-  --workers 20 
+  --tgl_dir /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final\
+  --workers 20
 
 
 

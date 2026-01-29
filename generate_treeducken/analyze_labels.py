@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
 import matplotlib.pyplot as plt
 import shutil
+import stats 
 
 # Investigate cospeciation 1 scenarios - also cospeciation  0
 

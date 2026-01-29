@@ -148,7 +148,7 @@ def main():
     ap.add_argument("--out_dir", default="analysis_plots", help="Directory where PNGs will be written (default: analysis_plots)")
     ap.add_argument("--extract_extreme_cosp", action="store_true",
                     help="If set, move datasets with Cospeciations exactly 0 or 1 into an extreme_cosp_data folder")
-    ap.add_argument("--extreme_dir", default="/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/extreme_cosp_data",
+    ap.add_argument("--extreme_dir", default="/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/extreme_cosp_data",
                     help="Destination root for extreme cospeciation datasets (default: Jean-Zay fsn1 path)")
     args = ap.parse_args()
 
@@ -207,7 +207,7 @@ def main():
             if cosp is None or (isinstance(cosp, float) and math.isnan(cosp)):
                 dst = os.path.join(cnone_dir, os.path.basename(src))
                 try:
-                    shutil.move(src, dst)
+                    shutil.copy2(src, dst)
                     moved_none += 1
                     r["path"] = dst
                 except Exception:
@@ -224,7 +224,7 @@ def main():
                 # If it cannot be parsed, treat as none
                 dst = os.path.join(cnone_dir, os.path.basename(src))
                 try:
-                    shutil.move(src, dst)
+                    shutil.copy2(src, dst)
                     moved_none += 1
                     r["path"] = dst
                 except Exception:
@@ -238,7 +238,7 @@ def main():
             if abs(cosp_f - 0.0) <= eps:
                 dst = os.path.join(c0_dir, os.path.basename(src))
                 try:
-                    shutil.move(src, dst)
+                    shutil.copy2(src, dst)
                     moved0 += 1
                     r["path"] = dst
                 except Exception:
@@ -250,7 +250,7 @@ def main():
             elif abs(cosp_f - 1.0) <= eps:
                 dst = os.path.join(c1_dir, os.path.basename(src))
                 try:
-                    shutil.move(src, dst)
+                    shutil.copy2(src, dst)
                     moved1 += 1
                     r["path"] = dst
                 except Exception:
@@ -260,7 +260,7 @@ def main():
                     r["path"] = dst
 
         print(
-            f"Moved extreme cospeciation datasets: "
+            f"Copied extreme cospeciation datasets: "
             f"cosp_0={moved0}, cosp_1={moved1}, cosp_none={moved_none} -> {args.extreme_dir}"
         )
 

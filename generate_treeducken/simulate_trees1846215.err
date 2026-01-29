@@ -1,4 +1,0 @@
-+ find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/associations/ -mindepth 1 -delete
-+ find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Datasets/ -mindepth 1 -delete
-+ find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/host_trees/ -mindepth 1 -delete
-find: ‘/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/host_trees/’: No such file or directory

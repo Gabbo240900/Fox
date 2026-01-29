@@ -9,8 +9,7 @@ import glob
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
 import matplotlib.pyplot as plt
-import shutil
-import stats 
+
 
 # Investigate cospeciation 1 scenarios - also cospeciation  0
 
@@ -132,6 +131,37 @@ EXPECTED_LABELS = [
 label_values = defaultdict(list)
 nan_counts = defaultdict(int)
 
+# Load labels from .tgl files
+with ThreadPoolExecutor(max_workers=args.workers) as executor:
+    futures = {
+        executor.submit(parse_event_frequencies_from_tgl, tgl_path): tgl_path
+        for tgl_path in dataset.tgl_files
+    }
+    for future in as_completed(futures):
+        tgl_path = futures[future]
+        events = future.result()
+        if events is None:
+            continue
+
+        # Track NaN values and replace with 0.0
+        for label in EXPECTED_LABELS:
+            v = events.get(label, float("nan"))
+            if isinstance(v, float) and math.isnan(v):
+                nan_counts[label] += 1
+                v = 0.0
+            label_values[label].append(v)
+
+# Compute statistics for each label
+stats = {}
+for label, values in label_values.items():
+    arr = np.array(values, dtype=float)
+    stats[label] = {
+        "count": len(arr),
+        "mean": np.mean(arr) if len(arr) > 0 else float("nan"),
+        "std": np.std(arr) if len(arr) > 0 else float("nan"),
+        "min": np.min(arr) if len(arr) > 0 else float("nan"),
+        "max": np.max(arr) if len(arr) > 0 else float("nan"),
+    }
 
 # =========================
 # Histogram plots (bins of 0.05)
@@ -187,103 +217,6 @@ for label, s in stats.items():
         f"mean={s['mean']:.6f} std={s['std']:.6f} "
         f"min={s['min']:.6f} max={s['max']:.6f}"
     )
-
-# # =========================
-# # Specific Cospeciation value counts (open intervals)
-# # =========================
-# if "Cospeciations" in label_values:
-#     arr = np.array(label_values["Cospeciations"], dtype=float)
-
-#     c_low = int(np.sum((arr > 0.0) & (arr < 0.05)))
-#     c_high = int(np.sum((arr > 0.95) & (arr < 1.0)))
-
-#     print("\nCospeciation open-interval counts:")
-#     print(f"  0 < Cospeciations < 0.05: {c_low}")
-#     print(f"  0.95 < Cospeciations < 1.0: {c_high}")
-
-#     # =========================
-#     # Detailed tail showcase for Cospeciations (0, 0.1) and (0.9, 1.0)
-#     # =========================
-#     if "Cospeciations" in label_values:
-#         tail_dir = os.path.join(hist_out_dir, "cospeciation_tails")
-#         os.makedirs(tail_dir, exist_ok=True)
-
-#         arr = np.array(label_values["Cospeciations"], dtype=float)
-
-#         # Open intervals: exclude the endpoints as requested
-#         low_tail = arr[(arr > 0.0) & (arr < 0.1)]
-#         high_tail = arr[(arr > 0.9) & (arr < 1.0)]
-
-#         def _save_tail_details(tail_arr, lo, hi, tag):
-#             # 1) Save exact values (sorted) to CSV
-#             sorted_vals = np.sort(tail_arr)
-#             values_csv = os.path.join(tail_dir, f"Cospeciations_{tag}_values.csv")
-#             with open(values_csv, "w", newline="") as f:
-#                 w = csv.writer(f)
-#                 w.writerow(["rank", "value"])
-#                 for i, v in enumerate(sorted_vals):
-#                     w.writerow([i, float(v)])
-
-#             # 2) Save rounded value counts (helps spot discretization effects)
-#             rounded = np.round(sorted_vals, 6)
-#             uniq, cnts = np.unique(rounded, return_counts=True)
-#             counts_csv = os.path.join(tail_dir, f"Cospeciations_{tag}_value_counts_round6.csv")
-#             with open(counts_csv, "w", newline="") as f:
-#                 w = csv.writer(f)
-#                 w.writerow(["value_round6", "count"])
-#                 for u, c in zip(uniq, cnts):
-#                     w.writerow([float(u), int(c)])
-
-#             # 3) Fine histogram in the tail range
-#             # Choose a detailed bin width: 0.002 gives 50 bins across a 0.1 interval.
-#             fine_bin = 0.002
-#             fine_bins = np.arange(lo, hi + fine_bin, fine_bin)
-#             counts, edges = np.histogram(tail_arr, bins=fine_bins)
-#             centers = 0.5 * (edges[:-1] + edges[1:])
-
-#             plt.figure(figsize=(10, 5))
-#             plt.bar(centers, counts, width=fine_bin, align="center")
-#             plt.xlabel(f"Cospeciations in ({lo}, {hi})")
-#             plt.ylabel("Count")
-#             plt.title(f"Cospeciations tail distribution ({lo} < x < {hi}) | bin={fine_bin}")
-#             plt.tight_layout()
-
-#             plot_path = os.path.join(tail_dir, f"Cospeciations_{tag}_hist_fine.png")
-#             plt.savefig(plot_path, dpi=200)
-#             plt.close()
-
-#             # 4) Export fine-bin counts to CSV
-#             fine_csv = os.path.join(tail_dir, f"Cospeciations_{tag}_hist_fine_bins.csv")
-#             with open(fine_csv, "w", newline="") as f:
-#                 w = csv.writer(f)
-#                 w.writerow(["bin_start", "bin_end", "count"])
-#                 for i in range(len(counts)):
-#                     w.writerow([float(edges[i]), float(edges[i + 1]), int(counts[i])])
-
-#             # 5) Print a compact textual summary (quantiles) for quick inspection in logs
-#             if sorted_vals.size > 0:
-#                 qs = [0, 0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 1.0]
-#                 qv = np.quantile(sorted_vals, qs)
-#                 print(f"\nCospeciations {tag} tail summary ({lo} < x < {hi})")
-#                 print(f"  n={sorted_vals.size} min={sorted_vals.min():.6f} max={sorted_vals.max():.6f} mean={sorted_vals.mean():.6f}")
-#                 print("  quantiles:")
-#                 for q, v in zip(qs, qv):
-#                     print(f"    q={q:>4}: {float(v):.6f}")
-#                 print(f"  Saved: {values_csv}")
-#                 print(f"  Saved: {counts_csv}")
-#                 print(f"  Saved: {plot_path}")
-#                 print(f"  Saved: {fine_csv}")
-#             else:
-#                 print(f"\nCospeciations {tag} tail summary ({lo} < x < {hi})")
-#                 print("  n=0 (no values in this open interval)")
-
-#         _save_tail_details(low_tail, 0.0, 0.1, "low_0_0p1")
-#         _save_tail_details(high_tail, 0.9, 1.0, "high_0p9_1")
-
-# print("\nNaN values replaced with 0.0:")
-# for label, cnt in nan_counts.items():
-#     print(f"  {label}: {cnt}")
-
 
 # Optional CSV output
 out_csv = os.path.join("/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/label_analysis/", "test_label_stats.csv")

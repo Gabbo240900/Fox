@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 # Robust key/value extraction from .tgl
 # -------------------------
 _KEYVAL_RE = re.compile(
-    r"^(?P<key>[A-Za-z0-9_./\- ]+?)\s*[:=,\t ]\s*(?P<val>[-+]?((\d+\.?\d*)|(\.\d+))([eE][-+]?\d+)?|NaN|nan)$"
+    r"^(?P<key>[A-Za-z0-9_./\- ]+?)\s*[:=,\t ]\s*(?P<val>[-+]?((\d+\.?\d*)|(\.\d+))([eE][-+]?\d+)?|NaN|nan|None|none)$"
 )
 
 # Normalize possible variants found in files
@@ -58,7 +58,10 @@ def parse_events_from_tgl(path: str) -> dict | None:
                     if key is None:
                         continue
                     try:
-                        v = float(val_raw)
+                        if val_raw.lower() == "none":
+                            v = float("nan")
+                        else:
+                            v = float(val_raw)
                     except Exception:
                         v = float("nan")
                     events[key] = v
@@ -79,7 +82,11 @@ def parse_events_from_tgl(path: str) -> dict | None:
                     if key is None:
                         continue
                     try:
-                        v = float(v_try.replace(",", "."))
+                        v_try_clean = v_try.replace(",", ".")
+                        if v_try_clean.lower() == "none":
+                            v = float("nan")
+                        else:
+                            v = float(v_try_clean)
                     except Exception:
                         v = float("nan")
                     events[key] = v
@@ -105,10 +112,13 @@ def collect_values(tgl_files: list[str], workers: int | None):
                 continue
             for k in EXPECTED:
                 v = ev.get(k, float("nan"))
-                if isinstance(v, float) and math.isnan(v):
+                # Treat missing/None/NaN as 0.0
+                if v is None:
                     nan_counts[k] += 1
-                    # We skip missing values rather than forcing 0.0, because you want distributions.
-                    continue
+                    v = 0.0
+                elif isinstance(v, float) and math.isnan(v):
+                    nan_counts[k] += 1
+                    v = 0.0
                 values[k].append(float(v))
 
     return values, nan_counts

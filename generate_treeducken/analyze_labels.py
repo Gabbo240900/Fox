@@ -31,6 +31,8 @@ _KEY_MAP = {
     "cospeciation": "Cospeciations",
     "host_spread/switches": "Host_spread/Switches",
     "host_spread": "Host_spread/Switches",
+    "host_spreads/switches": "Host_spread/Switches",
+    "host_spreads": "Host_spread/Switches",
     "switches": "Host_spread/Switches",
     "host_switches": "Host_spread/Switches",
     "hostswitches": "Host_spread/Switches",
@@ -82,7 +84,14 @@ def parse_events_from_tgl(path: str) -> Optional[Dict[str, float]]:
                     # accept underscore variants
                     if k_norm in ("cospeciations", "cospeciation"):
                         key = "Cospeciations"
-                    elif k_norm in ("hostspread/switches", "hostspread", "switches", "hostswitches"):
+                    elif k_norm in (
+                        "hostspread/switches",
+                        "hostspreads/switches",
+                        "hostspread",
+                        "hostspreads",
+                        "switches",
+                        "hostswitches",
+                    ):
                         key = "Host_spread/Switches"
                     else:
                         key = None

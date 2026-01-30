@@ -19,7 +19,9 @@ conda activate cophylo
 
 python analyze_labels.py \
   --tgl_dir /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final\
-  --workers 20
+  --out_dir /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/label_analysis/ \
+  --workers 20 \
+  --bins 20
 
 
 

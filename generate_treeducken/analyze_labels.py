@@ -10,6 +10,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import matplotlib.pyplot as plt
 
+# Ensure matplotlib has a writable config/cache dir on HPC nodes
+if "MPLCONFIGDIR" not in os.environ:
+    os.environ["MPLCONFIGDIR"] = os.path.join("/tmp", f"matplotlib-{os.getuid()}")
+    os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
+
+from typing import Optional, Dict, List, Tuple
+
 
 # -------------------------
 # Robust key/value extraction from .tgl
@@ -39,9 +46,9 @@ def _norm_key(k: str) -> str:
     return k
 
 
-def parse_events_from_tgl(path: str) -> dict | None:
+def parse_events_from_tgl(path: str) -> Optional[Dict[str, float]]:
     """Parse a .tgl and return a dict with keys in EXPECTED (if found)."""
-    events: dict[str, float] = {}
+    events: Dict[str, float] = {}
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             for raw in f:
@@ -96,7 +103,7 @@ def parse_events_from_tgl(path: str) -> dict | None:
         return None
 
 
-def collect_values(tgl_files: list[str], workers: int | None):
+def collect_values(tgl_files: List[str], workers: Optional[int]):
     if workers is None:
         workers = min(32, (os.cpu_count() or 1))
 
@@ -124,7 +131,7 @@ def collect_values(tgl_files: list[str], workers: int | None):
     return values, nan_counts
 
 
-def save_hist(values: list[float], out_png: str, out_csv: str, title: str, xlabel: str, bins=20):
+def save_hist(values: List[float], out_png: str, out_csv: str, title: str, xlabel: str, bins: int = 20):
     arr = np.array(values, dtype=float)
     if arr.size == 0:
         print(f"[WARN] No values for {xlabel}; skipping histogram.")

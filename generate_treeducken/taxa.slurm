@@ -22,7 +22,8 @@ python taxa.py /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_tre
   --workers 20 \
   --csv_out taxa_summary_new.csv \
   --outliers_csv taxa_outliers_new_p90.csv \
-  --remove
+  --remove \
+  --side_dir /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/side_datasets
 
 
 

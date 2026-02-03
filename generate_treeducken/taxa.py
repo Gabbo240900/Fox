@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, re, argparse, numpy as np, csv
+import os, re, argparse, numpy as np, csv, shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 
@@ -93,7 +93,16 @@ def main():
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 8) // 2),
                     help="Number of threads for parallel parsing (default: half of CPUs)")
     ap.add_argument("--min_taxa", type=int, default=10, help="Minimum taxa required in an alignment block (default: 10)")
-    ap.add_argument("--remove", action="store_true", help="Remove files outside thresholds (host/parasite)")
+    ap.add_argument(
+        "--remove",
+        action="store_true",
+        help="Move outlier files (too few taxa or above p90) into a side folder named 'side_datasets' instead of deleting",
+    )
+    ap.add_argument(
+        "--side_dir",
+        default=None,
+        help="Optional destination folder for moved outliers (default: <root>/side_datasets)",
+    )
     args = ap.parse_args()
 
     # Collect all candidate files first
@@ -136,8 +145,8 @@ def main():
     para_len  = [r["parasite_len"] for r in rows if r["parasite_len"] > 0]
 
     # Percentiles and outliers
-    p90_host = int(np.percentile(host_taxa, 95)) if host_taxa else 0
-    p90_para = int(np.percentile(para_taxa, 95)) if para_taxa else 0
+    p90_host = int(np.percentile(host_taxa, 90)) if host_taxa else 0
+    p90_para = int(np.percentile(para_taxa, 90)) if para_taxa else 0
     min_taxa = int(args.min_taxa)
 
     outliers_host_hi = [r for r in rows if r["host_taxa"] > p90_host]
@@ -193,33 +202,52 @@ def main():
     else:
         print("✅ No parasite files under min_taxa.")
 
-    # Optional removal of outlier files
+    # Optional move of outlier files to a side folder (instead of deleting)
     if args.remove:
-        to_delete = set()
+        to_move = set()
         for r in outliers_host_hi:
-            to_delete.add(r["path"])
+            to_move.add(r["path"])
         for r in outliers_para_hi:
-            to_delete.add(r["path"])
+            to_move.add(r["path"])
         for r in outliers_host_lo:
-            to_delete.add(r["path"])
+            to_move.add(r["path"])
         for r in outliers_para_lo:
-            to_delete.add(r["path"])
+            to_move.add(r["path"])
 
-        if to_delete:
-            print(f"\n🗑️ Removing {len(to_delete)} files outside [min_taxa, p90] taxa thresholds...")
-            removed_ok = 0
+        side_dir = args.side_dir or os.path.join(args.root, "side_datasets")
+
+        def _unique_path(dst_path: str) -> str:
+            """If dst_path already exists, append _1, _2, ... before extension."""
+            if not os.path.exists(dst_path):
+                return dst_path
+            base, ext = os.path.splitext(dst_path)
+            k = 1
+            while True:
+                cand = f"{base}_{k}{ext}"
+                if not os.path.exists(cand):
+                    return cand
+                k += 1
+
+        if to_move:
+            print(f"\n📦 Moving {len(to_move)} outlier file(s) into: {side_dir}")
+            moved_ok = 0
             failed = 0
-            for p in sorted(to_delete):
+            for src in sorted(to_move):
                 try:
-                    os.remove(p)
-                    removed_ok += 1
-                    print(f"  ✅ removed: {p}")
+                    # Preserve folder structure relative to root
+                    rel = os.path.relpath(src, args.root)
+                    dst = os.path.join(side_dir, rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    dst = _unique_path(dst)
+                    shutil.move(src, dst)
+                    moved_ok += 1
+                    print(f"  ✅ moved: {src}  ->  {dst}")
                 except Exception as e:
                     failed += 1
-                    print(f"  ❌ failed:  {p} — {e}")
-            print(f"Done. Removed {removed_ok} file(s); {failed} failed.")
+                    print(f"  ❌ failed: {src} — {e}")
+            print(f"Done. Moved {moved_ok} file(s); {failed} failed.")
         else:
-            print("\n✅ No files to remove outside [min_taxa, p90] thresholds.")
+            print("\n✅ No outlier files to move (outside [min_taxa, p90] thresholds).")
 
     # Optional outliers CSV
     if args.outliers_csv:

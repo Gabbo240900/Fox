@@ -299,8 +299,8 @@ def main(fabric: Fabric):
         pin_memory=False
     )
     # Setup validation loader once; train loader will be re-built every epoch (oversampling)
-    val_loader = fabric.setup_dataloaders(val_loader)[0]
-    train_loader = fabric.setup_dataloaders(train_loader)[0]
+    val_loader = fabric.setup_dataloaders(val_loader)
+    train_loader = fabric.setup_dataloaders(train_loader)
 
     lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
@@ -430,7 +430,7 @@ def main(fabric: Fabric):
             prefetch_factor=4,
             pin_memory=False,
         )
-        train_loader = fabric.setup_dataloaders(train_loader)[0]
+        train_loader = fabric.setup_dataloaders(train_loader)
 
         steps_per_epoch = len(train_loader)
         # Validation trigger points at 25%, 50%, 75% of the epoch
@@ -795,4 +795,3 @@ if __name__ == "__main__":
         )
     )
     fabric.launch(main)
-

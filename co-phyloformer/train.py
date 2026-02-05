@@ -3,7 +3,7 @@ import torch
 import pandas as pd
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from model import Cophyloformer
 from data import CophylogenyDataset
 from torch.nn import functional as F
@@ -21,6 +21,71 @@ from lightning.fabric.utilities.seed import seed_everything
 from lightning.fabric.strategies import DDPStrategy
 from validation import run_full_validation, compute_val_predictions
 import glob
+
+# -----------------------------
+# DDP-safe oversampling helpers
+# -----------------------------
+from collections import Counter
+
+
+def _safe_float(x, default=0.0):
+    try:
+        if x is None:
+            return default
+        return float(x)
+    except Exception:
+        return default
+
+
+def build_bin_inverse_weights_from_pt_files(pt_files, event_key="Cospeciations", bins=10, eps=1e-8):
+    """Compute inverse-frequency sampling weights by binning a target in [0,1].
+
+    Returns:
+      weights: list[float] aligned with pt_files
+      bin_counts: dict[int, int]
+    """
+    ys = []
+    for p in pt_files:
+        s = torch.load(p, map_location="cpu", weights_only=False)
+        y = _safe_float(s.get("event_frequencies", {}).get(event_key, 0.0), default=0.0)
+        # clamp to [0,1]
+        y = 0.0 if y < 0.0 else (1.0 if y > 1.0 else y)
+        ys.append(y)
+
+    bin_ids = [min(bins - 1, int(y * bins)) for y in ys]
+    counts = Counter(bin_ids)
+
+    weights = [1.0 / (counts[b] + eps) for b in bin_ids]
+
+    # Normalize weights (optional, keeps numbers reasonable)
+    mean_w = sum(weights) / max(1, len(weights))
+    if mean_w > 0:
+        weights = [w / mean_w for w in weights]
+
+    return weights, dict(counts)
+
+
+def make_ddp_oversampled_subset(dataset, base_indices, base_weights, num_samples, epoch, seed=42):
+    """DDP-safe oversampling:
+
+    1) sample indices WITH replacement using multinomial (once per epoch, same seed on all ranks)
+    2) wrap the resampled indices in a Subset
+    3) use DistributedSampler on that Subset
+
+    base_indices: list[int] indices into the *full* dataset
+    base_weights: list[float] same length as base_indices
+    """
+    g = torch.Generator()
+    g.manual_seed(seed + int(epoch))
+
+    w = torch.tensor(base_weights, dtype=torch.float)
+    # Avoid any accidental all-zero weights
+    if float(w.sum()) <= 0:
+        w = torch.ones_like(w)
+
+    sampled_local = torch.multinomial(w, num_samples=num_samples, replacement=True, generator=g).tolist()
+    resampled_indices = [base_indices[j] for j in sampled_local]
+    return torch.utils.data.Subset(dataset, resampled_indices)
 
 # BEST CONFIGURATION SO FAR FOR SMALL DATASETS
 # Log host switch 
@@ -176,15 +241,50 @@ def main(fabric: Fabric):
 
     batch_size = 32
 
-    train_loader = DataLoader(
-        train_subset,
-        batch_size=batch_size,
+    # -----------------------------
+    # DDP-safe oversampling (Cospeciations)
+    # -----------------------------
+    # Build per-file weights once, then slice to train_indices.
+    all_weights, bin_counts = build_bin_inverse_weights_from_pt_files(
+        dataset.pt_files,
+        event_key="Cospeciations",
+        bins=10,
+    )
+
+    if fabric.is_global_zero:
+        print("[Oversampling] Cospeciation bin counts (full dataset):", bin_counts)
+
+    train_weights = [all_weights[i] for i in train_indices]
+
+    # We will create an oversampled subset EACH EPOCH (same size as train_indices)
+    # then shard it cleanly with DistributedSampler.
+    train_epoch_subset = make_ddp_oversampled_subset(
+        dataset=dataset,
+        base_indices=train_indices,
+        base_weights=train_weights,
+        num_samples=len(train_indices),
+        epoch=0,
+        seed=42,
+    )
+
+    train_sampler = DistributedSampler(
+        train_epoch_subset,
+        num_replicas=fabric.world_size,
+        rank=fabric.global_rank,
         shuffle=True,
+        seed=42,
+    )
+
+    train_loader = DataLoader(
+        train_epoch_subset,
+        batch_size=batch_size,
+        sampler=train_sampler,
+        shuffle=False,
         collate_fn=collate_fn,
         num_workers=8,
         persistent_workers=True,
         prefetch_factor=4,
-        pin_memory=False
+        pin_memory=False,
     )
     
     # Create validation loader
@@ -198,13 +298,15 @@ def main(fabric: Fabric):
         prefetch_factor=2,
         pin_memory=False
     )
-    train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
+    # Setup validation loader once; train loader will be re-built every epoch (oversampling)
+    val_loader = fabric.setup_dataloaders(val_loader)[0]
+    train_loader = fabric.setup_dataloaders(train_loader)[0]
 
     lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     
-    #criterion = nn.L1Loss(reduction='none')  
-    criterion = nn.HuberLoss(reduction='none', delta=1.0)
+    criterion = nn.L1Loss(reduction='none')  
+    #criterion = nn.HuberLoss(reduction='none', delta=1.0)
     # criterion = nn.MSELoss(reduction='none')
 
     model = Cophyloformer()
@@ -298,6 +400,39 @@ def main(fabric: Fabric):
     # Training loop over all batches per epoch (no micro-epochs)
     for epoch in range(start_epoch, epochs):
         steps_per_epoch = len(train_loader)
+        # Rebuild an oversampled subset for this epoch (DDP-consistent) and a fresh DistributedSampler
+        train_epoch_subset = make_ddp_oversampled_subset(
+            dataset=dataset,
+            base_indices=train_indices,
+            base_weights=train_weights,
+            num_samples=len(train_indices),
+            epoch=epoch,
+            seed=42,
+        )
+
+        train_sampler = DistributedSampler(
+            train_epoch_subset,
+            num_replicas=fabric.world_size,
+            rank=fabric.global_rank,
+            shuffle=True,
+            seed=42 + epoch,
+        )
+        train_sampler.set_epoch(epoch)
+
+        train_loader = DataLoader(
+            train_epoch_subset,
+            batch_size=batch_size,
+            sampler=train_sampler,
+            shuffle=False,
+            collate_fn=collate_fn,
+            num_workers=8,
+            persistent_workers=True,
+            prefetch_factor=4,
+            pin_memory=False,
+        )
+        train_loader = fabric.setup_dataloaders(train_loader)[0]
+
+        steps_per_epoch = len(train_loader)
         # Validation trigger points at 25%, 50%, 75% of the epoch
         val_checkpoints = {
             int(0.10 * steps_per_epoch),
@@ -354,7 +489,7 @@ def main(fabric: Fabric):
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
             loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
 
-            total_loss_tensor = loss_cospeciation + 8 * loss_switches
+            total_loss_tensor = loss_cospeciation + loss_switches
 
 
             fabric.backward(total_loss_tensor)

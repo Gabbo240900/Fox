@@ -90,9 +90,9 @@ def main():
                     help="File extensions to include (default: .tgl .nex .nexus)")
     ap.add_argument("--csv_out", default=None, help="Optional path to write per-file CSV")
     ap.add_argument("--outliers_csv", default=None, help="Optional path to write p95 outlier files (host/parasite)")
-    ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 8) // 2),
+    ap.add_argument("--workers", type=int, default=20,
                     help="Number of threads for parallel parsing (default: half of CPUs)")
-    ap.add_argument("--min_taxa", type=int, default=10, help="Minimum taxa required in an alignment block (default: 10)")
+    ap.add_argument("--min_taxa", type=int, default=5, help="Minimum taxa required in an alignment block (default: 10)")
     ap.add_argument(
         "--remove",
         action="store_true",

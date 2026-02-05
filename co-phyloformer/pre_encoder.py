@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 
 src_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/Dataset_final/"
-dst_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/small_preencoded_pt/"
+dst_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/new_preencoded_pt/"
 os.makedirs(dst_dir, exist_ok=True)
 
 dataset = CophylogenyDataset(src_dir).get_data()

@@ -37,7 +37,7 @@ def _safe_float(x, default=0.0):
         return default
 
 
-def build_bin_inverse_weights_from_pt_files(pt_files, event_key="Cospeciations", bins=10, eps=1e-8):
+def build_bin_inverse_weights_from_pt_files(pt_files, event_key="Cospeciations", bins=10, eps=1e-8, exponent=0.5, max_ratio=5.0, mix_uniform=0.5):
     """Compute inverse-frequency sampling weights by binning a target in [0,1].
 
     Returns:
@@ -55,7 +55,19 @@ def build_bin_inverse_weights_from_pt_files(pt_files, event_key="Cospeciations",
     bin_ids = [min(bins - 1, int(y * bins)) for y in ys]
     counts = Counter(bin_ids)
 
-    weights = [1.0 / (counts[b] + eps) for b in bin_ids]
+    # Less-aggressive inverse-frequency weighting:
+    #   exponent=0.5 means 1/sqrt(count) instead of 1/count
+    raw = [(1.0 / ((counts[b] + eps) ** exponent)) for b in bin_ids]
+
+    # Cap extreme weights to avoid overfitting rare bins
+    if len(raw) > 0:
+        w_min = max(min(raw), eps)
+        cap = w_min * float(max_ratio)
+        raw = [min(w, cap) for w in raw]
+
+    # Mix with uniform sampling to keep the original distribution partially
+    # mix_uniform=0.5 => 50% uniform + 50% weighted
+    weights = [(1.0 - mix_uniform) * 1.0 + mix_uniform * w for w in raw]
 
     # Normalize weights (optional, keeps numbers reasonable)
     mean_w = sum(weights) / max(1, len(weights))
@@ -231,9 +243,40 @@ def main(fabric: Fabric):
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
     indices = list(range(len(dataset)))
-    train_indices, val_indices = train_test_split(
-        indices, test_size=0.2, random_state=42, shuffle=True
-    )
+
+    # Stratify split by Cospeciations bins so train/val have similar label distributions
+    # NOTE: use bins=5 to avoid tiny strata when the tail is rare.
+    ys = []
+    for i in indices:
+        s = torch.load(dataset.pt_files[i], map_location="cpu", weights_only=False)
+        y = _safe_float(s.get("event_frequencies", {}).get("Cospeciations", 0.0), default=0.0)
+        y = 0.0 if y < 0.0 else (1.0 if y > 1.0 else y)
+        ys.append(y)
+
+    strat_bins = 5
+    strata = [min(strat_bins - 1, int(y * strat_bins)) for y in ys]
+
+    # If any stratum has <2 samples, sklearn stratify can fail.
+    # Fallback to non-stratified split in that case.
+    from collections import Counter
+    _counts = Counter(strata)
+    if min(_counts.values()) < 2:
+        if fabric.is_global_zero:
+            print("[Split] Stratified split not possible (a stratum has <2 samples). Falling back to random split.")
+        train_indices, val_indices = train_test_split(
+            indices, test_size=0.2, random_state=42, shuffle=True
+        )
+    else:
+        train_indices, val_indices = train_test_split(
+            indices, test_size=0.2, random_state=42, shuffle=True, stratify=strata
+        )
+
+    if fabric.is_global_zero:
+        from collections import Counter
+        train_counts = Counter([strata[i] for i in train_indices])
+        val_counts = Counter([strata[i] for i in val_indices])
+        print("[Split] Cospeciation bin counts - train:", dict(train_counts))
+        print("[Split] Cospeciation bin counts - val:", dict(val_counts))
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
@@ -248,7 +291,10 @@ def main(fabric: Fabric):
     all_weights, bin_counts = build_bin_inverse_weights_from_pt_files(
         dataset.pt_files,
         event_key="Cospeciations",
-        bins=10,
+        bins=5,
+        exponent=0.5,
+        max_ratio=5.0,
+        mix_uniform=0.5,
     )
 
     if fabric.is_global_zero:

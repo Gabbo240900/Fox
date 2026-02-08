@@ -37,7 +37,7 @@ def _safe_float(x, default=0.0):
         return default
 
 
-def build_bin_inverse_weights_from_pt_files(pt_files, event_key="Cospeciations", bins=10, eps=1e-8, exponent=0.5, max_ratio=5.0, mix_uniform=0.5):
+def build_bin_inverse_weights_from_pt_files(pt_files, event_key="Cospeciations", bins=5, eps=1e-8, exponent=0.5, max_ratio=5.0, mix_uniform=0.5):
     """Compute inverse-frequency sampling weights by binning a target in [0,1].
 
     Returns:

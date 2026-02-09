@@ -42,7 +42,25 @@ start_time = time.time()  # Record start time
 
 class LazyCophyloformerDataset(Dataset):
     def __init__(self, preencoded_dir):
-        self.pt_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
+        # IMPORTANT for DDP: every rank must iterate the same number of batches.
+        # If some samples are invalid (e.g., empty host/parasite MSAs) and are skipped
+        # differently across ranks, NCCL all-reduces can hang and time out.
+        # So we deterministically pre-filter invalid .pt files once here.
+        all_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
+        valid_files = []
+        for pt_path in all_files:
+            try:
+                sample = torch.load(pt_path, map_location="cpu", weights_only=False)
+                if len(sample.get("host_msas", {})) == 0:
+                    continue
+                if len(sample.get("parasite_msas", {})) == 0:
+                    continue
+                valid_files.append(pt_path)
+            except Exception:
+                # Corrupt/unreadable file -> skip deterministically
+                continue
+
+        self.pt_files = valid_files
         self.preencoded_dir = preencoded_dir
 
     def __len__(self):
@@ -61,9 +79,9 @@ class LazyCophyloformerDataset(Dataset):
                     masked.append(aa)
             return torch.tensor(masked, dtype=torch.long)
 
-        # Skip empty samples
-        if len(sample["host_msas"]) == 0 or len(sample["parasite_msas"]) == 0:
-            return None
+        # Should never happen thanks to pre-filtering in __init__
+        if len(sample.get("host_msas", {})) == 0 or len(sample.get("parasite_msas", {})) == 0:
+            raise ValueError(f"Invalid sample with empty MSAs: {pt_path}")
 
         host_list = list(sample["host_msas"].keys())
         parasite_list = list(sample["parasite_msas"].keys())
@@ -122,9 +140,7 @@ def load_checkpoint(model, optimizer, checkpoint_path, map_location=None):
 
 def collate_fn(batch):
     """Pads MSA sequences dynamically to match batch size."""
-    batch = [b for b in batch if b is not None]
-    if len(batch) == 0:
-        return None
+    # After dataset pre-filtering, no element should be None.
     host_msas = [sample["host_msa"] for sample in batch]
     parasite_msas = [sample["parasite_msa"] for sample in batch]
     labels = torch.stack([sample["labels"] for sample in batch])
@@ -372,6 +388,8 @@ def main(fabric: Fabric):
                 continue
             elif epoch == start_epoch and batch_idx == start_batch:
                 print(f"[Resume] Continuing from epoch {start_epoch+1}, batch {start_batch+1}")
+            if batch is None:
+                raise RuntimeError("collate_fn returned None; this would desync DDP ranks")
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
             batch["sim_time"] = batch["sim_time"].to(device)  # --- sim_time disabled ---
@@ -414,46 +432,49 @@ def main(fabric: Fabric):
             lr_scheduler.step()
 
             current_step = batch_idx + 1
-            if fabric.is_global_zero and current_step in val_checkpoints:
+            if current_step in val_checkpoints:
+                # IMPORTANT: run validation on ALL ranks so any all_reduce/barrier inside
+                # run_full_validation does not hang. Only rank0 logs/saves.
                 val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
-                wandb.log({
-                    "train/loss_step": total_loss_tensor.item(),
-                    "lr": optimizer.param_groups[0]['lr'],
-                    "step": epoch * len(train_loader) + batch_idx,
-                    "val/loss_step": val_results["val_loss"],
-                    "val/cov90_step/Cospeciations": val_results.get("val_cov90", [None, None])[0],
-                    "val/cov90_step/Host_spread/Switches": val_results.get("val_cov90", [None, None])[1],
-                    **{f"val/MAE_step/{event_names[i]}": val_results["val_mae"][i] for i in range(len(event_names))},
-                    **{f"val/MSE_step/{event_names[i]}": val_results["val_mse"][i] for i in range(len(event_names))},
-                    **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
-                    **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))}
-                })
-                ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
-                save_checkpoint(
-                    model,
-                    optimizer,
-                    epoch,
-                    val_results["val_loss"],
-                    checkpoint_dir,
-                    ckpt_name,
-                    batch_idx=batch_idx
-                )
-                print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
-                # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
-                if val_results["val_loss"] < best_val_loss:
-                    best_val_loss = val_results["val_loss"]
-                    val_predictions_data = val_results
-                    ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
+                if fabric.is_global_zero:
+                    wandb.log({
+                        "train/loss_step": total_loss_tensor.item(),
+                        "lr": optimizer.param_groups[0]['lr'],
+                        "step": epoch * len(train_loader) + batch_idx,
+                        "val/loss_step": val_results["val_loss"],
+                        "val/cov90_step/Cospeciations": val_results.get("val_cov90", [None, None])[0],
+                        "val/cov90_step/Host_spread/Switches": val_results.get("val_cov90", [None, None])[1],
+                        **{f"val/MAE_step/{event_names[i]}": val_results["val_mae"][i] for i in range(len(event_names))},
+                        **{f"val/MSE_step/{event_names[i]}": val_results["val_mse"][i] for i in range(len(event_names))},
+                        **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
+                        **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))}
+                    })
+                    ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
                     save_checkpoint(
                         model,
                         optimizer,
                         epoch,
-                        best_val_loss,
+                        val_results["val_loss"],
                         checkpoint_dir,
                         ckpt_name,
                         batch_idx=batch_idx
                     )
-                    print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
+                    print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
+                    # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
+                    if val_results["val_loss"] < best_val_loss:
+                        best_val_loss = val_results["val_loss"]
+                        val_predictions_data = val_results
+                        ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
+                        save_checkpoint(
+                            model,
+                            optimizer,
+                            epoch,
+                            best_val_loss,
+                            checkpoint_dir,
+                            ckpt_name,
+                            batch_idx=batch_idx
+                        )
+                        print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
 
             total_loss += total_loss_tensor.item()
             num_batches += 1
@@ -479,23 +500,24 @@ def main(fabric: Fabric):
                 smape   = 2 * abs_err / (preds.abs() + labels_abs + eps_vec)
 
                 current_step = batch_idx + 1
-                if fabric.is_global_zero and current_step in val_checkpoints:
+                if current_step in val_checkpoints:
                     batch_mae   = abs_err.mean(dim=0).detach().cpu().tolist()
                     batch_mse   = sq_err.mean(dim=0).detach().cpu().tolist()
                     batch_mre   = rel_err.mean(dim=0).detach().cpu().tolist()
                     batch_smape = smape.mean(dim=0).detach().cpu().tolist()
 
-                    log_dict = {
-                        "step": epoch * len(train_loader) + batch_idx,
-                        "lr": optimizer.param_groups[0]['lr']
-                    }
-                    for i, event in enumerate(event_names):
-                        log_dict[f"MAE_step/{event}"] = batch_mae[i]
-                        log_dict[f"MSE_step/{event}"] = batch_mse[i]
-                        log_dict[f"MRE_step/{event}"] = batch_mre[i]
-                        log_dict[f"sMAPE_step/{event}"] = batch_smape[i]
+                    if fabric.is_global_zero:
+                        log_dict = {
+                            "step": epoch * len(train_loader) + batch_idx,
+                            "lr": optimizer.param_groups[0]['lr']
+                        }
+                        for i, event in enumerate(event_names):
+                            log_dict[f"MAE_step/{event}"] = batch_mae[i]
+                            log_dict[f"MSE_step/{event}"] = batch_mse[i]
+                            log_dict[f"MRE_step/{event}"] = batch_mre[i]
+                            log_dict[f"sMAPE_step/{event}"] = batch_smape[i]
 
-                    wandb.log(log_dict)
+                        wandb.log(log_dict)
 
                 sum_abs_err += abs_err.sum(dim=0)
                 sum_sq_err  += sq_err.sum(dim=0)

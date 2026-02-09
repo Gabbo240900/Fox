@@ -50,11 +50,20 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
     with torch.no_grad():
         for batch in val_loader:
             if batch is None:
-                continue
+                # If this happens, something upstream (dataset/collate) is dropping samples.
+                # In DDP this can cause ranks to diverge and NCCL to hang.
+                raise RuntimeError("validation: received None batch from val_loader")
+
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device)
             batch["labels"] = batch["labels"].to(device)
+
+            # sim_time is optional in some older checkpoints/pipelines
+            if "sim_time" in batch and batch["sim_time"] is not None:
+                batch["sim_time"] = batch["sim_time"].to(device)
+            else:
+                # default to 1.0 per-sample if missing
+                batch["sim_time"] = torch.ones((batch["labels"].shape[0], 1), device=device, dtype=batch["labels"].dtype)
 
             outputs = model(
                 batch["host_msa"],
@@ -145,11 +154,6 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
 
 
 def compute_val_predictions(model, val_loader, device):
-    """Return raw model outputs and labels.
-
-    For quantile regression, outputs are (B, 2Q).
-    Downstream code (train.py) reduces to q50 for plots/CSV.
-    """
     preds_list = []
     labels_list = []
     model.eval()
@@ -157,11 +161,16 @@ def compute_val_predictions(model, val_loader, device):
     with torch.no_grad():
         for batch in val_loader:
             if batch is None:
-                continue
+                raise RuntimeError("validation: received None batch from val_loader")
+
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
             batch["labels"] = batch["labels"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device)
+
+            if "sim_time" in batch and batch["sim_time"] is not None:
+                batch["sim_time"] = batch["sim_time"].to(device)
+            else:
+                batch["sim_time"] = torch.ones((batch["labels"].shape[0], 1), device=device, dtype=batch["labels"].dtype)
 
             outputs = model(
                 batch["host_msa"],

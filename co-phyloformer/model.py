@@ -190,7 +190,7 @@ class MSAEncoder(nn.Module):
         return x, x[:, 0]
 
 class Cophyloformer(nn.Module):
-    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8):
+    def __init__(self, hidden_dim=512, num_layers=8, num_heads=8, quantiles=(0.5, 0.75, 0.9)):
         super(Cophyloformer, self).__init__()
         # Store hyperparameters for W&B logging
         self.hidden_dim = hidden_dim
@@ -198,6 +198,10 @@ class Cophyloformer(nn.Module):
         self.num_heads = num_heads
         #self.dropout = 0.1
         self.embedding_dim = hidden_dim
+
+        # Quantile regression settings
+        self.quantiles = tuple(float(q) for q in quantiles)
+        self.num_quantiles = len(self.quantiles)
         
         self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
         self.parasite_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
@@ -221,7 +225,7 @@ class Cophyloformer(nn.Module):
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.GELU(),
             #nn.Dropout(0.1),
-            nn.Linear(hidden_dim // 2, 1)
+            nn.Linear(hidden_dim // 2, self.num_quantiles)
         )
         self.switch_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
@@ -231,7 +235,7 @@ class Cophyloformer(nn.Module):
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.GELU(),
             #nn.Dropout(0.1),
-            nn.Linear(hidden_dim // 2, 1)
+            nn.Linear(hidden_dim // 2, self.num_quantiles)
         )
 
     def forward(self, host_msa, parasite_msa, mappings, sim_time):
@@ -291,8 +295,17 @@ class Cophyloformer(nn.Module):
             modulated = base * (1 + scale) + shift
             attended_pairs = torch.cat([modulated, rest], dim=-1)
 
-        out_cospeciation = self.cospeciation_head(attended_pairs)
-        out_switch = self.switch_head(attended_pairs)
-        outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
+        out_cospeciation = self.cospeciation_head(attended_pairs)  # (B, Q)
+        out_switch = self.switch_head(attended_pairs)              # (B, Q)
+
+        # Concatenate as: [cospec_q1..qQ, switch_q1..qQ]
+        outputs = torch.cat([out_cospeciation, out_switch], dim=-1)  # (B, 2Q)
+
+        # Keep outputs in [0,1] for quantile (pinball) loss against labels in [0,1]
         outputs = torch.sigmoid(outputs)
         return outputs
+
+    def split_quantiles(self, outputs: torch.Tensor):
+        """Split concatenated outputs into (cospeciation_q, switches_q), each (B, Q)."""
+        q = self.num_quantiles
+        return outputs[:, :q], outputs[:, q:]

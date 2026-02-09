@@ -3,7 +3,7 @@ import torch
 import pandas as pd
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from model import Cophyloformer
 from data import CophylogenyDataset
 from torch.nn import functional as F
@@ -33,6 +33,10 @@ event_names = [
     "Cospeciations",
     "Host_spread/Switches"
 ]
+
+# Quantiles for quantile regression (must match model.py)
+QUANTILES = (0.5, 0.75, 0.9)
+Q50_INDEX = QUANTILES.index(0.5)
 
 start_time = time.time()  # Record start time
 
@@ -159,6 +163,23 @@ def encode_sequence(sequence, max_len=128):
     encoded += [PAD_ID] * (max_len - len(encoded))
     return torch.tensor(encoded, dtype=torch.long)
 
+# -----------------------------
+# Quantile (pinball) loss
+# -----------------------------
+
+def pinball_loss(pred_q: torch.Tensor, y: torch.Tensor, quantiles=QUANTILES) -> torch.Tensor:
+    """Pinball loss for quantile regression.
+
+    pred_q: (B, Q) predicted quantiles in [0,1]
+    y:      (B,)   target in [0,1]
+    returns: scalar tensor
+    """
+    qs = torch.tensor(quantiles, device=pred_q.device, dtype=pred_q.dtype).view(1, -1)  # (1, Q)
+    yq = y.view(-1, 1)  # (B, 1)
+    diff = yq - pred_q  # (B, Q)
+    loss = torch.maximum(qs * diff, (qs - 1.0) * diff)  # (B, Q)
+    return loss.mean()
+
 def main(fabric: Fabric):
     # Load Data
     preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/new_preencoded_pt/"
@@ -176,38 +197,58 @@ def main(fabric: Fabric):
 
     batch_size = 32
 
+    # -----------------------------
+    # DDP-safe sampling
+    # -----------------------------
+    train_sampler = DistributedSampler(
+        train_subset,
+        num_replicas=fabric.world_size,
+        rank=fabric.global_rank,
+        shuffle=True,
+        seed=42,
+    )
+
+    val_sampler = DistributedSampler(
+        val_subset,
+        num_replicas=fabric.world_size,
+        rank=fabric.global_rank,
+        shuffle=False,
+    )
+
     train_loader = DataLoader(
         train_subset,
         batch_size=batch_size,
-        shuffle=True,
+        sampler=train_sampler,
+        shuffle=False,  # IMPORTANT: do not use shuffle with a sampler
         collate_fn=collate_fn,
         num_workers=8,
         persistent_workers=True,
         prefetch_factor=4,
-        pin_memory=False
+        pin_memory=False,
     )
-    
-    # Create validation loader
+
+    # Create validation loader (also sharded for balanced work across ranks)
     val_loader = DataLoader(
         val_subset,
         batch_size=batch_size,
+        sampler=val_sampler,
         shuffle=False,
         collate_fn=collate_fn,
         num_workers=4,
         persistent_workers=True,
         prefetch_factor=2,
-        pin_memory=False
+        pin_memory=False,
     )
+
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
     lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     
-    #criterion = nn.L1Loss(reduction='none')  
-    criterion = nn.HuberLoss(reduction='none', delta=1.0)
-    # criterion = nn.MSELoss(reduction='none')
+    # Quantile regression uses pinball loss (defined above)
+    criterion = None
 
-    model = Cophyloformer()
+    model = Cophyloformer(quantiles=QUANTILES)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)
 
@@ -297,6 +338,8 @@ def main(fabric: Fabric):
 
     # Training loop over all batches per epoch (no micro-epochs)
     for epoch in range(start_epoch, epochs):
+        # Ensure each epoch uses a different (but synchronized) shuffle order across ranks
+        train_sampler.set_epoch(epoch)
         steps_per_epoch = len(train_loader)
         # Validation trigger points at 25%, 50%, 75% of the epoch
         val_checkpoints = {
@@ -342,17 +385,26 @@ def main(fabric: Fabric):
                 batch['sim_time'],  # --- sim_time disabled ---
             )
 
+            # Model returns quantiles: outputs shape (B, 2Q)
+            base_model = getattr(model, "module", model)
+            cos_q, sw_q = base_model.split_quantiles(outputs)  # each (B, Q)
+
+            # Use q50 for logging/plots (a single point estimate)
+            cos_q50 = cos_q[:, Q50_INDEX]
+            sw_q50  = sw_q[:, Q50_INDEX]
+
             for idx in range(outputs.shape[0]):
                 all_train_prediction_data.append({
                     "Sample_Index": batch_idx * outputs.shape[0] + idx,
-                    "Cospeciations_Pred": outputs[idx, 0].item(),
+                    "Cospeciations_Pred": cos_q50[idx].item(),
                     "Cospeciations_GT": batch["labels"][idx, 0].item(),
-                    "Host_switches_Pred": outputs[idx, 1].item(),
+                    "Host_switches_Pred": sw_q50[idx].item(),
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
-            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
+            # Quantile (pinball) loss for each task
+            loss_cospeciation = pinball_loss(cos_q, batch["labels"][:, 0], quantiles=QUANTILES)
+            loss_switches     = pinball_loss(sw_q,  batch["labels"][:, 1], quantiles=QUANTILES)
 
             total_loss_tensor = loss_cospeciation + 8 * loss_switches
 
@@ -369,6 +421,8 @@ def main(fabric: Fabric):
                     "lr": optimizer.param_groups[0]['lr'],
                     "step": epoch * len(train_loader) + batch_idx,
                     "val/loss_step": val_results["val_loss"],
+                    "val/cov90_step/Cospeciations": val_results.get("val_cov90", [None, None])[0],
+                    "val/cov90_step/Host_spread/Switches": val_results.get("val_cov90", [None, None])[1],
                     **{f"val/MAE_step/{event_names[i]}": val_results["val_mae"][i] for i in range(len(event_names))},
                     **{f"val/MSE_step/{event_names[i]}": val_results["val_mse"][i] for i in range(len(event_names))},
                     **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
@@ -405,7 +459,9 @@ def main(fabric: Fabric):
             num_batches += 1
 
             with torch.no_grad():
-                preds = outputs.detach()
+                base_model = getattr(model, "module", model)
+                cos_q, sw_q = base_model.split_quantiles(outputs.detach())
+                preds = torch.stack([cos_q[:, Q50_INDEX], sw_q[:, Q50_INDEX]], dim=1)
                 labels = batch["labels"].detach()
 
                 abs_err = (preds - labels).abs()
@@ -493,7 +549,7 @@ def main(fabric: Fabric):
                 for sample_idx in range(min(3, outputs.shape[0])):
                     print(f"\nEpoch {epoch+1}, Sample {sample_idx} - Predictions vs Ground Truth:")
                     for i, event in enumerate(event_names):
-                        pred_val = outputs[sample_idx, i].item()
+                        pred_val = preds[sample_idx, i].item()
                         gt_val = batch["labels"][sample_idx, i].item()
                         print(f"  {event}: Pred {pred_val:.4f}, GT {gt_val:.4f}")
             else:
@@ -508,7 +564,7 @@ def main(fabric: Fabric):
             wandb.log(metrics)
 
         # VALIDATION PHASE replaced by function
-        val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
+        val_results = run_full_validation(fabric, model, val_loader, None, event_names, device)
         val_loss = val_results["val_loss"]
         val_mae = val_results["val_mae"]
         val_mse = val_results["val_mse"]
@@ -530,6 +586,8 @@ def main(fabric: Fabric):
             print("----------------------------")
             wandb.log({
                 "val/loss": val_loss,
+                "val/cov90/Cospeciations": val_results.get("val_cov90", [None, None])[0],
+                "val/cov90/Host_spread/Switches": val_results.get("val_cov90", [None, None])[1],
                 **{f"val/MAE/{event_names[i]}": val_mae[i] for i in range(len(event_names))},
                 **{f"val/MSE/{event_names[i]}": val_mse[i] for i in range(len(event_names))},
                 **{f"val/MRE/{event_names[i]}": val_mre[i] for i in range(len(event_names))},
@@ -588,6 +646,12 @@ def main(fabric: Fabric):
         # Compute full validation predictions properly
         val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
 
+        # If validation returns quantiles (B, 2Q), reduce to q50 point estimates (B, 2)
+        if val_preds_tensor.dim() == 2 and val_preds_tensor.shape[1] != 2:
+            base_model = getattr(model, "module", model)
+            cos_q, sw_q = base_model.split_quantiles(val_preds_tensor)
+            val_preds_tensor = torch.stack([cos_q[:, Q50_INDEX], sw_q[:, Q50_INDEX]], dim=1)
+
         rows = []
         for i in range(len(val_preds_tensor)):
             rows.append({
@@ -610,6 +674,11 @@ def main(fabric: Fabric):
         # --- Combined Train + Val Scatter Plots (Pred vs GT) ---
         val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
 
+        # If validation returns quantiles (B, 2Q), reduce to q50 point estimates (B, 2)
+        if val_preds_tensor.dim() == 2 and val_preds_tensor.shape[1] != 2:
+            base_model = getattr(model, "module", model)
+            cos_q, sw_q = base_model.split_quantiles(val_preds_tensor)
+            val_preds_tensor = torch.stack([cos_q[:, Q50_INDEX], sw_q[:, Q50_INDEX]], dim=1)
 
         # Cospeciations
         plot_labels_vs_predictions(

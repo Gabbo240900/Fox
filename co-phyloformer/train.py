@@ -37,6 +37,7 @@ event_names = [
 # Quantiles for quantile regression (must match model.py)
 QUANTILES = (0.5, 0.75, 0.9)
 Q50_INDEX = QUANTILES.index(0.5)
+Q90_INDEX = QUANTILES.index(0.9)
 
 start_time = time.time()  # Record start time
 
@@ -660,7 +661,7 @@ def main(fabric: Fabric):
             metric_name="sMAPE"
         )
 
-        # Save final epoch predictions to a CSV file
+        # Save final epoch predictions to a CSV file (paper-ready: q50 + q90)
         import csv
 
         output_path = "final_predictions.csv"
@@ -668,24 +669,41 @@ def main(fabric: Fabric):
         # Compute full validation predictions properly
         val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
 
-        # If validation returns quantiles (B, 2Q), reduce to q50 point estimates (B, 2)
+        # Expect quantiles (B, 2Q). If a legacy 2-dim output is returned, treat it as q50 only.
+        base_model = getattr(model, "module", model)
         if val_preds_tensor.dim() == 2 and val_preds_tensor.shape[1] != 2:
-            base_model = getattr(model, "module", model)
-            cos_q, sw_q = base_model.split_quantiles(val_preds_tensor)
-            val_preds_tensor = torch.stack([cos_q[:, Q50_INDEX], sw_q[:, Q50_INDEX]], dim=1)
+            cos_q, sw_q = base_model.split_quantiles(val_preds_tensor)  # (B, Q) each
+            cos_q50, cos_q90 = cos_q[:, Q50_INDEX], cos_q[:, Q90_INDEX]
+            sw_q50,  sw_q90  = sw_q[:, Q50_INDEX],  sw_q[:, Q90_INDEX]
+        else:
+            # Fallback: only point estimates available
+            cos_q50 = val_preds_tensor[:, 0]
+            sw_q50  = val_preds_tensor[:, 1]
+            cos_q90 = cos_q50
+            sw_q90  = sw_q50
 
         rows = []
-        for i in range(len(val_preds_tensor)):
+        for i in range(len(val_labels_tensor)):
             rows.append({
                 "Sample_Index": i,
-                "Cospeciations_Pred": float(val_preds_tensor[i, 0]),
                 "Cospeciations_GT": float(val_labels_tensor[i, 0]),
-                "Host_switches_Pred": float(val_preds_tensor[i, 1]),
-                "Host_switches_GT": float(val_labels_tensor[i, 1]),
+                "Cospeciations_q50": float(cos_q50[i]),
+                "Cospeciations_q90": float(cos_q90[i]),
+                "Host_spread_Switches_GT": float(val_labels_tensor[i, 1]),
+                "Host_spread_Switches_q50": float(sw_q50[i]),
+                "Host_spread_Switches_q90": float(sw_q90[i]),
             })
 
         with open(output_path, mode="w", newline="") as csv_file:
-            fieldnames = ["Sample_Index", "Cospeciations_Pred", "Cospeciations_GT", "Host_switches_Pred", "Host_switches_GT"]
+            fieldnames = [
+                "Sample_Index",
+                "Cospeciations_GT",
+                "Cospeciations_q50",
+                "Cospeciations_q90",
+                "Host_spread_Switches_GT",
+                "Host_spread_Switches_q50",
+                "Host_spread_Switches_q90",
+            ]
             writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)

@@ -22,16 +22,6 @@ from lightning.fabric.strategies import DDPStrategy
 from validation import run_full_validation, compute_val_predictions
 import glob
 
-# -----------------------------
-# Logit-space regression helpers
-# -----------------------------
-LOGIT_EPS = 1e-4  # clamp labels/preds away from 0/1 (labels can be exactly 0 or 1)
-
-def safe_logit(x: torch.Tensor, eps: float = LOGIT_EPS) -> torch.Tensor:
-    """Compute logit(x) safely for x in [0,1] by clamping to (eps, 1-eps)."""
-    x = torch.clamp(x, eps, 1.0 - eps)
-    return torch.log(x) - torch.log1p(-x)
-
 # BEST CONFIGURATION SO FAR FOR SMALL DATASETS
 # Log host switch 
 #try new overfitting example again 
@@ -87,7 +77,7 @@ class LazyCophyloformerDataset(Dataset):
             dtype=torch.float32,
         )
 
-       
+        # --- sim_time disabled ---
         sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 1.0)], dtype=torch.float32)
         return {
             "host_msa": torch.stack([
@@ -100,7 +90,7 @@ class LazyCophyloformerDataset(Dataset):
             ]),
             "mappings": valid_mappings,
             "labels": labels,
-            "sim_time": sim_time 
+            "sim_time": sim_time  # --- sim_time disabled ---
         }
 def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir, filename, batch_idx=None):
     """Save model and optimizer state."""
@@ -135,7 +125,7 @@ def collate_fn(batch):
     parasite_msas = [sample["parasite_msa"] for sample in batch]
     labels = torch.stack([sample["labels"] for sample in batch])
     mappings = [sample["mappings"] for sample in batch]  
-   
+    # --- sim_time disabled ---
     sim_time = torch.stack([sample["sim_time"] for sample in batch])
 
     #  Fix: Ensure consistent padding for batch processing 
@@ -153,7 +143,7 @@ def collate_fn(batch):
         "parasite_msa": parasite_msas,
         "labels": labels,
         "mappings": mappings,  
-        "sim_time": sim_time, 
+        "sim_time": sim_time,  # --- sim_time disabled ---
     }
 
 
@@ -341,7 +331,7 @@ def main(fabric: Fabric):
                 print(f"[Resume] Continuing from epoch {start_epoch+1}, batch {start_batch+1}")
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device) 
+            batch["sim_time"] = batch["sim_time"].to(device)  # --- sim_time disabled ---
             batch["labels"] = batch["labels"].to(device)
             optimizer.zero_grad(set_to_none=True)
 
@@ -349,27 +339,20 @@ def main(fabric: Fabric):
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch['sim_time'], 
+                batch['sim_time'],  # --- sim_time disabled ---
             )
 
-            probs = torch.sigmoid(outputs.detach())
             for idx in range(outputs.shape[0]):
                 all_train_prediction_data.append({
                     "Sample_Index": batch_idx * outputs.shape[0] + idx,
-                    "Cospeciations_Pred": probs[idx, 0].item(),
+                    "Cospeciations_Pred": outputs[idx, 0].item(),
                     "Cospeciations_GT": batch["labels"][idx, 0].item(),
-                    "Host_switches_Pred": probs[idx, 1].item(),
+                    "Host_switches_Pred": outputs[idx, 1].item(),
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            # --- Logit-space training loss ---
-            # model.py now returns RAW logits (no sigmoid).
-            # Labels are in [0,1], so we transform labels -> logits and regress in logit space.
-            y_logit = safe_logit(batch["labels"], eps=LOGIT_EPS)
-            p_logit = outputs  # already logits
-
-            loss_cospeciation = criterion(p_logit[:, 0], y_logit[:, 0]).mean()
-            loss_switches     = criterion(p_logit[:, 1], y_logit[:, 1]).mean()
+            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
+            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
 
             total_loss_tensor = loss_cospeciation + 8 * loss_switches
 
@@ -422,7 +405,7 @@ def main(fabric: Fabric):
             num_batches += 1
 
             with torch.no_grad():
-                preds = torch.sigmoid(outputs.detach())
+                preds = outputs.detach()
                 labels = batch["labels"].detach()
 
                 abs_err = (preds - labels).abs()

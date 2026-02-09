@@ -1,13 +1,4 @@
 import torch
-# -----------------------------
-# Logit-space regression helpers
-# -----------------------------
-LOGIT_EPS = 1e-4  # labels can be exactly 0 or 1
-
-
-def safe_logit(x: torch.Tensor, eps: float = LOGIT_EPS) -> torch.Tensor:
-    x = torch.clamp(x, eps, 1.0 - eps)
-    return torch.log(x) - torch.log1p(-x)
 # BEST CONFIGURATION SO FAR FOR SMALL DATASETS
 def run_full_validation(fabric, model, val_loader, criterion, event_names, device):
     model.eval()
@@ -36,16 +27,11 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
                 batch['sim_time']  # --- sim_time disabled ---
             )
 
-            # Logit-space loss (matches train.py). Model returns RAW logits.
-            y_logit = safe_logit(batch["labels"], eps=LOGIT_EPS)
-            p_logit = outputs
-
-            loss_cosp = criterion(p_logit[:, 0], y_logit[:, 0]).mean()
-            loss_sw   = criterion(p_logit[:, 1], y_logit[:, 1]).mean()
+            loss_cosp = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
+            loss_sw   = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
             loss = loss_cosp + loss_sw
 
-            # Metrics in probability space
-            preds = torch.sigmoid(outputs)
+            preds = outputs
             labels = batch["labels"]
 
             val_loss += loss.item()
@@ -71,14 +57,8 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
             val_sum_smape += smape.sum(dim=0)
             val_sample_count += labels.shape[0]
 
-    # Reduce loss correctly across ranks even if some ranks see different #batches
-    loss_sum_tensor = torch.tensor(val_loss, device=device)
-    batches_tensor = torch.tensor(val_batches, device=device)
-
-    loss_sum_tensor = fabric.all_reduce(loss_sum_tensor, reduce_op="sum")
-    batches_tensor = fabric.all_reduce(batches_tensor, reduce_op="sum")
-
-    val_loss = (loss_sum_tensor / torch.clamp(batches_tensor, min=1)).item()
+    val_loss_tensor = torch.tensor(val_loss / max(1, val_batches), device=device)
+    val_loss = fabric.all_reduce(val_loss_tensor, reduce_op="mean").item()
 
     val_sum_abs = fabric.all_reduce(val_sum_abs, reduce_op="sum")
     val_sum_sq  = fabric.all_reduce(val_sum_sq, reduce_op="sum")
@@ -125,7 +105,7 @@ def compute_val_predictions(model, val_loader, device):
                 batch['sim_time'] 
             )
 
-            preds_list.append(torch.sigmoid(outputs).cpu())
+            preds_list.append(outputs.cpu())
             labels_list.append(batch["labels"].cpu())
 
     if len(preds_list) == 0:

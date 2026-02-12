@@ -10,7 +10,7 @@
 #SBATCH --ntasks-per-node=4    
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=24
-#SBATCH --time=10:00:00 
+#SBATCH --time=20:00:00 
 
 
 

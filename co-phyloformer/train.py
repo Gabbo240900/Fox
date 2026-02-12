@@ -10,7 +10,7 @@ from torch.nn import functional as F
 import time
 import numpy as np
 import os
-from plot import plot_event_metric_over_epochs, plot_epoch_loss_curve, plot_labels_vs_predictions
+from plot import plot_event_metric_over_epochs, plot_epoch_loss_curve, plot_labels_vs_predictions , plot_interval_q50_q90
 from sklearn.model_selection import train_test_split
 from transformers import get_linear_schedule_with_warmup
 from tqdm import tqdm
@@ -714,11 +714,25 @@ def main(fabric: Fabric):
         # --- Combined Train + Val Scatter Plots (Pred vs GT) ---
         val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
 
-        # If validation returns quantiles (B, 2Q), reduce to q50 point estimates (B, 2)
+        # Also extract q50/q90 vectors for additional plots (q90 scatter + interval plots)
+        base_model = getattr(model, "module", model)
         if val_preds_tensor.dim() == 2 and val_preds_tensor.shape[1] != 2:
-            base_model = getattr(model, "module", model)
-            cos_q, sw_q = base_model.split_quantiles(val_preds_tensor)
-            val_preds_tensor = torch.stack([cos_q[:, Q50_INDEX], sw_q[:, Q50_INDEX]], dim=1)
+            cos_q, sw_q = base_model.split_quantiles(val_preds_tensor)  # (B, Q) each
+            val_cos_q50 = cos_q[:, Q50_INDEX]
+            val_cos_q90 = cos_q[:, Q90_INDEX]
+            val_sw_q50  = sw_q[:, Q50_INDEX]
+            val_sw_q90  = sw_q[:, Q90_INDEX]
+        else:
+            # Fallback: only point estimates available
+            val_cos_q50 = val_preds_tensor[:, 0]
+            val_cos_q90 = val_cos_q50
+            val_sw_q50  = val_preds_tensor[:, 1]
+            val_sw_q90  = val_sw_q50
+
+        # For the existing q50 scatter plots below, keep using a (B,2) tensor
+        val_preds_q50_tensor = torch.stack([val_cos_q50, val_sw_q50], dim=1)
+
+        val_preds_tensor = val_preds_q50_tensor
 
         # Cospeciations
         plot_labels_vs_predictions(
@@ -740,10 +754,50 @@ def main(fabric: Fabric):
             filename="combined_label_vs_pred_switches.png"
         )
 
+        # --- NEW: Validation scatter plots using q90 (tail visualization) ---
+        plot_labels_vs_predictions(
+            train_labels=[row["Cospeciations_GT"] for row in all_train_prediction_data],
+            train_preds=[row["Cospeciations_Pred"] for row in all_train_prediction_data],  # train q50 for reference
+            val_labels=val_labels_tensor[:, 0].numpy(),
+            val_preds=val_cos_q90.detach().cpu().numpy(),
+            event_name="Cospeciations (q90)",
+            filename="combined_label_vs_pred_cospeciations_q90.png",
+        )
+
+        plot_labels_vs_predictions(
+            train_labels=[row["Host_switches_GT"] for row in all_train_prediction_data],
+            train_preds=[row["Host_switches_Pred"] for row in all_train_prediction_data],  # train q50 for reference
+            val_labels=val_labels_tensor[:, 1].numpy(),
+            val_preds=val_sw_q90.detach().cpu().numpy(),
+            event_name="Host Switches (q90)",
+            filename="combined_label_vs_pred_switches_q90.png",
+        )
+
+        # --- NEW: Interval plots [q50, q90] vs GT (paper-friendly uncertainty visualization) ---
+        plot_interval_q50_q90(
+            labels=val_labels_tensor[:, 0].numpy(),
+            q50=val_cos_q50.detach().cpu().numpy(),
+            q90=val_cos_q90.detach().cpu().numpy(),
+            event_name="Cospeciations",
+            filename="interval_q50_q90_cospeciations.png",
+        )
+
+        plot_interval_q50_q90(
+            labels=val_labels_tensor[:, 1].numpy(),
+            q50=val_sw_q50.detach().cpu().numpy(),
+            q90=val_sw_q90.detach().cpu().numpy(),
+            event_name="Host_spread/Switches",
+            filename="interval_q50_q90_switches.png",
+        )
+
         wandb.log({
             "plots/loss_curve": wandb.Image("combined_loss.png"),
             "plots/labels_vs_preds_cospeciations": wandb.Image("combined_label_vs_pred_cospeciations.png"),
-            "plots/labels_vs_preds_host_switches": wandb.Image("combined_label_vs_pred_switches.png")
+            "plots/labels_vs_preds_host_switches": wandb.Image("combined_label_vs_pred_switches.png"),
+            "plots/labels_vs_preds_cospeciations_q90": wandb.Image("combined_label_vs_pred_cospeciations_q90.png"),
+            "plots/labels_vs_preds_host_switches_q90": wandb.Image("combined_label_vs_pred_switches_q90.png"),
+            "plots/interval_q50_q90_cospeciations": wandb.Image("interval_q50_q90_cospeciations.png"),
+            "plots/interval_q50_q90_switches": wandb.Image("interval_q50_q90_switches.png"),
         })
 
         # Save and log model as a W&B model artifact

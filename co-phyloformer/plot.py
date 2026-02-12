@@ -64,3 +64,50 @@ def plot_labels_vs_predictions(train_labels, train_preds, val_labels, val_preds,
     plt.tight_layout()
     plt.savefig(filename)
     plt.show()
+    
+def plot_interval_q50_q90(
+    labels,
+    q50,
+    q90,
+    event_name,
+    filename="interval_q50_q90.png",
+    max_points=8000,
+):
+    labels = np.asarray(labels).astype(float)
+    q50 = np.asarray(q50).astype(float)
+    q90 = np.asarray(q90).astype(float)
+
+    # subsample for readability
+    n = len(labels)
+    if n > max_points:
+        idx = np.random.RandomState(42).choice(n, size=max_points, replace=False)
+        labels = labels[idx]
+        q50 = q50[idx]
+        q90 = q90[idx]
+
+    # sort by GT for a nicer plot
+    order = np.argsort(labels)
+    labels = labels[order]
+    q50 = q50[order]
+    q90 = q90[order]
+
+    plt.figure(figsize=(8, 8))
+    # interval bars
+    plt.vlines(labels, q50, q90, alpha=0.15)
+    # median points
+    plt.scatter(labels, q50, s=8, alpha=0.25, label="Pred q50")
+    # GT points along diagonal
+    plt.scatter(labels, labels, s=8, alpha=0.25, label="GT (y=x)")
+
+    # perfect prediction line
+    mx = max(1e-6, float(np.max(labels)))
+    plt.plot([0, mx], [0, mx], linestyle="--")
+
+    plt.xlabel("True Labels")
+    plt.ylabel("Value")
+    plt.title(f"{event_name} — Predicted interval [q50, q90] vs GT")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(filename, dpi=200)
+    plt.close()

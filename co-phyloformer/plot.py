@@ -85,29 +85,72 @@ def plot_interval_q50_q90(
         q50 = q50[idx]
         q90 = q90[idx]
 
-    # sort by GT for a nicer plot
+    # sort by GT for cleaner structure
     order = np.argsort(labels)
     labels = labels[order]
     q50 = q50[order]
     q90 = q90[order]
 
     plt.figure(figsize=(8, 8))
-    # interval bars
-    plt.vlines(labels, q50, q90, alpha=0.15)
-    # median points
-    plt.scatter(labels, q50, s=8, alpha=0.25, label="Pred q50")
-    # GT points along diagonal
-    plt.scatter(labels, labels, s=8, alpha=0.25, label="GT (y=x)")
 
-    # perfect prediction line
+    # Brighter interval color
+    interval_color = "#4C72B0"  # clean blue
+    median_color = "#1f77b4"    # strong blue
+    gt_color = "#E24A33"        # bright orange-red
+
+    # interval bars (thicker + clearer)
+    plt.vlines(
+        labels,
+        q50,
+        q90,
+        color=interval_color,
+        alpha=0.35,
+        linewidth=1.2,
+        label="Pred interval [q50, q90]"
+    )
+
+    # median predictions
+    plt.scatter(
+        labels,
+        q50,
+        s=18,
+        alpha=0.7,
+        color=median_color,
+        edgecolor="white",
+        linewidth=0.3,
+        label="Pred q50"
+    )
+
+    # GT diagonal points
+    plt.scatter(
+        labels,
+        labels,
+        s=18,
+        alpha=0.8,
+        color=gt_color,
+        edgecolor="white",
+        linewidth=0.3,
+        label="GT (y=x)"
+    )
+
+    # perfect prediction reference line
     mx = max(1e-6, float(np.max(labels)))
-    plt.plot([0, mx], [0, mx], linestyle="--")
+    plt.plot(
+        [0, mx],
+        [0, mx],
+        linestyle="--",
+        color="black",
+        linewidth=1.2,
+        alpha=0.8,
+        label="Perfect prediction"
+    )
 
-    plt.xlabel("True Labels")
-    plt.ylabel("Value")
-    plt.title(f"{event_name} — Predicted interval [q50, q90] vs GT")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+    plt.xlabel("True Labels", fontsize=12)
+    plt.ylabel("Value", fontsize=12)
+    plt.title(f"{event_name} — Predicted interval [q50, q90] vs GT", fontsize=13)
+
+    plt.legend(frameon=True)
+    plt.grid(True, alpha=0.2)
     plt.tight_layout()
-    plt.savefig(filename, dpi=200)
+    plt.savefig(filename, dpi=300)
     plt.close()

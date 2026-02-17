@@ -3,14 +3,14 @@ import torch
 import pandas as pd
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset, DistributedSampler
+from torch.utils.data import DataLoader, Dataset
 from model import Cophyloformer
 from data import CophylogenyDataset
 from torch.nn import functional as F
 import time
 import numpy as np
 import os
-from plot import plot_event_metric_over_epochs, plot_epoch_loss_curve, plot_labels_vs_predictions , plot_interval_q50_q90
+from plot import plot_event_metric_over_epochs, plot_epoch_loss_curve, plot_labels_vs_predictions
 from sklearn.model_selection import train_test_split
 from transformers import get_linear_schedule_with_warmup
 from tqdm import tqdm
@@ -33,11 +33,6 @@ event_names = [
     "Cospeciations",
     "Host_spread/Switches"
 ]
-
-# Quantiles for quantile regression (must match model.py)
-QUANTILES = (0.5, 0.75, 0.9)
-Q50_INDEX = QUANTILES.index(0.5)
-Q90_INDEX = QUANTILES.index(0.9)
 
 start_time = time.time()  # Record start time
 
@@ -100,7 +95,7 @@ class LazyCophyloformerDataset(Dataset):
             dtype=torch.float32,
         )
 
-        # --- sim_time disabled ---
+        
         sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 1.0)], dtype=torch.float32)
         return {
             "host_msa": torch.stack([
@@ -113,7 +108,7 @@ class LazyCophyloformerDataset(Dataset):
             ]),
             "mappings": valid_mappings,
             "labels": labels,
-            "sim_time": sim_time  # --- sim_time disabled ---
+            "sim_time": sim_time  
         }
 def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir, filename, batch_idx=None):
     """Save model and optimizer state."""
@@ -146,7 +141,7 @@ def collate_fn(batch):
     parasite_msas = [sample["parasite_msa"] for sample in batch]
     labels = torch.stack([sample["labels"] for sample in batch])
     mappings = [sample["mappings"] for sample in batch]  
-    # --- sim_time disabled ---
+    
     sim_time = torch.stack([sample["sim_time"] for sample in batch])
 
     #  Fix: Ensure consistent padding for batch processing 
@@ -164,7 +159,7 @@ def collate_fn(batch):
         "parasite_msa": parasite_msas,
         "labels": labels,
         "mappings": mappings,  
-        "sim_time": sim_time,  # --- sim_time disabled ---
+        "sim_time": sim_time,  
     }
 
 
@@ -180,26 +175,9 @@ def encode_sequence(sequence, max_len=128):
     encoded += [PAD_ID] * (max_len - len(encoded))
     return torch.tensor(encoded, dtype=torch.long)
 
-# -----------------------------
-# Quantile (pinball) loss
-# -----------------------------
-
-def pinball_loss(pred_q: torch.Tensor, y: torch.Tensor, quantiles=QUANTILES) -> torch.Tensor:
-    """Pinball loss for quantile regression.
-
-    pred_q: (B, Q) predicted quantiles in [0,1]
-    y:      (B,)   target in [0,1]
-    returns: scalar tensor
-    """
-    qs = torch.tensor(quantiles, device=pred_q.device, dtype=pred_q.dtype).view(1, -1)  # (1, Q)
-    yq = y.view(-1, 1)  # (B, 1)
-    diff = yq - pred_q  # (B, Q)
-    loss = torch.maximum(qs * diff, (qs - 1.0) * diff)  # (B, Q)
-    return loss.mean()
-
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/small_preencoded_pt/"
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/new_preencoded_pt/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
@@ -210,7 +188,7 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 500
+    epochs = 5
 
     batch_size = 8
 
@@ -262,10 +240,11 @@ def main(fabric: Fabric):
     lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
     
-    # Quantile regression uses pinball loss (defined above)
-    criterion = None
+    #criterion = nn.L1Loss(reduction='none')  
+    criterion = nn.HuberLoss(reduction='none', delta=1.0)
+    # criterion = nn.MSELoss(reduction='none')
 
-    model = Cophyloformer(quantiles=QUANTILES)
+    model = Cophyloformer()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)
 
@@ -393,7 +372,7 @@ def main(fabric: Fabric):
                 raise RuntimeError("collate_fn returned None; this would desync DDP ranks")
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device)  # --- sim_time disabled ---
+            batch["sim_time"] = batch["sim_time"].to(device)  
             batch["labels"] = batch["labels"].to(device)
             optimizer.zero_grad(set_to_none=True)
 
@@ -401,29 +380,20 @@ def main(fabric: Fabric):
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch['sim_time'],  # --- sim_time disabled ---
+                batch['sim_time'],  
             )
-
-            # Model returns quantiles: outputs shape (B, 2Q)
-            base_model = getattr(model, "module", model)
-            cos_q, sw_q = base_model.split_quantiles(outputs)  # each (B, Q)
-
-            # Use q50 for logging/plots (a single point estimate)
-            cos_q50 = cos_q[:, Q50_INDEX]
-            sw_q50  = sw_q[:, Q50_INDEX]
 
             for idx in range(outputs.shape[0]):
                 all_train_prediction_data.append({
                     "Sample_Index": batch_idx * outputs.shape[0] + idx,
-                    "Cospeciations_Pred": cos_q50[idx].item(),
+                    "Cospeciations_Pred": outputs[idx, 0].item(),
                     "Cospeciations_GT": batch["labels"][idx, 0].item(),
-                    "Host_switches_Pred": sw_q50[idx].item(),
+                    "Host_switches_Pred": outputs[idx, 1].item(),
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            # Quantile (pinball) loss for each task
-            loss_cospeciation = pinball_loss(cos_q, batch["labels"][:, 0], quantiles=QUANTILES)
-            loss_switches     = pinball_loss(sw_q,  batch["labels"][:, 1], quantiles=QUANTILES)
+            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
+            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
 
             total_loss_tensor = loss_cospeciation + 8 * loss_switches
 
@@ -443,8 +413,6 @@ def main(fabric: Fabric):
                         "lr": optimizer.param_groups[0]['lr'],
                         "step": epoch * len(train_loader) + batch_idx,
                         "val/loss_step": val_results["val_loss"],
-                        "val/cov90_step/Cospeciations": val_results.get("val_cov90", [None, None])[0],
-                        "val/cov90_step/Host_spread/Switches": val_results.get("val_cov90", [None, None])[1],
                         **{f"val/MAE_step/{event_names[i]}": val_results["val_mae"][i] for i in range(len(event_names))},
                         **{f"val/MSE_step/{event_names[i]}": val_results["val_mse"][i] for i in range(len(event_names))},
                         **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
@@ -481,9 +449,7 @@ def main(fabric: Fabric):
             num_batches += 1
 
             with torch.no_grad():
-                base_model = getattr(model, "module", model)
-                cos_q, sw_q = base_model.split_quantiles(outputs.detach())
-                preds = torch.stack([cos_q[:, Q50_INDEX], sw_q[:, Q50_INDEX]], dim=1)
+                preds = outputs.detach()
                 labels = batch["labels"].detach()
 
                 abs_err = (preds - labels).abs()
@@ -587,7 +553,7 @@ def main(fabric: Fabric):
             wandb.log(metrics)
 
         # VALIDATION PHASE replaced by function
-        val_results = run_full_validation(fabric, model, val_loader, None, event_names, device)
+        val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
         val_loss = val_results["val_loss"]
         val_mae = val_results["val_mae"]
         val_mse = val_results["val_mse"]
@@ -609,8 +575,6 @@ def main(fabric: Fabric):
             print("----------------------------")
             wandb.log({
                 "val/loss": val_loss,
-                "val/cov90/Cospeciations": val_results.get("val_cov90", [None, None])[0],
-                "val/cov90/Host_spread/Switches": val_results.get("val_cov90", [None, None])[1],
                 **{f"val/MAE/{event_names[i]}": val_mae[i] for i in range(len(event_names))},
                 **{f"val/MSE/{event_names[i]}": val_mse[i] for i in range(len(event_names))},
                 **{f"val/MRE/{event_names[i]}": val_mre[i] for i in range(len(event_names))},
@@ -661,7 +625,7 @@ def main(fabric: Fabric):
             metric_name="sMAPE"
         )
 
-        # Save final epoch predictions to a CSV file (paper-ready: q50 + q90)
+        # Save final epoch predictions to a CSV file
         import csv
 
         output_path = "final_predictions.csv"
@@ -669,41 +633,18 @@ def main(fabric: Fabric):
         # Compute full validation predictions properly
         val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
 
-        # Expect quantiles (B, 2Q). If a legacy 2-dim output is returned, treat it as q50 only.
-        base_model = getattr(model, "module", model)
-        if val_preds_tensor.dim() == 2 and val_preds_tensor.shape[1] != 2:
-            cos_q, sw_q = base_model.split_quantiles(val_preds_tensor)  # (B, Q) each
-            cos_q50, cos_q90 = cos_q[:, Q50_INDEX], cos_q[:, Q90_INDEX]
-            sw_q50,  sw_q90  = sw_q[:, Q50_INDEX],  sw_q[:, Q90_INDEX]
-        else:
-            # Fallback: only point estimates available
-            cos_q50 = val_preds_tensor[:, 0]
-            sw_q50  = val_preds_tensor[:, 1]
-            cos_q90 = cos_q50
-            sw_q90  = sw_q50
-
         rows = []
-        for i in range(len(val_labels_tensor)):
+        for i in range(len(val_preds_tensor)):
             rows.append({
                 "Sample_Index": i,
+                "Cospeciations_Pred": float(val_preds_tensor[i, 0]),
                 "Cospeciations_GT": float(val_labels_tensor[i, 0]),
-                "Cospeciations_q50": float(cos_q50[i]),
-                "Cospeciations_q90": float(cos_q90[i]),
-                "Host_spread_Switches_GT": float(val_labels_tensor[i, 1]),
-                "Host_spread_Switches_q50": float(sw_q50[i]),
-                "Host_spread_Switches_q90": float(sw_q90[i]),
+                "Host_switches_Pred": float(val_preds_tensor[i, 1]),
+                "Host_switches_GT": float(val_labels_tensor[i, 1]),
             })
 
         with open(output_path, mode="w", newline="") as csv_file:
-            fieldnames = [
-                "Sample_Index",
-                "Cospeciations_GT",
-                "Cospeciations_q50",
-                "Cospeciations_q90",
-                "Host_spread_Switches_GT",
-                "Host_spread_Switches_q50",
-                "Host_spread_Switches_q90",
-            ]
+            fieldnames = ["Sample_Index", "Cospeciations_Pred", "Cospeciations_GT", "Host_switches_Pred", "Host_switches_GT"]
             writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
@@ -714,25 +655,6 @@ def main(fabric: Fabric):
         # --- Combined Train + Val Scatter Plots (Pred vs GT) ---
         val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
 
-        # Also extract q50/q90 vectors for additional plots (q90 scatter + interval plots)
-        base_model = getattr(model, "module", model)
-        if val_preds_tensor.dim() == 2 and val_preds_tensor.shape[1] != 2:
-            cos_q, sw_q = base_model.split_quantiles(val_preds_tensor)  # (B, Q) each
-            val_cos_q50 = cos_q[:, Q50_INDEX]
-            val_cos_q90 = cos_q[:, Q90_INDEX]
-            val_sw_q50  = sw_q[:, Q50_INDEX]
-            val_sw_q90  = sw_q[:, Q90_INDEX]
-        else:
-            # Fallback: only point estimates available
-            val_cos_q50 = val_preds_tensor[:, 0]
-            val_cos_q90 = val_cos_q50
-            val_sw_q50  = val_preds_tensor[:, 1]
-            val_sw_q90  = val_sw_q50
-
-        # For the existing q50 scatter plots below, keep using a (B,2) tensor
-        val_preds_q50_tensor = torch.stack([val_cos_q50, val_sw_q50], dim=1)
-
-        val_preds_tensor = val_preds_q50_tensor
 
         # Cospeciations
         plot_labels_vs_predictions(
@@ -754,50 +676,10 @@ def main(fabric: Fabric):
             filename="combined_label_vs_pred_switches.png"
         )
 
-        # --- NEW: Validation scatter plots using q90 (tail visualization) ---
-        plot_labels_vs_predictions(
-            train_labels=[row["Cospeciations_GT"] for row in all_train_prediction_data],
-            train_preds=[row["Cospeciations_Pred"] for row in all_train_prediction_data],  # train q50 for reference
-            val_labels=val_labels_tensor[:, 0].numpy(),
-            val_preds=val_cos_q90.detach().cpu().numpy(),
-            event_name="Cospeciations (q90)",
-            filename="combined_label_vs_pred_cospeciations_q90.png",
-        )
-
-        plot_labels_vs_predictions(
-            train_labels=[row["Host_switches_GT"] for row in all_train_prediction_data],
-            train_preds=[row["Host_switches_Pred"] for row in all_train_prediction_data],  # train q50 for reference
-            val_labels=val_labels_tensor[:, 1].numpy(),
-            val_preds=val_sw_q90.detach().cpu().numpy(),
-            event_name="Host Switches (q90)",
-            filename="combined_label_vs_pred_switches_q90.png",
-        )
-
-        # --- NEW: Interval plots [q50, q90] vs GT (paper-friendly uncertainty visualization) ---
-        plot_interval_q50_q90(
-            labels=val_labels_tensor[:, 0].numpy(),
-            q50=val_cos_q50.detach().cpu().numpy(),
-            q90=val_cos_q90.detach().cpu().numpy(),
-            event_name="Cospeciations",
-            filename="interval_q50_q90_cospeciations.png",
-        )
-
-        plot_interval_q50_q90(
-            labels=val_labels_tensor[:, 1].numpy(),
-            q50=val_sw_q50.detach().cpu().numpy(),
-            q90=val_sw_q90.detach().cpu().numpy(),
-            event_name="Host_spread/Switches",
-            filename="interval_q50_q90_switches.png",
-        )
-
         wandb.log({
             "plots/loss_curve": wandb.Image("combined_loss.png"),
             "plots/labels_vs_preds_cospeciations": wandb.Image("combined_label_vs_pred_cospeciations.png"),
-            "plots/labels_vs_preds_host_switches": wandb.Image("combined_label_vs_pred_switches.png"),
-            "plots/labels_vs_preds_cospeciations_q90": wandb.Image("combined_label_vs_pred_cospeciations_q90.png"),
-            "plots/labels_vs_preds_host_switches_q90": wandb.Image("combined_label_vs_pred_switches_q90.png"),
-            "plots/interval_q50_q90_cospeciations": wandb.Image("interval_q50_q90_cospeciations.png"),
-            "plots/interval_q50_q90_switches": wandb.Image("interval_q50_q90_switches.png"),
+            "plots/labels_vs_preds_host_switches": wandb.Image("combined_label_vs_pred_switches.png")
         })
 
         # Save and log model as a W&B model artifact

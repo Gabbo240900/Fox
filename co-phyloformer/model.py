@@ -122,9 +122,16 @@ class FlashMSAEncoderLayer(nn.Module):
 
         attn_mask = None
         if key_padding_mask is not None:
-            # SDPA expects a mask broadcastable to (B, H, N, N)
-            # Boolean mask: True = NOT allowed (masked out)
-            attn_mask = key_padding_mask[:, None, None, :].expand(B, self.num_heads, N, N)
+            # key_padding_mask: (B, S) True = ignore key
+            # SDPA boolean attn_mask: True = masked out. Needs to broadcast to (B, H, L, S).
+            # Use (B, 1, 1, S) to avoid materializing huge masks (more stable + faster).
+            attn_mask = key_padding_mask[:, None, None, :]  # (B, 1, 1, S)
+
+            # Safety: if all keys masked for a batch item, unmask CLS (pos 0)
+            all_masked = key_padding_mask.all(dim=1)  # (B,)
+            if all_masked.any():
+                attn_mask = attn_mask.clone()
+                attn_mask[all_masked, :, :, 0] = False
 
         out = torch.nn.functional.scaled_dot_product_attention(
             q, k, v, attn_mask=attn_mask, dropout_p=0.0, is_causal=False

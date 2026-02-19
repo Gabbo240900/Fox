@@ -177,7 +177,7 @@ def encode_sequence(sequence, max_len=128):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/new_preencoded_pt/"
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/small_preencoded_pt/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     dataset = LazyCophyloformerDataset(preencoded_dir)
     # Train/Validation Split
@@ -190,7 +190,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 5
 
-    batch_size = 8
+    batch_size = 32
 
     # -----------------------------
     # DDP-safe sampling

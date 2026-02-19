@@ -164,10 +164,26 @@ class FlashMSAEncoderLayer(nn.Module):
                 attn_mask = attn_mask.clone()
                 attn_mask[all_masked, :, :, 0] = False
 
-        out = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, dropout_p=0.0, is_causal=False
-        )
+        # SDPA can produce NaNs in bf16 on some kernels when masking is used.
+        # We compute attention in fp32 for numerical stability, then cast back.
+        q_fp32 = q.float()
+        k_fp32 = k.float()
+        v_fp32 = v.float()
 
+        # Force the "math" SDPA kernel for maximum stability (slower but robust).
+        # This is local to this call and won't affect other modules.
+        try:
+            with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
+                out = torch.nn.functional.scaled_dot_product_attention(
+                    q_fp32, k_fp32, v_fp32, attn_mask=attn_mask, dropout_p=0.0, is_causal=False
+                )
+        except Exception:
+            # Fallback if sdp_kernel context is unavailable in this torch build
+            out = torch.nn.functional.scaled_dot_product_attention(
+                q_fp32, k_fp32, v_fp32, attn_mask=attn_mask, dropout_p=0.0, is_causal=False
+            )
+
+        out = out.to(dtype=q.dtype)
         _check_finite("FlashMSAEncoderLayer/sdpa_out", out)
 
         out = out.transpose(1, 2).contiguous().view(B, N, D)

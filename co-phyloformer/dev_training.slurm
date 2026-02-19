@@ -31,9 +31,6 @@ conda activate cophylo
 export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK"
 export PYTHONUNBUFFERED=1
 
-export DEBUG_NAN=1
-export DEBUG_NAN_RANK0_ONLY=1
-
 # NCCL / distributed sanity
 export NCCL_DEBUG=WARN
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1

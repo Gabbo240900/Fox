@@ -235,43 +235,76 @@ class Cophyloformer(nn.Module):
 
         batch_size = host_msa.shape[0]
         hidden_dim = host_emb.shape[-1]
-        mapped_pair_features = torch.zeros(batch_size, hidden_dim * 3, device=host_msa.device)
+        max_pairs = max((len(m) for m in mappings), default=0)
+        L = max_pairs + 1  # +1 for CLS
 
+        device = host_emb.device
+
+        # Store leaf indices for gather (offset by +1 for CLS). Use -1 for PAD.
+        host_idx = torch.full((batch_size, max_pairs), -1, device=device, dtype=torch.long)
+        para_idx = torch.full((batch_size, max_pairs), -1, device=device, dtype=torch.long)
         for i, mapping in enumerate(mappings):
-            # Always include CLS↔CLS as a global pair
-            host_nodes = [host_emb[i, 0]]
-            parasite_nodes = [parasite_emb[i, 0]]
+            if len(mapping) == 0:
+                continue
+            # mapping entries are (h_leaf_idx, p_leaf_idx) with 0-based leaf indices
+            h = torch.as_tensor([hp[0] for hp in mapping], device=device, dtype=torch.long) + 1
+            p = torch.as_tensor([hp[1] for hp in mapping], device=device, dtype=torch.long) + 1
+            # clip in case any mapping index is out of bounds
+            h = h.clamp(min=0, max=host_emb.shape[1] - 1)
+            p = p.clamp(min=0, max=parasite_emb.shape[1] - 1)
 
-            # Add leaf↔leaf pairs from mappings (leaf indices start at 0, but embeddings have CLS at 0)
-            for h_idx, p_idx in mapping:
-                h = h_idx + 1
-                p = p_idx + 1
-                if 0 <= h < host_emb.shape[1] and 0 <= p < parasite_emb.shape[1]:
-                    host_nodes.append(host_emb[i, h])
-                    parasite_nodes.append(parasite_emb[i, p])
+            host_idx[i, : h.numel()] = h
+            para_idx[i, : p.numel()] = p
 
-            # Build sequences with length = number of pairs so attention is non-degenerate
-            host_seq = torch.stack(host_nodes, dim=0).unsqueeze(0)      # (1, L, D)
-            parasite_seq = torch.stack(parasite_nodes, dim=0).unsqueeze(0)  # (1, L, D)
+        # Gather mapped leaf embeddings in batch
+        # (B, max_pairs) -> (B, max_pairs, D)
+        safe_host_idx = host_idx.clamp(min=0)
+        safe_para_idx = para_idx.clamp(min=0)
 
-            cross_attended, _ = self.cross_attention(
-                host_seq, parasite_seq, parasite_seq
-            )  # (1, L, D)
+        host_gather = host_emb.gather(1, safe_host_idx.unsqueeze(-1).expand(-1, -1, hidden_dim))
+        para_gather = parasite_emb.gather(1, safe_para_idx.unsqueeze(-1).expand(-1, -1, hidden_dim))
 
-            # Learnable pooling over the pair tokens (CLS + mapped pairs)
-            pool_logits = self.pair_pool_score(cross_attended).squeeze(-1)  # (1, L)
-            pool_weights = F.softmax(pool_logits.float(), dim=1).to(dtype=cross_attended.dtype)  # fp32 softmax
-            cross_pooled = torch.sum(cross_attended * pool_weights.unsqueeze(-1), dim=1).squeeze(0)  # (D)
+        # Zero-out padded gathered slots
+        host_gather = host_gather.masked_fill((host_idx == -1).unsqueeze(-1), 0)
+        para_gather = para_gather.masked_fill((para_idx == -1).unsqueeze(-1), 0)
 
-            pooled = torch.cat([
-                host_seq.mean(dim=1).squeeze(0),
-                parasite_seq.mean(dim=1).squeeze(0),
-                cross_pooled
-            ], dim=-1)  # (3*hidden_dim)
+        # Build sequences: [CLS] + mapped leaves
+        host_seq = torch.cat([host_emb[:, 0:1, :], host_gather], dim=1)          # (B, L, D)
+        parasite_seq = torch.cat([parasite_emb[:, 0:1, :], para_gather], dim=1)  # (B, L, D)
 
-            mapped_pair_features[i] = pooled
+        # Mask padded pair positions (CLS is always present)
+        pair_present = torch.ones((batch_size, L), device=device, dtype=torch.bool)
+        if max_pairs > 0:
+            pair_present[:, 1:] = (host_idx != -1) & (para_idx != -1)
 
-        attended_pairs = mapped_pair_features
+        # Cross-attention in batch
+        # key_padding_mask: True = ignore (mask out)
+        kv_pad_mask = ~pair_present
+        cross_attended, _ = self.cross_attention(
+            host_seq, parasite_seq, parasite_seq, key_padding_mask=kv_pad_mask
+        )  # (B, L, D)
+
+        # Learnable pooling over pair tokens (mask padded tokens)
+        pool_logits = self.pair_pool_score(cross_attended).squeeze(-1)  # (B, L)
+        pool_logits = pool_logits.masked_fill(~pair_present, -1e4)
+        pool_weights = F.softmax(pool_logits.float(), dim=1).to(dtype=cross_attended.dtype)
+        pool_weights = pool_weights * pair_present.to(dtype=cross_attended.dtype)
+        denom = pool_weights.sum(dim=1, keepdim=True).clamp(min=1e-6)
+        pool_weights = pool_weights / denom
+        cross_pooled = torch.sum(cross_attended * pool_weights.unsqueeze(-1), dim=1)  # (B, D)
+
+        # Masked means for host_seq / parasite_seq
+        def masked_mean(seq: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+            # seq: (B, L, D), mask: (B, L) True where valid
+            w = mask.to(dtype=seq.dtype).unsqueeze(-1)
+            s = (seq * w).sum(dim=1)
+            d = w.sum(dim=1).clamp(min=1e-6)
+            return s / d
+
+        host_mean = masked_mean(host_seq, pair_present)
+        parasite_mean = masked_mean(parasite_seq, pair_present)
+
+        attended_pairs = torch.cat([host_mean, parasite_mean, cross_pooled], dim=-1)  # (B, 3*hidden_dim)
 
         if sim_time is not None:
             gamma_beta = self.sim_time_fc(sim_time)  # (B, 2 * hidden_dim)

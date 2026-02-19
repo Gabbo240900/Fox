@@ -3,7 +3,7 @@ import torch
 import pandas as pd
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from model import Cophyloformer
 from data import CophylogenyDataset
 from torch.nn import functional as F

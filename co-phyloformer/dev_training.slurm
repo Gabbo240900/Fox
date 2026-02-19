@@ -7,7 +7,7 @@
 #SBATCH --error=error_files/dev_training%j.err 
 #SBATCH --constraint=h100 
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks-per-node=2
 #SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=24 
 #SBATCH --time=2:00:00 

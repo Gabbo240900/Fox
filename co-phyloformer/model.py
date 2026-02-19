@@ -1,7 +1,38 @@
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
+
+import os
+
+DEBUG_NAN = os.environ.get("DEBUG_NAN", "0") == "1"
+DEBUG_NAN_RANK0_ONLY = os.environ.get("DEBUG_NAN_RANK0_ONLY", "1") == "1"
+
+def _is_rank0() -> bool:
+    # Works on Slurm/DDP setups; defaults to True in single-process.
+    return os.environ.get("RANK", "0") in ("0", 0)
+
+def _check_finite(name: str, t: torch.Tensor):
+    if not DEBUG_NAN:
+        return
+    if DEBUG_NAN_RANK0_ONLY and not _is_rank0():
+        return
+    if t is None:
+        return
+    if not torch.isfinite(t).all():
+        with torch.no_grad():
+            finite = torch.isfinite(t)
+            n_bad = int((~finite).sum().item())
+            # Safe stats on finite subset
+            if finite.any():
+                t_f = t[finite]
+                mn = float(t_f.min().item())
+                mx = float(t_f.max().item())
+                mean = float(t_f.mean().item())
+            else:
+                mn = mx = mean = float('nan')
+        raise RuntimeError(f"Non-finite tensor at {name}: bad={n_bad}/{t.numel()} min={mn} max={mx} mean={mean} dtype={t.dtype} shape={tuple(t.shape)}")
 
 
 class AxialMSABlockLite(nn.Module):
@@ -137,6 +168,8 @@ class FlashMSAEncoderLayer(nn.Module):
             q, k, v, attn_mask=attn_mask, dropout_p=0.0, is_causal=False
         )
 
+        _check_finite("FlashMSAEncoderLayer/sdpa_out", out)
+
         out = out.transpose(1, 2).contiguous().view(B, N, D)
 
         x = x + self.proj(out)
@@ -172,10 +205,12 @@ class MSAEncoder(nn.Module):
         # x: (B, N, S) token ids
         x_ids = x
         x = self.embedding(x_ids)  # (B, N, S, D)
+        _check_finite("MSAEncoder/embedding", x)
 
         # Axial attention over the MSA grid (N x S) before pooling
         for blk in self.axial_blocks:
             x = blk(x, x_ids)
+        _check_finite("MSAEncoder/after_axial", x)
 
         # Mask padding positions (PAD token id = 22) so pooling ignores padded tokens
         pad_mask = (x_ids != 22)  # (B, N, S)
@@ -189,11 +224,13 @@ class MSAEncoder(nn.Module):
         weights = weights / denom
 
         x = torch.sum(x * weights.unsqueeze(-1), dim=2)  # (B, N, D)
+        _check_finite("MSAEncoder/after_residue_pool", x)
         x = self.norm(x)
         #x = self.dropout(x)
 
         cls_token = self.cls_token.expand(x.size(0), -1, -1)  # (B, 1, D)
         x = torch.cat([cls_token, x], dim=1)  # (B, N+1, D)
+        _check_finite("MSAEncoder/after_add_cls", x)
 
         # leaf_present: (B, N) True if leaf has any non-PAD residue
         leaf_present = (x_ids != 22).any(dim=2)  # (B, N)
@@ -203,8 +240,9 @@ class MSAEncoder(nn.Module):
         seq_present = torch.cat([cls_present, leaf_present], dim=1)      # (B, N+1)
         key_padding_mask = ~seq_present                                  # (B, N+1)
 
-        for layer in self.layers:
+        for li, layer in enumerate(self.layers):
             x = layer(x, key_padding_mask=key_padding_mask)
+            _check_finite(f"MSAEncoder/after_layer_{li}", x)
         x = self.final_norm(x)
         return x, x[:, 0]
 
@@ -255,9 +293,12 @@ class Cophyloformer(nn.Module):
 
     def forward(self, host_msa, parasite_msa, mappings, sim_time):
         # Encode host and parasite MSAs
-
         host_emb, host_cls = self.host_encoder(host_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
         parasite_emb, parasite_cls = self.parasite_encoder(parasite_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
+        _check_finite("Cophyloformer/host_emb", host_emb)
+        _check_finite("Cophyloformer/host_cls", host_cls)
+        _check_finite("Cophyloformer/parasite_emb", parasite_emb)
+        _check_finite("Cophyloformer/parasite_cls", parasite_cls)
         
         # ---- Global channel: CLS ↔ CLS cross-attention (batched, 1 token) ----
         global_cross, _ = self.cross_attention(
@@ -266,6 +307,7 @@ class Cophyloformer(nn.Module):
             parasite_cls.unsqueeze(1)      # (B,1,D) values
         )
         global_cross = global_cross.squeeze(1)  # (B,D)
+        _check_finite("Cophyloformer/global_cross", global_cross)
 
         batch_size = host_msa.shape[0]
         hidden_dim = host_emb.shape[-1]
@@ -317,6 +359,7 @@ class Cophyloformer(nn.Module):
         cross_attended, _ = self.cross_attention(
             host_seq, parasite_seq, parasite_seq, key_padding_mask=kv_pad_mask
         )  # (B, L, D)
+        _check_finite("Cophyloformer/local_cross_attended", cross_attended)
 
         # Learnable pooling over pair tokens (mask padded tokens)
         pool_logits = self.pair_pool_score(cross_attended).squeeze(-1)  # (B, L)
@@ -326,6 +369,7 @@ class Cophyloformer(nn.Module):
         denom = pool_weights.sum(dim=1, keepdim=True).clamp(min=1e-6)
         pool_weights = pool_weights / denom
         cross_pooled = torch.sum(cross_attended * pool_weights.unsqueeze(-1), dim=1)  # (B, D)
+        _check_finite("Cophyloformer/local_cross_pooled", cross_pooled)
 
         # Masked means for host_seq / parasite_seq
         # def masked_mean(seq: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -354,4 +398,5 @@ class Cophyloformer(nn.Module):
         out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
         outputs = torch.sigmoid(outputs)
+        _check_finite("Cophyloformer/outputs", outputs)
         return outputs

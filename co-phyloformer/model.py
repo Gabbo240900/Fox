@@ -85,7 +85,6 @@ class AxialMSABlockLite(nn.Module):
 
         return x
 
-# Understand model size where it comes from parameters and bottlenecks for memory 
 class FlashMSAEncoderLayer(nn.Module):
     def __init__(self, hidden_dim, num_heads):
         super().__init__()
@@ -105,19 +104,29 @@ class FlashMSAEncoderLayer(nn.Module):
             nn.Linear(hidden_dim * 4, hidden_dim)
         )
 
-    def forward(self, x):
+    def forward(self, x, key_padding_mask: torch.Tensor | None = None):
+        """
+        x: (B, N, D)
+        key_padding_mask: (B, N) with True where token is PAD/invalid (should be ignored)
+        """
         B, N, D = x.shape
         x_norm = self.norm1(x)
 
         qkv = self.qkv(x_norm)
         q, k, v = qkv.chunk(3, dim=-1)
 
-        q = q.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
+        q = q.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)  # (B, H, N, Hd)
         k = k.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
 
+        attn_mask = None
+        if key_padding_mask is not None:
+            # SDPA expects a mask broadcastable to (B, H, N, N)
+            # Boolean mask: True = NOT allowed (masked out)
+            attn_mask = key_padding_mask[:, None, None, :].expand(B, self.num_heads, N, N)
+
         out = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=None, dropout_p=0, is_causal=False
+            q, k, v, attn_mask=attn_mask, dropout_p=0.0, is_causal=False
         )
 
         out = out.transpose(1, 2).contiguous().view(B, N, D)
@@ -139,6 +148,7 @@ class MSAEncoder(nn.Module):
         ])
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
         self.pool_weights = nn.Linear(hidden_dim, 1)
         self.norm = nn.LayerNorm(hidden_dim)
         self.layers = nn.ModuleList([
@@ -177,8 +187,16 @@ class MSAEncoder(nn.Module):
         cls_token = self.cls_token.expand(x.size(0), -1, -1)  # (B, 1, D)
         x = torch.cat([cls_token, x], dim=1)  # (B, N+1, D)
 
+        # leaf_present: (B, N) True if leaf has any non-PAD residue
+        leaf_present = (x_ids != 22).any(dim=2)  # (B, N)
+
+        # key_padding_mask over sequence (CLS + leaves): True means PAD/ignore
+        cls_present = torch.ones((leaf_present.size(0), 1), device=leaf_present.device, dtype=torch.bool)
+        seq_present = torch.cat([cls_present, leaf_present], dim=1)      # (B, N+1)
+        key_padding_mask = ~seq_present                                  # (B, N+1)
+
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, key_padding_mask=key_padding_mask)
         x = self.final_norm(x)
         return x, x[:, 0]
 
@@ -205,7 +223,7 @@ class Cophyloformer(nn.Module):
             nn.Linear(1, hidden_dim * 2),
             nn.Identity()
         )
-        self.concat_dim = 3 * hidden_dim
+        self.concat_dim = 4 * hidden_dim
         self.cospeciation_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
             nn.Linear(self.concat_dim, hidden_dim),
@@ -232,6 +250,14 @@ class Cophyloformer(nn.Module):
 
         host_emb, host_cls = self.host_encoder(host_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
         parasite_emb, parasite_cls = self.parasite_encoder(parasite_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
+        
+        # ---- Global channel: CLS ↔ CLS cross-attention (batched, 1 token) ----
+        global_cross, _ = self.cross_attention(
+            host_cls.unsqueeze(1),         # (B,1,D) queries
+            parasite_cls.unsqueeze(1),     # (B,1,D) keys
+            parasite_cls.unsqueeze(1)      # (B,1,D) values
+        )
+        global_cross = global_cross.squeeze(1)  # (B,D)
 
         batch_size = host_msa.shape[0]
         hidden_dim = host_emb.shape[-1]
@@ -294,25 +320,25 @@ class Cophyloformer(nn.Module):
         cross_pooled = torch.sum(cross_attended * pool_weights.unsqueeze(-1), dim=1)  # (B, D)
 
         # Masked means for host_seq / parasite_seq
-        def masked_mean(seq: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-            # seq: (B, L, D), mask: (B, L) True where valid
-            w = mask.to(dtype=seq.dtype).unsqueeze(-1)
-            s = (seq * w).sum(dim=1)
-            d = w.sum(dim=1).clamp(min=1e-6)
-            return s / d
+        # def masked_mean(seq: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        #     # seq: (B, L, D), mask: (B, L) True where valid
+        #     w = mask.to(dtype=seq.dtype).unsqueeze(-1)
+        #     s = (seq * w).sum(dim=1)
+        #     d = w.sum(dim=1).clamp(min=1e-6)
+        #     return s / d
 
-        host_mean = masked_mean(host_seq, pair_present)
-        parasite_mean = masked_mean(parasite_seq, pair_present)
+        #host_mean = masked_mean(host_seq, pair_present)
+        #parasite_mean = masked_mean(parasite_seq, pair_present)
 
-        attended_pairs = torch.cat([host_mean, parasite_mean, cross_pooled], dim=-1)  # (B, 3*hidden_dim)
+        attended_pairs = torch.cat([host_cls, parasite_cls, global_cross, cross_pooled], dim=-1)  # (B, 4*hidden_dim)
 
         if sim_time is not None:
             gamma_beta = self.sim_time_fc(sim_time)  # (B, 2 * hidden_dim)
             scale, shift = gamma_beta.chunk(2, dim=-1)  # (B, hidden_dim), (B, hidden_dim)
-        
-            base = attended_pairs[:, :hidden_dim]
-            rest = attended_pairs[:, hidden_dim:]
-        
+
+            base = attended_pairs[:, :hidden_dim]          # host_cls
+            rest = attended_pairs[:, hidden_dim:]          # parasite_cls + global + local
+
             modulated = base * (1 + scale) + shift
             attended_pairs = torch.cat([modulated, rest], dim=-1)
 

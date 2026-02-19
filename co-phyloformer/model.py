@@ -164,24 +164,28 @@ class FlashMSAEncoderLayer(nn.Module):
                 attn_mask = attn_mask.clone()
                 attn_mask[all_masked, :, :, 0] = False
 
-        # SDPA can produce NaNs in bf16 on some kernels when masking is used.
-        # We compute attention in fp32 for numerical stability, then cast back.
-        q_fp32 = q.float()
-        k_fp32 = k.float()
-        v_fp32 = v.float()
+        # SDPA has produced NaNs in bf16 on this environment when masking is used.
+        # Use an explicit fp32 attention implementation for stability.
+        q_fp32 = q.float()  # (B, H, N, Hd)
+        k_fp32 = k.float()  # (B, H, N, Hd)
+        v_fp32 = v.float()  # (B, H, N, Hd)
 
-        # Force the "math" SDPA kernel for maximum stability (slower but robust).
-        # This is local to this call and won't affect other modules.
-        try:
-            with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
-                out = torch.nn.functional.scaled_dot_product_attention(
-                    q_fp32, k_fp32, v_fp32, attn_mask=attn_mask, dropout_p=0.0, is_causal=False
-                )
-        except Exception:
-            # Fallback if sdp_kernel context is unavailable in this torch build
-            out = torch.nn.functional.scaled_dot_product_attention(
-                q_fp32, k_fp32, v_fp32, attn_mask=attn_mask, dropout_p=0.0, is_causal=False
-            )
+        # scores: (B, H, N, N)
+        scores = torch.matmul(q_fp32, k_fp32.transpose(-2, -1))
+        scores = scores * (self.head_dim ** -0.5)
+
+        if key_padding_mask is not None:
+            # key_padding_mask: (B, N) True = ignore key
+            km = key_padding_mask[:, None, None, :]  # (B,1,1,N)
+            # if a row has all keys masked, unmask CLS key (pos 0)
+            all_masked = key_padding_mask.all(dim=1)
+            if all_masked.any():
+                km = km.clone()
+                km[all_masked, :, :, 0] = False
+            scores = scores.masked_fill(km, -1e9)
+
+        attn = torch.softmax(scores, dim=-1)
+        out = torch.matmul(attn, v_fp32)  # (B, H, N, Hd)
 
         out = out.to(dtype=q.dtype)
         _check_finite("FlashMSAEncoderLayer/sdpa_out", out)

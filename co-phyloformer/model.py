@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional
 
 
 class AxialMSABlockLite(nn.Module):
@@ -104,7 +105,7 @@ class FlashMSAEncoderLayer(nn.Module):
             nn.Linear(hidden_dim * 4, hidden_dim)
         )
 
-    def forward(self, x, key_padding_mask: torch.Tensor | None = None):
+    def forward(self, x, key_padding_mask: Optional[torch.Tensor] = None):
         """
         x: (B, N, D)
         key_padding_mask: (B, N) with True where token is PAD/invalid (should be ignored)

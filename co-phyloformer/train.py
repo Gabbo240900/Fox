@@ -21,6 +21,7 @@ from lightning.fabric.utilities.seed import seed_everything
 from lightning.fabric.strategies import DDPStrategy
 from validation import run_full_validation, compute_val_predictions
 import glob
+import math
 
 # BEST CONFIGURATION SO FAR FOR SMALL DATASETS
 # Log host switch 
@@ -191,9 +192,14 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(dataset, train_indices)
     val_subset   = torch.utils.data.Subset(dataset, val_indices)
     device = fabric.device
-    epochs = 20
+    epochs = 30
 
     batch_size = 32
+
+    # -----------------------------
+    # Gradient accumulation
+    # -----------------------------
+    grad_accum_steps = 4
 
     # -----------------------------
     # DDP-safe sampling
@@ -240,8 +246,8 @@ def main(fabric: Fabric):
 
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
-    wd = 0
+    lr = 5e-5 # lower learning rate (5e-5, or 1e-5).
+    wd = 0.01
     
     #criterion = nn.L1Loss(reduction='none')  
     criterion = nn.HuberLoss(reduction='none', delta=1.0)
@@ -268,14 +274,18 @@ def main(fabric: Fabric):
         if fabric.is_global_zero:
             print(f"[Checkpoint] Resumed from epoch {loaded_epoch}, best_val_loss {loaded_val_loss}, batch_idx {loaded_batch_idx}")
 
-    total_steps = epochs * len(train_loader)
-    warmup_steps = total_steps // 10 # 10% warmup steps 
-    #warmup_steps = 0
+
+
+    # Scheduler should count *optimizer steps* (not micro-batches)
+    steps_per_epoch = math.ceil(len(train_loader) / grad_accum_steps)
+    total_steps = epochs * steps_per_epoch
+    warmup_steps = total_steps // 1  # 20% warmup steps
+    # warmup_steps = 0
 
     lr_scheduler = get_linear_schedule_with_warmup(
         optimizer,
         num_warmup_steps=warmup_steps,
-        num_training_steps=total_steps
+        num_training_steps=total_steps,
     )
 
     entity = os.environ.get("WANDB_ENTITY", "cophylo_team")
@@ -339,19 +349,8 @@ def main(fabric: Fabric):
     for epoch in range(start_epoch, epochs):
         # Ensure each epoch uses a different (but synchronized) shuffle order across ranks
         train_sampler.set_epoch(epoch)
-        steps_per_epoch = len(train_loader)
-        # Validation trigger points at 25%, 50%, 75% of the epoch
-        val_checkpoints = {
-            int(0.10 * steps_per_epoch),
-            int(0.20 * steps_per_epoch),
-            int(0.30 * steps_per_epoch),
-            int(0.40 * steps_per_epoch),
-            int(0.50 * steps_per_epoch),
-            int(0.60 * steps_per_epoch),
-            int(0.70 * steps_per_epoch),
-            int(0.80 * steps_per_epoch),
-            int(0.90 * steps_per_epoch)
-        }
+        effective_steps_per_epoch = len(train_loader) // grad_accum_steps
+        val_checkpoints = {int(p * effective_steps_per_epoch) for p in [0.10, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]}
         num_events = len(event_names)
         sum_abs_err = torch.zeros(num_events, device=device)
         sum_sq_err  = torch.zeros(num_events, device=device)
@@ -375,15 +374,17 @@ def main(fabric: Fabric):
                 raise RuntimeError("collate_fn returned None; this would desync DDP ranks")
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device)  
+            batch["sim_time"] = batch["sim_time"].to(device)
             batch["labels"] = batch["labels"].to(device)
-            optimizer.zero_grad(set_to_none=True)
+            # Zero gradients only at the start of an accumulation window
+            if (batch_idx % grad_accum_steps) == 0:
+                optimizer.zero_grad(set_to_none=True)
 
             outputs = model(
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch['sim_time'],  
+                batch["sim_time"],
             )
 
             for idx in range(outputs.shape[0]):
@@ -398,12 +399,20 @@ def main(fabric: Fabric):
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
             loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
 
-            total_loss_tensor = loss_cospeciation + 8 * loss_switches
+            total_loss_tensor = loss_cospeciation + loss_switches
 
+            # Scale loss so overall gradient magnitude matches non-accum training
+            loss_to_backprop = total_loss_tensor / grad_accum_steps
 
-            fabric.backward(total_loss_tensor)
-            optimizer.step()
-            lr_scheduler.step()
+            fabric.backward(loss_to_backprop)
+
+            # Perform optimizer step only when we have accumulated enough micro-batches
+            is_accum_step = ((batch_idx + 1) % grad_accum_steps) == 0
+            is_last_batch = (batch_idx + 1) == len(train_loader)
+            if is_accum_step or is_last_batch:
+                fabric.clip_gradients(model, optimizer, max_norm=1.0)
+                optimizer.step()
+                lr_scheduler.step()
 
             current_step = batch_idx + 1
             if current_step in val_checkpoints:
@@ -414,7 +423,7 @@ def main(fabric: Fabric):
                     wandb.log({
                         "train/loss_step": total_loss_tensor.item(),
                         "lr": optimizer.param_groups[0]['lr'],
-                        "step": epoch * len(train_loader) + batch_idx,
+                        "step": epoch * (len(train_loader) // grad_accum_steps + (1 if (len(train_loader) % grad_accum_steps) else 0)) + (batch_idx // grad_accum_steps),
                         "val/loss_step": val_results["val_loss"],
                         **{f"val/MAE_step/{event_names[i]}": val_results["val_mae"][i] for i in range(len(event_names))},
                         **{f"val/MSE_step/{event_names[i]}": val_results["val_mse"][i] for i in range(len(event_names))},
@@ -478,7 +487,7 @@ def main(fabric: Fabric):
 
                     if fabric.is_global_zero:
                         log_dict = {
-                            "step": epoch * len(train_loader) + batch_idx,
+                            "step": epoch * (len(train_loader) // grad_accum_steps + (1 if (len(train_loader) % grad_accum_steps) else 0)) + (batch_idx // grad_accum_steps),
                             "lr": optimizer.param_groups[0]['lr']
                         }
                         for i, event in enumerate(event_names):
@@ -505,12 +514,14 @@ def main(fabric: Fabric):
 
         if fabric.is_global_zero:
             print(f"Epoch {epoch+1}/{epochs}, Training Loss: {epoch_loss:.6f}, Learning Rate: {optimizer.param_groups[0]['lr']}")
+            print(f"Effective batch size: {batch_size * grad_accum_steps * fabric.world_size}")
 
         if fabric.is_global_zero:
             wandb.log({
                 "epoch": epoch + 1,
                 "train/loss": epoch_loss,
                 "lr": optimizer.param_groups[0]['lr'],
+                
             })
 
         #Synchronize metric accumulators across all ranks

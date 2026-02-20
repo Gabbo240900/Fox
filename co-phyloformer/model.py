@@ -245,23 +245,19 @@ class Cophyloformer(nn.Module):
         self.concat_dim = 4 * hidden_dim
         self.cospeciation_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
-            nn.Linear(self.concat_dim, hidden_dim),
+            nn.Linear(self.concat_dim, hidden_dim * 2),
             nn.GELU(),
-            #nn.Dropout(0.1),
-            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.Linear(hidden_dim * 2, hidden_dim),
             nn.GELU(),
-            #nn.Dropout(0.1),
-            nn.Linear(hidden_dim // 2, 1)
+            nn.Linear(hidden_dim, 1) # No Sigmoid here
         )
         self.switch_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
-            nn.Linear(self.concat_dim, hidden_dim),
+            nn.Linear(self.concat_dim, hidden_dim * 2),
             nn.GELU(),
-            #nn.Dropout(0.1),
-            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.Linear(hidden_dim * 2, hidden_dim),
             nn.GELU(),
-            #nn.Dropout(0.1),
-            nn.Linear(hidden_dim // 2, 1)
+            nn.Linear(hidden_dim, 1)
         )
 
     def forward(self, host_msa, parasite_msa, mappings, sim_time):
@@ -340,18 +336,15 @@ class Cophyloformer(nn.Module):
 
         attended_pairs = torch.cat([host_cls, parasite_cls, global_cross, cross_pooled], dim=-1)  # (B, 4*hidden_dim)
 
+        # Change the modulation to cover more signal:
         if sim_time is not None:
-            gamma_beta = self.sim_time_fc(sim_time)  # (B, 2 * hidden_dim)
-            scale, shift = gamma_beta.chunk(2, dim=-1)  # (B, hidden_dim), (B, hidden_dim)
-
-            base = attended_pairs[:, :hidden_dim]          # host_cls
-            rest = attended_pairs[:, hidden_dim:]          # parasite_cls + global + local
-
-            modulated = base * (1 + scale) + shift
-            attended_pairs = torch.cat([modulated, rest], dim=-1)
+            # Make sim_time_fc output self.concat_dim * 2
+            gamma_beta = self.sim_time_fc(sim_time) 
+            scale, shift = gamma_beta.chunk(2, dim=-1)
+            attended_pairs = attended_pairs * (1 + scale) + shift
 
         out_cospeciation = self.cospeciation_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
-        outputs = torch.sigmoid(outputs)
-        return outputs
+
+        return torch.special.softplus(outputs)

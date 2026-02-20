@@ -237,12 +237,14 @@ class Cophyloformer(nn.Module):
         # Learnable pooling over (CLS + mapped pair tokens)
         self.pair_pool_score = nn.Linear(hidden_dim, 1) 
 
-        
-        self.sim_time_fc = nn.Sequential(
-            nn.Linear(1, hidden_dim * 2),
-            nn.Identity()
-        )
         self.concat_dim = 4 * hidden_dim
+
+        # Produce FiLM-style (scale, shift) for the full concatenated representation
+        # Output is 2 * concat_dim so we can chunk into (scale, shift) each of size concat_dim.
+        self.sim_time_fc = nn.Sequential(
+            nn.Linear(1, self.concat_dim * 2),
+            nn.Identity(),
+        )
         self.cospeciation_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
             nn.Linear(self.concat_dim, hidden_dim * 2),

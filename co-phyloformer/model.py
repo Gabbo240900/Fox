@@ -349,4 +349,4 @@ class Cophyloformer(nn.Module):
         out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
 
-        return torch.special.softplus(outputs)
+        return F.softplus(outputs)

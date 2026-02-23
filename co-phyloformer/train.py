@@ -246,11 +246,11 @@ def main(fabric: Fabric):
 
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 5e-5 # lower learning rate (5e-5, or 1e-5).
+    lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0.01
     
     #criterion = nn.L1Loss(reduction='none')  
-    criterion = nn.HuberLoss(reduction='none', delta=1.0)
+    criterion = nn.HuberLoss(reduction='none', delta=0.1)
     # criterion = nn.MSELoss(reduction='none')
 
     model = Cophyloformer()
@@ -279,7 +279,7 @@ def main(fabric: Fabric):
     # Scheduler should count *optimizer steps* (not micro-batches)
     steps_per_epoch = math.ceil(len(train_loader) / grad_accum_steps)
     total_steps = epochs * steps_per_epoch
-    warmup_steps = total_steps // 1  # 20% warmup steps
+    warmup_steps = 0.05 * total_steps
     # warmup_steps = 0
 
     lr_scheduler = get_linear_schedule_with_warmup(
@@ -396,14 +396,17 @@ def main(fabric: Fabric):
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
-            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
+            # Instead of a simple mean:
+            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0])
+            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1])
 
-            total_loss_tensor = loss_cospeciation + loss_switches
+            # Apply a weight proportional to the label magnitude
+            weights = 1.0 + batch["labels"] 
+            weighted_loss = (loss_cospeciation * weights[:, 0]).mean() + \
+                            (loss_switches * weights[:, 1]).mean()
 
-            # Scale loss so overall gradient magnitude matches non-accum training
-            loss_to_backprop = total_loss_tensor / grad_accum_steps
-
+            loss_to_backprop = weighted_loss / grad_accum_steps
+            
             fabric.backward(loss_to_backprop)
 
             # Perform optimizer step only when we have accumulated enough micro-batches

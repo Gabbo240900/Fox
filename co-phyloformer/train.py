@@ -402,10 +402,10 @@ def main(fabric: Fabric):
 
             # Apply a weight proportional to the label magnitude
             weights = 1.0 + batch["labels"] 
-            weighted_loss = (loss_cospeciation * weights[:, 0]).mean() + \
+            total_loss_tensor = (loss_cospeciation * weights[:, 0]).mean() + \
                             (loss_switches * weights[:, 1]).mean()
 
-            loss_to_backprop = weighted_loss / grad_accum_steps
+            loss_to_backprop = total_loss_tensor / grad_accum_steps
             
             fabric.backward(loss_to_backprop)
 

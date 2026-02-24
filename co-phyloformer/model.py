@@ -35,13 +35,9 @@ class AxialMSABlockLite(nn.Module):
         # x: (B, N, S, D), x_ids: (B, N, S)
         B, N, S, D = x.shape
 
-        # Residue attention (along S) per leaf
         xr = self.norm_r1(x).view(B * N, S, D)
         pad_mask_r = (x_ids.view(B * N, S) == 22)  # True where PAD
 
-        # If an entire row is PAD, MultiheadAttention can produce NaNs.
-        # We neutralize those rows by (a) zeroing inputs, (b) disabling the mask for that row,
-        # and (c) zeroing outputs afterward.
         all_pad_r = pad_mask_r.all(dim=1)  # (B*N,)
         if all_pad_r.any():
             xr = xr.clone()
@@ -121,10 +117,7 @@ class FlashMSAEncoderLayer(nn.Module):
         q = q.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)  # (B, H, N, Hd)
         k = k.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
-
-
-        # SDPA has produced NaNs in bf16 on this environment when masking is used.
-        # Use an explicit fp32 attention implementation for stability.
+        
         q_fp32 = q.float()  # (B, H, N, Hd)
         k_fp32 = k.float()  # (B, H, N, Hd)
         v_fp32 = v.float()  # (B, H, N, Hd)
@@ -168,7 +161,6 @@ class MSAEncoder(nn.Module):
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         nn.init.trunc_normal_(self.cls_token, std=0.02)
-        self.pool_weights = nn.Linear(hidden_dim, 1)
         self.norm = nn.LayerNorm(hidden_dim)
         self.layers = nn.ModuleList([
             FlashMSAEncoderLayer(hidden_dim, num_heads)
@@ -190,16 +182,11 @@ class MSAEncoder(nn.Module):
 
         # Mask padding positions (PAD token id = 22) so pooling ignores padded tokens
         pad_mask = (x_ids != 22)  # (B, N, S)
-        logits = self.pool_weights(x).squeeze(-1)  # (B, N, S)
-        logits = logits.masked_fill(~pad_mask, -1e4)
-
-        # softmax in fp32 + renorm prevents NaNs when an entire leaf is PAD
-        weights = F.softmax(logits.float(), dim=2).to(dtype=x.dtype)
-        weights = weights * pad_mask.to(dtype=x.dtype)
-        denom = weights.sum(dim=2, keepdim=True).clamp(min=1e-6)
-        weights = weights / denom
-
-        x = torch.sum(x * weights.unsqueeze(-1), dim=2)  # (B, N, D)
+        x_masked = x.masked_fill(~pad_mask.unsqueeze(-1), -1e4) # Use -1e4 or -1e9
+        
+        # Max Pooling along the sequence dimension (S)
+        x, _ = torch.max(x_masked, dim=2)  # (B, N, D)
+        
         x = self.norm(x)
         #x = self.dropout(x)
 
@@ -231,8 +218,23 @@ class Cophyloformer(nn.Module):
         
         self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
         self.parasite_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
-
+        
         self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+
+        self.num_cross_layers = 2
+        self.cross_attn_layers = nn.ModuleList([
+            nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+            for _ in range(self.num_cross_layers)
+        ])
+        # Add feed-forward networks for each cross-attention step
+        self.cross_ffns = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim * 4),
+                nn.GELU(),
+                nn.Linear(hidden_dim * 4, hidden_dim),
+                nn.LayerNorm(hidden_dim)
+            ) for _ in range(self.num_cross_layers)
+        ])
 
         # Learnable pooling over (CLS + mapped pair tokens)
         self.pair_pool_score = nn.Linear(hidden_dim, 1) 
@@ -261,13 +263,22 @@ class Cophyloformer(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_dim, 1)
         )
+        
+        self.feature_mixer = nn.Sequential(
+            nn.Linear(self.concat_dim, self.concat_dim),
+            nn.GELU(),
+            nn.LayerNorm(self.concat_dim),
+            nn.Dropout(0.1),
+            nn.Linear(self.concat_dim, self.concat_dim),
+            nn.GELU(),
+            nn.LayerNorm(self.concat_dim)
+        )
 
     def forward(self, host_msa, parasite_msa, mappings, sim_time):
         # Encode host and parasite MSAs
         host_emb, host_cls = self.host_encoder(host_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
         parasite_emb, parasite_cls = self.parasite_encoder(parasite_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
         
-        # ---- Global channel: CLS ↔ CLS cross-attention (batched, 1 token) ----
         global_cross, _ = self.cross_attention(
             host_cls.unsqueeze(1),         # (B,1,D) queries
             parasite_cls.unsqueeze(1),     # (B,1,D) keys
@@ -319,13 +330,19 @@ class Cophyloformer(nn.Module):
         if max_pairs > 0:
             pair_present[:, 1:] = (host_idx != -1) & (para_idx != -1)
 
-        # Cross-attention in batch
-        # key_padding_mask: True = ignore (mask out)
         kv_pad_mask = ~pair_present
-        cross_attended, _ = self.cross_attention(
-            host_seq, parasite_seq, parasite_seq, key_padding_mask=kv_pad_mask
-        )  # (B, L, D)
-
+        # Iterative Deep Cross-Attention
+        cross_attended = host_seq # Start with host
+        
+        for i in range(self.num_cross_layers):
+            # Attend to parasite
+            attn_out, _ = self.cross_attn_layers[i](
+                cross_attended, parasite_seq, parasite_seq, key_padding_mask=kv_pad_mask
+            )
+            # Residual connection + Feed Forward
+            cross_attended = cross_attended + attn_out
+            cross_attended = self.cross_ffns[i](cross_attended)
+            
         # Learnable pooling over pair tokens (mask padded tokens)
         pool_logits = self.pair_pool_score(cross_attended).squeeze(-1)  # (B, L)
         pool_logits = pool_logits.masked_fill(~pair_present, -1e4)
@@ -337,6 +354,8 @@ class Cophyloformer(nn.Module):
 
 
         attended_pairs = torch.cat([host_cls, parasite_cls, global_cross, cross_pooled], dim=-1)  # (B, 4*hidden_dim)
+        
+        attended_pairs = self.feature_mixer(attended_pairs)
 
         # Change the modulation to cover more signal:
         if sim_time is not None:

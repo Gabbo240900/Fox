@@ -41,26 +41,29 @@ event_names = [
 start_time = time.time()  # Record start time
 
 class LazyCophyloformerDataset(Dataset):
-    def __init__(self, preencoded_dir):
+    def __init__(self, preencoded_dir, mask_prob=0.1, pt_files=None):
         # IMPORTANT for DDP: every rank must iterate the same number of batches.
         # If some samples are invalid (e.g., empty host/parasite MSAs) and are skipped
         # differently across ranks, NCCL all-reduces can hang and time out.
         # So we deterministically pre-filter invalid .pt files once here.
-        all_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
-        valid_files = []
-        for pt_path in all_files:
-            try:
-                sample = torch.load(pt_path, map_location="cpu", weights_only=False)
-                if len(sample.get("host_msas", {})) == 0:
+        self.mask_prob = float(mask_prob)
+        if pt_files is None:
+            all_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
+            valid_files = []
+            for pt_path in all_files:
+                try:
+                    sample = torch.load(pt_path, map_location="cpu", weights_only=False)
+                    if len(sample.get("host_msas", {})) == 0:
+                        continue
+                    if len(sample.get("parasite_msas", {})) == 0:
+                        continue
+                    valid_files.append(pt_path)
+                except Exception:
+                    # Corrupt/unreadable file -> skip deterministically
                     continue
-                if len(sample.get("parasite_msas", {})) == 0:
-                    continue
-                valid_files.append(pt_path)
-            except Exception:
-                # Corrupt/unreadable file -> skip deterministically
-                continue
-
-        self.pt_files = valid_files
+            self.pt_files = valid_files
+        else:
+            self.pt_files = list(pt_files)
         self.preencoded_dir = preencoded_dir
 
     def __len__(self):
@@ -70,14 +73,15 @@ class LazyCophyloformerDataset(Dataset):
         pt_path = self.pt_files[idx]
         sample = torch.load(pt_path, map_location="cpu", weights_only=False)
 
-        def mask_sequence(sequence, mask_prob=0.1 , mask_token=23):
-            masked = []
-            for aa in sequence:
-                if torch.rand(1).item() < mask_prob:
-                    masked.append(mask_token)
-                else:
-                    masked.append(aa)
-            return torch.tensor(masked, dtype=torch.long)
+        def mask_sequence(sequence, mask_prob=0.1, mask_token=23, pad_token=22):
+            if mask_prob <= 0:
+                return sequence
+            # Never mask PAD tokens: preserve padding semantics for attention/pooling masks.
+            random_mask = torch.rand_like(sequence, dtype=torch.float32) < mask_prob
+            random_mask &= (sequence != pad_token)
+            masked = sequence.clone()
+            masked[random_mask] = mask_token
+            return masked
 
         # Should never happen thanks to pre-filtering in __init__
         if len(sample.get("host_msas", {})) == 0 or len(sample.get("parasite_msas", {})) == 0:
@@ -103,11 +107,11 @@ class LazyCophyloformerDataset(Dataset):
         sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 1.0)], dtype=torch.float32)
         return {
             "host_msa": torch.stack([
-                mask_sequence(encode_sequence(seq), mask_prob=0.1)
+                mask_sequence(encode_sequence(seq), mask_prob=self.mask_prob)
                 for seq in sample["host_msas"].values()
             ]),
             "parasite_msa": torch.stack([
-                mask_sequence(encode_sequence(seq), mask_prob=0.1)
+                mask_sequence(encode_sequence(seq), mask_prob=self.mask_prob)
                 for seq in sample["parasite_msas"].values()
             ]),
             "mappings": valid_mappings,
@@ -183,14 +187,25 @@ def main(fabric: Fabric):
     # Load Data
     preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/new_preencoded_pt/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
-    dataset = LazyCophyloformerDataset(preencoded_dir)
+    # Build file list once, then create train/val datasets with different masking policies.
+    dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0)
     # Train/Validation Split
     indices = list(range(len(dataset)))
     train_indices, val_indices = train_test_split(
         indices, test_size=0.2, random_state=42, shuffle=True
     )
-    train_subset = torch.utils.data.Subset(dataset, train_indices)
-    val_subset   = torch.utils.data.Subset(dataset, val_indices)
+    train_dataset = LazyCophyloformerDataset(
+        preencoded_dir,
+        mask_prob=0.1,
+        pt_files=dataset.pt_files
+    )
+    val_dataset = LazyCophyloformerDataset(
+        preencoded_dir,
+        mask_prob=0.0,
+        pt_files=dataset.pt_files
+    )
+    train_subset = torch.utils.data.Subset(train_dataset, train_indices)
+    val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
     device = fabric.device
     epochs = 5
 

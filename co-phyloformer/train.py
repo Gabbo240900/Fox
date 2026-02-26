@@ -42,10 +42,6 @@ start_time = time.time()  # Record start time
 
 class LazyCophyloformerDataset(Dataset):
     def __init__(self, preencoded_dir, mask_prob=0.1, pt_files=None):
-        # IMPORTANT for DDP: every rank must iterate the same number of batches.
-        # If some samples are invalid (e.g., empty host/parasite MSAs) and are skipped
-        # differently across ranks, NCCL all-reduces can hang and time out.
-        # So we deterministically pre-filter invalid .pt files once here.
         self.mask_prob = float(mask_prob)
         if pt_files is None:
             all_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
@@ -338,6 +334,10 @@ def main(fabric: Fabric):
                 "huber_delta": huber_delta,
                 "event_loss_weights": event_loss_weights.tolist(),
                 "tail_weight_scale": tail_weight_scale,
+                "early_stop_metric": "val/MAE/Host_spread/Switches",
+                "early_stop_patience": int(os.environ.get("EARLY_STOP_PATIENCE", 3)),
+                "early_stop_min_delta": float(os.environ.get("EARLY_STOP_MIN_DELTA", 1e-4)),
+                "early_stop_warmup_epochs": int(os.environ.get("EARLY_STOP_WARMUP_EPOCHS", 2)),
                 "model_name": model.__class__.__name__,
                 "dataset_size": len(dataset),  
                 **model_config                 
@@ -365,6 +365,12 @@ def main(fabric: Fabric):
 
     val_predictions_data = []  
     best_step_predictions = None
+    monitor_event_idx = 1  # Host_spread/Switches
+    best_monitor_value = float("inf")
+    epochs_without_improvement = 0
+    early_stop_patience = int(os.environ.get("EARLY_STOP_PATIENCE", 3))
+    early_stop_min_delta = float(os.environ.get("EARLY_STOP_MIN_DELTA", 1e-4))
+    early_stop_warmup_epochs = int(os.environ.get("EARLY_STOP_WARMUP_EPOCHS", 2))
 
     # Training loop over all batches per epoch (no micro-epochs)
     for epoch in range(start_epoch, epochs):
@@ -641,6 +647,51 @@ def main(fabric: Fabric):
                 **{f"val/sMAPE/{event_names[i]}": val_smape[i] for i in range(len(event_names))},
                 "epoch": epoch + 1,
             })
+
+        monitor_value = float(val_mae[monitor_event_idx])
+        improved = monitor_value < (best_monitor_value - early_stop_min_delta)
+        if improved:
+            best_monitor_value = monitor_value
+            epochs_without_improvement = 0
+            if fabric.is_global_zero:
+                ckpt_name = f"best_host_switch_mae_epoch{epoch+1}.pth"
+                save_checkpoint(
+                    model,
+                    optimizer,
+                    epoch,
+                    val_loss,
+                    checkpoint_dir,
+                    ckpt_name
+                )
+                print(
+                    f"[EarlyStop] New best Host_switches val MAE: {best_monitor_value:.6f} "
+                    f"(epoch {epoch+1})"
+                )
+        else:
+            epochs_without_improvement += 1
+
+        if fabric.is_global_zero:
+            wandb.log({
+                "val/host_switch_mae_best": best_monitor_value,
+                "val/host_switch_mae_no_improve_epochs": epochs_without_improvement,
+                "epoch": epoch + 1,
+            })
+
+        should_stop = (
+            (epoch + 1) >= early_stop_warmup_epochs and
+            epochs_without_improvement >= early_stop_patience
+        )
+        stop_tensor = torch.tensor(int(should_stop), device=device)
+        stop_tensor = fabric.all_reduce(stop_tensor, reduce_op="max")
+        should_stop = bool(stop_tensor.item())
+
+        if should_stop:
+            if fabric.is_global_zero:
+                print(
+                    f"[EarlyStop] Stop at epoch {epoch+1}: no Host_switches val MAE improvement "
+                    f"for {epochs_without_improvement} epoch(s)."
+                )
+            break
 
         model.train()
 

@@ -1,6 +1,15 @@
 import torch
 # BEST CONFIGURATION SO FAR FOR SMALL DATASETS
-def run_full_validation(fabric, model, val_loader, criterion, event_names, device):
+def run_full_validation(
+    fabric,
+    model,
+    val_loader,
+    criterion,
+    event_names,
+    device,
+    event_loss_weights=None,
+    tail_weight_scale=1.0,
+):
     model.eval()
     val_loss = 0.0
     val_batches = 0
@@ -10,6 +19,10 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
     val_sum_smape = torch.zeros(len(event_names), device=device)
     running_min_nonzero = torch.full((len(event_names),), float('inf'), device=device)
     val_sample_count = 0
+    if event_loss_weights is None:
+        event_loss_weights = torch.ones(len(event_names), device=device)
+    else:
+        event_loss_weights = event_loss_weights.to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
         for batch in val_loader:
@@ -27,9 +40,10 @@ def run_full_validation(fabric, model, val_loader, criterion, event_names, devic
                 batch['sim_time']  
             )
 
-            loss_cosp = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
-            loss_sw   = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
-            loss = loss_cosp + loss_sw
+            target_weights = 1.0 + tail_weight_scale * batch["labels"]
+            loss_cosp = (criterion(outputs[:, 0], batch["labels"][:, 0]) * target_weights[:, 0]).mean()
+            loss_sw = (criterion(outputs[:, 1], batch["labels"][:, 1]) * target_weights[:, 1]).mean()
+            loss = event_loss_weights[0] * loss_cosp + event_loss_weights[1] * loss_sw
 
             preds = outputs
             labels = batch["labels"]

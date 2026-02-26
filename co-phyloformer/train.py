@@ -248,10 +248,13 @@ def main(fabric: Fabric):
 
     lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0.01
-    
-    #criterion = nn.L1Loss(reduction='none')  
-    criterion = nn.HuberLoss(reduction='none', delta=0.1)
-    # criterion = nn.MSELoss(reduction='none')
+
+    # L1 is median-seeking and tends to underfit tails on imbalanced targets.
+    huber_delta = 0.5
+    criterion = nn.HuberLoss(reduction='none', delta=huber_delta)
+    # Explicitly emphasize host-switch learning and high-value tails.
+    event_loss_weights = torch.tensor([1.0, 3.0], device=device)
+    tail_weight_scale = 4.0
 
     model = Cophyloformer()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
@@ -317,6 +320,9 @@ def main(fabric: Fabric):
                 "scheduler": "linear_warmup",
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
+                "huber_delta": huber_delta,
+                "event_loss_weights": event_loss_weights.tolist(),
+                "tail_weight_scale": tail_weight_scale,
                 "model_name": model.__class__.__name__,
                 "dataset_size": len(dataset),  
                 **model_config                 
@@ -400,10 +406,14 @@ def main(fabric: Fabric):
             loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0])
             loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1])
 
-            # Apply a weight proportional to the label magnitude
-            weights = 1.0 + batch["labels"] 
-            total_loss_tensor = (loss_cospeciation * weights[:, 0]).mean() + \
-                            (loss_switches * weights[:, 1]).mean()
+            # Tail-aware per-sample weighting + per-task reweighting.
+            target_weights = 1.0 + tail_weight_scale * batch["labels"]
+            weighted_cospeciation = (loss_cospeciation * target_weights[:, 0]).mean()
+            weighted_switches = (loss_switches * target_weights[:, 1]).mean()
+            total_loss_tensor = (
+                event_loss_weights[0] * weighted_cospeciation +
+                event_loss_weights[1] * weighted_switches
+            )
 
             loss_to_backprop = total_loss_tensor / grad_accum_steps
             
@@ -421,7 +431,16 @@ def main(fabric: Fabric):
             if current_step in val_checkpoints:
                 # IMPORTANT: run validation on ALL ranks so any all_reduce/barrier inside
                 # run_full_validation does not hang. Only rank0 logs/saves.
-                val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
+                val_results = run_full_validation(
+                    fabric,
+                    model,
+                    val_loader,
+                    criterion,
+                    event_names,
+                    device,
+                    event_loss_weights=event_loss_weights,
+                    tail_weight_scale=tail_weight_scale,
+                )
                 if fabric.is_global_zero:
                     wandb.log({
                         "train/loss_step": total_loss_tensor.item(),
@@ -570,7 +589,16 @@ def main(fabric: Fabric):
             wandb.log(metrics)
 
         # VALIDATION PHASE replaced by function
-        val_results = run_full_validation(fabric, model, val_loader, criterion, event_names, device)
+        val_results = run_full_validation(
+            fabric,
+            model,
+            val_loader,
+            criterion,
+            event_names,
+            device,
+            event_loss_weights=event_loss_weights,
+            tail_weight_scale=tail_weight_scale,
+        )
         val_loss = val_results["val_loss"]
         val_mae = val_results["val_mae"]
         val_mse = val_results["val_mse"]
@@ -722,4 +750,3 @@ if __name__ == "__main__":
         )
     )
     fabric.launch(main)
-

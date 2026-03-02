@@ -12,7 +12,7 @@ import numpy as np
 import os
 from plot import plot_event_metric_over_epochs, plot_epoch_loss_curve, plot_labels_vs_predictions
 from sklearn.model_selection import train_test_split
-from transformers import get_linear_schedule_with_warmup
+from transformers import get_cosine_schedule_with_warmup
 from tqdm import tqdm
 from itertools import islice
 import wandb
@@ -308,10 +308,9 @@ def main(fabric: Fabric):
     # Scheduler should count *optimizer steps* (not micro-batches)
     steps_per_epoch = math.ceil(len(train_loader) / grad_accum_steps)
     total_steps = epochs * steps_per_epoch
-    warmup_steps = 0.05 * total_steps
-    # warmup_steps = 0
+    warmup_steps = int(0.10 * total_steps)
 
-    lr_scheduler = get_linear_schedule_with_warmup(
+    lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=warmup_steps,
         num_training_steps=total_steps,
@@ -378,10 +377,9 @@ def main(fabric: Fabric):
     val_smape_history = []
     val_loss_history = []
 
-    val_predictions_data = []  
+    val_predictions_data = []
     best_step_predictions = None
-    monitor_event_idx = 1  # Host_spread/Switches
-    best_monitor_value = float("inf")
+    best_train_loss = float("inf")
     epochs_without_improvement = 0
     early_stop_patience = int(os.environ.get("EARLY_STOP_PATIENCE", 3))
     early_stop_min_delta = float(os.environ.get("EARLY_STOP_MIN_DELTA", 1e-4))
@@ -663,13 +661,13 @@ def main(fabric: Fabric):
                 "epoch": epoch + 1,
             })
 
-        monitor_value = float(val_mae[monitor_event_idx])
-        improved = monitor_value < (best_monitor_value - early_stop_min_delta)
+        # Early stopping monitors training loss (not validation).
+        improved = epoch_loss < (best_train_loss - early_stop_min_delta)
         if improved:
-            best_monitor_value = monitor_value
+            best_train_loss = epoch_loss
             epochs_without_improvement = 0
             if fabric.is_global_zero:
-                ckpt_name = f"best_host_switch_mae_epoch{epoch+1}.pth"
+                ckpt_name = f"best_train_loss_epoch{epoch+1}.pth"
                 save_checkpoint(
                     model,
                     optimizer,
@@ -679,7 +677,7 @@ def main(fabric: Fabric):
                     ckpt_name
                 )
                 print(
-                    f"[EarlyStop] New best Host_switches val MAE: {best_monitor_value:.6f} "
+                    f"[EarlyStop] New best train loss: {best_train_loss:.6f} "
                     f"(epoch {epoch+1})"
                 )
         else:
@@ -687,8 +685,8 @@ def main(fabric: Fabric):
 
         if fabric.is_global_zero:
             wandb.log({
-                "val/host_switch_mae_best": best_monitor_value,
-                "val/host_switch_mae_no_improve_epochs": epochs_without_improvement,
+                "train/loss_best": best_train_loss,
+                "train/no_improve_epochs": epochs_without_improvement,
                 "epoch": epoch + 1,
             })
 
@@ -703,7 +701,7 @@ def main(fabric: Fabric):
         if should_stop:
             if fabric.is_global_zero:
                 print(
-                    f"[EarlyStop] Stop at epoch {epoch+1}: no Host_switches val MAE improvement "
+                    f"[EarlyStop] Stop at epoch {epoch+1}: no train loss improvement "
                     f"for {epochs_without_improvement} epoch(s)."
                 )
             break

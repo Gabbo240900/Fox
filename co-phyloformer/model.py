@@ -148,50 +148,55 @@ class FlashMSAEncoderLayer(nn.Module):
         return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=1024, num_layers=8, num_heads=8, axial_layers=1, leaf_attn_max_leaves=128):# increase embedding and layers reduce batch size 
+    def __init__(self, hidden_dim=1024, seq_dim=256, num_layers=8, num_heads=8, axial_layers=1, leaf_attn_max_leaves=128):
         super(MSAEncoder, self).__init__()
+        # seq_dim: smaller dimension used for embedding + axial attention (saves memory on large MSAs)
+        # hidden_dim: larger dimension used for CLS token + leaf transformer layers
+        seq_heads = max(1, num_heads * seq_dim // hidden_dim)  # scale heads proportionally to seq_dim
 
-        self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=hidden_dim)  # 20 AAs + gap + unknown + virtual node (X)
-        # MSA-Transformer-style axial attention blocks BEFORE pooling
+        self.embedding = nn.Embedding(num_embeddings=24, embedding_dim=seq_dim)  # 20 AAs + gap + unknown + virtual node (X)
+        # MSA-Transformer-style axial attention blocks BEFORE pooling (run at seq_dim)
         self.axial_layers = int(axial_layers)
         self.axial_blocks = nn.ModuleList([
-            AxialMSABlockLite(hidden_dim, num_heads, ff_mult=4, dropout=0.0, leaf_attn_max_leaves=leaf_attn_max_leaves)
+            AxialMSABlockLite(seq_dim, seq_heads, ff_mult=4, dropout=0.0, leaf_attn_max_leaves=leaf_attn_max_leaves)
             for _ in range(self.axial_layers)
         ])
 
+        self.norm = nn.LayerNorm(seq_dim)
+        # Project each leaf from seq_dim up to hidden_dim before appending CLS token
+        self.leaf_proj = nn.Linear(seq_dim, hidden_dim)
+
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         nn.init.trunc_normal_(self.cls_token, std=0.02)
-        self.norm = nn.LayerNorm(hidden_dim)
         self.layers = nn.ModuleList([
             FlashMSAEncoderLayer(hidden_dim, num_heads)
             for _ in range(num_layers)
         ])
         self.final_norm = nn.LayerNorm(hidden_dim)
-        #self.dropout = nn.Dropout(0.1)
         self.mask_token_id = 23
         
 
     def forward(self, x):
         # x: (B, N, S) token ids
         x_ids = x
-        x = self.embedding(x_ids)  # (B, N, S, D)
+        x = self.embedding(x_ids)  # (B, N, S, seq_dim)
 
-        # Axial attention over the MSA grid (N x S) before pooling
+        # Axial attention over the MSA grid (N x S) before pooling (at seq_dim)
         for blk in self.axial_blocks:
             x = blk(x, x_ids)
 
         # Mask padding positions (PAD token id = 22) so pooling ignores padded tokens
         pad_mask = (x_ids != 22)  # (B, N, S)
-        x_masked = x.masked_fill(~pad_mask.unsqueeze(-1), -1e4) # Use -1e4 or -1e9
-        
-        # Max Pooling along the sequence dimension (S)
-        x, _ = torch.max(x_masked, dim=2)  # (B, N, D)
-        
-        x = self.norm(x)
-        #x = self.dropout(x)
+        x_masked = x.masked_fill(~pad_mask.unsqueeze(-1), -1e4)
 
-        cls_token = self.cls_token.expand(x.size(0), -1, -1)  # (B, 1, D)
-        x = torch.cat([cls_token, x], dim=1)  # (B, N+1, D)
+        # Max Pooling along the sequence dimension (S)
+        x, _ = torch.max(x_masked, dim=2)  # (B, N, seq_dim)
+
+        x = self.norm(x)
+        x = self.leaf_proj(x)  # (B, N, hidden_dim) — project up to full CLS dim
+
+        cls_token = self.cls_token.expand(x.size(0), -1, -1)  # (B, 1, hidden_dim)
+        x = torch.cat([cls_token, x], dim=1)  # (B, N+1, hidden_dim)
 
         # leaf_present: (B, N) True if leaf has any non-PAD residue
         leaf_present = (x_ids != 22).any(dim=2)  # (B, N)
@@ -207,39 +212,45 @@ class MSAEncoder(nn.Module):
         return x, x[:, 0]
 
 class Cophyloformer(nn.Module):
-    def __init__(self, hidden_dim=1024, num_layers=8, num_heads=8):
+    def __init__(self, hidden_dim=1024, seq_dim=256, num_layers=8, num_heads=8):
         super(Cophyloformer, self).__init__()
         # Store hyperparameters for W&B logging
         self.hidden_dim = hidden_dim
+        self.seq_dim = seq_dim
         self.num_layers = num_layers
         self.num_heads = num_heads
-        #self.dropout = 0.1
         self.embedding_dim = hidden_dim
-        
-        self.host_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
-        self.parasite_encoder = MSAEncoder(hidden_dim, num_layers, num_heads)
-        
+
+        self.host_encoder = MSAEncoder(hidden_dim, seq_dim, num_layers, num_heads)
+        self.parasite_encoder = MSAEncoder(hidden_dim, seq_dim, num_layers, num_heads)
+
         self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
 
         self.num_cross_layers = 2
-        self.cross_attn_layers = nn.ModuleList([
+        # Bidirectional cross-attention: host→parasite and parasite→host
+        self.cross_attn_h2p = nn.ModuleList([
             nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
             for _ in range(self.num_cross_layers)
         ])
-        # Add feed-forward networks for each cross-attention step (pre-norm style)
-        self.cross_norms = nn.ModuleList([
-            nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)
+        self.cross_attn_p2h = nn.ModuleList([
+            nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+            for _ in range(self.num_cross_layers)
         ])
-        self.cross_ffns = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim * 4),
-                nn.GELU(),
-                nn.Linear(hidden_dim * 4, hidden_dim),
-            ) for _ in range(self.num_cross_layers)
+        # Pre-norm + FFN for each direction
+        self.cross_norms_h = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
+        self.cross_norms_p = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
+        self.cross_ffns_h = nn.ModuleList([
+            nn.Sequential(nn.Linear(hidden_dim, hidden_dim * 4), nn.GELU(), nn.Linear(hidden_dim * 4, hidden_dim))
+            for _ in range(self.num_cross_layers)
+        ])
+        self.cross_ffns_p = nn.ModuleList([
+            nn.Sequential(nn.Linear(hidden_dim, hidden_dim * 4), nn.GELU(), nn.Linear(hidden_dim * 4, hidden_dim))
+            for _ in range(self.num_cross_layers)
         ])
 
-        # Learnable pooling over (CLS + mapped pair tokens)
-        self.pair_pool_score = nn.Linear(hidden_dim, 1) 
+        # Learnable pooling — one scorer per side
+        self.pair_pool_score_h = nn.Linear(hidden_dim, 1)
+        self.pair_pool_score_p = nn.Linear(hidden_dim, 1)
 
         self.concat_dim = 4 * hidden_dim
 
@@ -332,28 +343,33 @@ class Cophyloformer(nn.Module):
             pair_present[:, 1:] = (host_idx != -1) & (para_idx != -1)
 
         kv_pad_mask = ~pair_present
-        # Iterative Deep Cross-Attention
-        cross_attended = host_seq # Start with host
-        
+
+        # Bidirectional cross-attention: host and parasite update each other each layer
+        cross_host = host_seq
+        cross_para = parasite_seq
+
         for i in range(self.num_cross_layers):
-            # Attend to parasite
-            attn_out, _ = self.cross_attn_layers[i](
-                cross_attended, parasite_seq, parasite_seq, key_padding_mask=kv_pad_mask
-            )
-            # Residual connection + Feed Forward (pre-norm, proper residual)
-            cross_attended = cross_attended + attn_out
-            cross_attended = cross_attended + self.cross_ffns[i](self.cross_norms[i](cross_attended))
+            # Host attends to parasite
+            h_attn, _ = self.cross_attn_h2p[i](cross_host, cross_para, cross_para, key_padding_mask=kv_pad_mask)
+            cross_host = cross_host + h_attn
+            cross_host = cross_host + self.cross_ffns_h[i](self.cross_norms_h[i](cross_host))
 
+            # Parasite attends to updated host
+            p_attn, _ = self.cross_attn_p2h[i](cross_para, cross_host, cross_host, key_padding_mask=kv_pad_mask)
+            cross_para = cross_para + p_attn
+            cross_para = cross_para + self.cross_ffns_p[i](self.cross_norms_p[i](cross_para))
 
-            
-        # Learnable pooling over pair tokens (mask padded tokens)
-        pool_logits = self.pair_pool_score(cross_attended).squeeze(-1)  # (B, L)
-        pool_logits = pool_logits.masked_fill(~pair_present, -1e4)
-        pool_weights = F.softmax(pool_logits.float(), dim=1).to(dtype=cross_attended.dtype)
-        pool_weights = pool_weights * pair_present.to(dtype=cross_attended.dtype)
-        denom = pool_weights.sum(dim=1, keepdim=True).clamp(min=1e-6)
-        pool_weights = pool_weights / denom
-        cross_pooled = torch.sum(cross_attended * pool_weights.unsqueeze(-1), dim=1)  # (B, D)
+        def masked_softmax_pool(logits, seq, mask):
+            logits = logits.masked_fill(~mask, -1e4)
+            w = F.softmax(logits.float(), dim=1).to(dtype=seq.dtype)
+            w = w * mask.to(dtype=seq.dtype)
+            w = w / w.sum(dim=1, keepdim=True).clamp(min=1e-6)
+            return torch.sum(seq * w.unsqueeze(-1), dim=1)  # (B, D)
+
+        # Pool both sides and average
+        host_pooled = masked_softmax_pool(self.pair_pool_score_h(cross_host).squeeze(-1), cross_host, pair_present)
+        para_pooled = masked_softmax_pool(self.pair_pool_score_p(cross_para).squeeze(-1), cross_para, pair_present)
+        cross_pooled = (host_pooled + para_pooled) / 2  # (B, D)
 
 
         attended_pairs = torch.cat([host_cls, parasite_cls, global_cross, cross_pooled], dim=-1)  # (B, 4*hidden_dim)

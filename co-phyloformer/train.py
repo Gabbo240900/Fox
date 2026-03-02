@@ -260,9 +260,24 @@ def main(fabric: Fabric):
     lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0.01
 
-    # L1 is median-seeking and tends to underfit tails on imbalanced targets.
-    huber_delta = 0.5
-    criterion = nn.HuberLoss(reduction='none', delta=huber_delta)
+    # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.
+    huber_delta = 1.0  # covers the full [0,1] label range quadratically
+    under_penalty = 2.5
+
+    def asymmetric_huber(pred, target):
+        err = target - pred  # positive = underpredicting, negative = overpredicting
+        abs_err = err.abs()
+        loss = torch.where(
+            abs_err < huber_delta,
+            0.5 * abs_err ** 2,
+            huber_delta * (abs_err - 0.5 * huber_delta),
+        )
+        weight = torch.where(err > 0,
+                             torch.full_like(err, under_penalty),
+                             torch.ones_like(err))
+        return loss * weight
+
+    criterion = asymmetric_huber  # used by validation calls
     # Explicitly emphasize host-switch learning and high-value tails.
     event_loss_weights = torch.tensor([1.0, 3.0], device=device)
     tail_weight_scale = 4.0
@@ -423,9 +438,9 @@ def main(fabric: Fabric):
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            # Instead of a simple mean:
-            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0])
-            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1])
+            # Asymmetric Huber: penalises underprediction more than overprediction.
+            loss_cospeciation = asymmetric_huber(outputs[:, 0], batch["labels"][:, 0])
+            loss_switches     = asymmetric_huber(outputs[:, 1], batch["labels"][:, 1])
 
             # Tail-aware per-sample weighting + per-task reweighting.
             target_weights = 1.0 + tail_weight_scale * batch["labels"]

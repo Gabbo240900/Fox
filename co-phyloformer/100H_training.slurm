@@ -7,8 +7,8 @@
 #SBATCH --error=error_files/100H_training%j.err 
 #SBATCH --constraint=h100 
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1    
-#SBATCH --gres=gpu:2           
+#SBATCH --ntasks-per-node=4
+#SBATCH --gres=gpu:4 
 #SBATCH --cpus-per-task=24 
 #SBATCH --time=100:00:00 
 
@@ -61,4 +61,4 @@ export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300     
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
-python train.py
+srun python train.py

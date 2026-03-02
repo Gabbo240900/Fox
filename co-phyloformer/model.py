@@ -226,13 +226,15 @@ class Cophyloformer(nn.Module):
             nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
             for _ in range(self.num_cross_layers)
         ])
-        # Add feed-forward networks for each cross-attention step
+        # Add feed-forward networks for each cross-attention step (pre-norm style)
+        self.cross_norms = nn.ModuleList([
+            nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)
+        ])
         self.cross_ffns = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim * 4),
                 nn.GELU(),
                 nn.Linear(hidden_dim * 4, hidden_dim),
-                nn.LayerNorm(hidden_dim)
             ) for _ in range(self.num_cross_layers)
         ])
 
@@ -271,7 +273,6 @@ class Cophyloformer(nn.Module):
             nn.Dropout(0.1),
             nn.Linear(self.concat_dim, self.concat_dim),
             nn.GELU(),
-            nn.LayerNorm(self.concat_dim)
         )
 
     def forward(self, host_msa, parasite_msa, mappings, sim_time):
@@ -339,9 +340,11 @@ class Cophyloformer(nn.Module):
             attn_out, _ = self.cross_attn_layers[i](
                 cross_attended, parasite_seq, parasite_seq, key_padding_mask=kv_pad_mask
             )
-            # Residual connection + Feed Forward
+            # Residual connection + Feed Forward (pre-norm, proper residual)
             cross_attended = cross_attended + attn_out
-            cross_attended = self.cross_ffns[i](cross_attended)
+            cross_attended = cross_attended + self.cross_ffns[i](self.cross_norms[i](cross_attended))
+
+
             
         # Learnable pooling over pair tokens (mask padded tokens)
         pool_logits = self.pair_pool_score(cross_attended).squeeze(-1)  # (B, L)
@@ -360,8 +363,9 @@ class Cophyloformer(nn.Module):
         # Change the modulation to cover more signal:
         if sim_time is not None:
             # Make sim_time_fc output self.concat_dim * 2
-            gamma_beta = self.sim_time_fc(sim_time) 
+            gamma_beta = self.sim_time_fc(sim_time)
             scale, shift = gamma_beta.chunk(2, dim=-1)
+            scale = torch.tanh(scale)
             attended_pairs = attended_pairs * (1 + scale) + shift
 
         out_cospeciation = self.cospeciation_head(attended_pairs)
@@ -369,3 +373,4 @@ class Cophyloformer(nn.Module):
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
 
         return F.softplus(outputs)
+ 

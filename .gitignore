@@ -1,6 +1,8 @@
 # MacOS
 .DS_Store
 
+generate_asymmetree/*
+
 *.swp
 *.swo
 *.pth

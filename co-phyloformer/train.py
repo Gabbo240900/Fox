@@ -348,10 +348,6 @@ def main(fabric: Fabric):
                 "huber_delta": huber_delta,
                 "event_loss_weights": event_loss_weights.tolist(),
                 "tail_weight_scale": tail_weight_scale,
-                "early_stop_metric": "val/MAE/Host_spread/Switches",
-                "early_stop_patience": int(os.environ.get("EARLY_STOP_PATIENCE", 3)),
-                "early_stop_min_delta": float(os.environ.get("EARLY_STOP_MIN_DELTA", 1e-4)),
-                "early_stop_warmup_epochs": int(os.environ.get("EARLY_STOP_WARMUP_EPOCHS", 2)),
                 "model_name": model.__class__.__name__,
                 "dataset_size": len(dataset),  
                 **model_config                 
@@ -379,11 +375,6 @@ def main(fabric: Fabric):
 
     val_predictions_data = []
     best_step_predictions = None
-    best_train_loss = float("inf")
-    epochs_without_improvement = 0
-    early_stop_patience = int(os.environ.get("EARLY_STOP_PATIENCE", 3))
-    early_stop_min_delta = float(os.environ.get("EARLY_STOP_MIN_DELTA", 1e-4))
-    early_stop_warmup_epochs = int(os.environ.get("EARLY_STOP_WARMUP_EPOCHS", 2))
 
     # Training loop over all batches per epoch (no micro-epochs)
     for epoch in range(start_epoch, epochs):
@@ -660,51 +651,6 @@ def main(fabric: Fabric):
                 **{f"val/sMAPE/{event_names[i]}": val_smape[i] for i in range(len(event_names))},
                 "epoch": epoch + 1,
             })
-
-        # Early stopping monitors training loss (not validation).
-        improved = epoch_loss < (best_train_loss - early_stop_min_delta)
-        if improved:
-            best_train_loss = epoch_loss
-            epochs_without_improvement = 0
-            if fabric.is_global_zero:
-                ckpt_name = f"best_train_loss_epoch{epoch+1}.pth"
-                save_checkpoint(
-                    model,
-                    optimizer,
-                    epoch,
-                    val_loss,
-                    checkpoint_dir,
-                    ckpt_name
-                )
-                print(
-                    f"[EarlyStop] New best train loss: {best_train_loss:.6f} "
-                    f"(epoch {epoch+1})"
-                )
-        else:
-            epochs_without_improvement += 1
-
-        if fabric.is_global_zero:
-            wandb.log({
-                "train/loss_best": best_train_loss,
-                "train/no_improve_epochs": epochs_without_improvement,
-                "epoch": epoch + 1,
-            })
-
-        should_stop = (
-            (epoch + 1) >= early_stop_warmup_epochs and
-            epochs_without_improvement >= early_stop_patience
-        )
-        stop_tensor = torch.tensor(int(should_stop), device=device)
-        stop_tensor = fabric.all_reduce(stop_tensor, reduce_op="max")
-        should_stop = bool(stop_tensor.item())
-
-        if should_stop:
-            if fabric.is_global_zero:
-                print(
-                    f"[EarlyStop] Stop at epoch {epoch+1}: no train loss improvement "
-                    f"for {epochs_without_improvement} epoch(s)."
-                )
-            break
 
         model.train()
 

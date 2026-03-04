@@ -1,7 +1,7 @@
 # MacOS
 .DS_Store
 
-generate_asymmetree/*
+./generate_asymmetree/*
 
 *.swp
 *.swo

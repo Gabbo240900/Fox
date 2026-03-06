@@ -203,9 +203,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(train_dataset, train_indices)
     val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
     device = fabric.device
-    epochs = 10
+    epochs = 20
 
-    batch_size = 16
+    batch_size = 48
 
     # -----------------------------
     # Gradient accumulation
@@ -257,7 +257,7 @@ def main(fabric: Fabric):
 
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
+    lr = 2e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0.01
 
     # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.

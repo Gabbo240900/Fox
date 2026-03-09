@@ -285,18 +285,6 @@ class Cophyloformer(nn.Module):
             nn.Linear(self.concat_dim, self.concat_dim),
             nn.GELU(),
         )
-        # Task-specific mixers: each head gets its own capacity to extract
-        # task-relevant features from the shared representation.
-        self.task_mixer_cospec = nn.Sequential(
-            nn.Linear(self.concat_dim, self.concat_dim),
-            nn.GELU(),
-            nn.LayerNorm(self.concat_dim),
-        )
-        self.task_mixer_switch = nn.Sequential(
-            nn.Linear(self.concat_dim, self.concat_dim),
-            nn.GELU(),
-            nn.LayerNorm(self.concat_dim),
-        )
 
     def forward(self, host_msa, parasite_msa, mappings, sim_time):
         # Encode host and parasite MSAs
@@ -388,19 +376,17 @@ class Cophyloformer(nn.Module):
         
         attended_pairs = self.feature_mixer(attended_pairs)
 
+        # Change the modulation to cover more signal:
         if sim_time is not None:
+            # Make sim_time_fc output self.concat_dim * 2
             gamma_beta = self.sim_time_fc(sim_time)
             scale, shift = gamma_beta.chunk(2, dim=-1)
             scale = torch.tanh(scale)
             shift = torch.tanh(shift)  # bound shift to prevent destabilizing the representation
             attended_pairs = attended_pairs * (1 + scale) + shift
 
-        # Task-specific feature extraction: each head specialises independently
-        cospec_features = self.task_mixer_cospec(attended_pairs)
-        switch_features = self.task_mixer_switch(attended_pairs)
-
-        out_cospeciation = self.cospeciation_head(cospec_features)
-        out_switch = self.switch_head(switch_features)
+        out_cospeciation = self.cospeciation_head(attended_pairs)
+        out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
 
         return torch.sigmoid(outputs)

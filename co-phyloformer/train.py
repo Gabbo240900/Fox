@@ -257,18 +257,14 @@ def main(fabric: Fabric):
 
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-5 # lower learning rate (5e-5, or 1e-5).
-    wd = 0.01
+    lr = 1e-3 # lower learning rate (5e-5, or 1e-5).
+    wd = 0
 
     # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.
     huber_delta = 1.0  # covers the full [0,1] label range quadratically
-    # Task-specific penalties:
-    # - cospec needs high under_penalty to stop regression-to-mean for high values
-    # - switch needs low under_penalty to avoid constant-prediction with sparse labels
-    cospec_under_penalty = 2.5
-    switch_under_penalty = 1.5
+    under_penalty = 2.5
 
-    def asymmetric_huber(pred, target, under_penalty=cospec_under_penalty):
+    def asymmetric_huber(pred, target):
         err = target - pred  # positive = underpredicting, negative = overpredicting
         abs_err = err.abs()
         loss = torch.where(
@@ -281,19 +277,10 @@ def main(fabric: Fabric):
                              torch.ones_like(err))
         return loss * weight
 
-    def pearson_loss(pred, target):
-        """1 - Pearson r as a loss. Directly penalises regression-to-mean."""
-        pred_c = pred - pred.mean()
-        tgt_c  = target - target.mean()
-        cov = (pred_c * tgt_c).mean()
-        denom = pred_c.pow(2).mean().sqrt() * tgt_c.pow(2).mean().sqrt()
-        return 1.0 - cov / denom.clamp(min=1e-6)
-
     criterion = asymmetric_huber  # used by validation calls
     # Explicitly emphasize host-switch learning and high-value tails.
-    event_loss_weights = torch.tensor([1.0, 6.0], device=device)  # increased: cospec gradient was drowning switches
+    event_loss_weights = torch.tensor([1.0, 6.0], device=device)
     tail_weight_scale = 4.0
-    cospec_corr_weight = 0.3  # weight for Pearson correlation loss on cospeciation
 
     model = Cophyloformer()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
@@ -440,22 +427,16 @@ def main(fabric: Fabric):
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            # Task-specific asymmetric Huber losses.
-            loss_cospeciation = asymmetric_huber(outputs[:, 0], batch["labels"][:, 0], cospec_under_penalty)
-            loss_switches     = asymmetric_huber(outputs[:, 1], batch["labels"][:, 1], switch_under_penalty)
+            # Asymmetric Huber: penalises underprediction more than overprediction.
+            loss_cospeciation = asymmetric_huber(outputs[:, 0], batch["labels"][:, 0])
+            loss_switches     = asymmetric_huber(outputs[:, 1], batch["labels"][:, 1])
 
             # Tail-aware per-sample weighting + per-task reweighting.
             target_weights = 1.0 + tail_weight_scale * batch["labels"]
             weighted_cospeciation = (loss_cospeciation * target_weights[:, 0]).mean()
             weighted_switches = (loss_switches * target_weights[:, 1]).mean()
-
-            # Pearson correlation loss for cospeciation: directly penalises
-            # regression-to-mean so the model tracks high and low values.
-            corr_loss = pearson_loss(outputs[:, 0], batch["labels"][:, 0])
-
             total_loss_tensor = (
                 event_loss_weights[0] * weighted_cospeciation +
-                cospec_corr_weight * corr_loss +
                 event_loss_weights[1] * weighted_switches
             )
 
@@ -467,7 +448,7 @@ def main(fabric: Fabric):
             is_accum_step = ((batch_idx + 1) % grad_accum_steps) == 0
             is_last_batch = (batch_idx + 1) == len(train_loader)
             if is_accum_step or is_last_batch:
-                fabric.clip_gradients(model, optimizer, max_norm=1.0)
+                #fabric.clip_gradients(model, optimizer, max_norm=1.0)
                 optimizer.step()
                 lr_scheduler.step()
 

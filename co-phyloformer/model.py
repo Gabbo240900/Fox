@@ -277,7 +277,15 @@ class Cophyloformer(nn.Module):
             nn.Linear(hidden_dim, 1)
         )
         
-        self.feature_mixer = nn.Sequential(
+        self.cospec_mixer = nn.Sequential(
+            nn.Linear(self.concat_dim, self.concat_dim),
+            nn.GELU(),
+            nn.LayerNorm(self.concat_dim),
+            nn.Dropout(0.1),
+            nn.Linear(self.concat_dim, self.concat_dim),
+            nn.GELU(),
+        )
+        self.switch_mixer = nn.Sequential(
             nn.Linear(self.concat_dim, self.concat_dim),
             nn.GELU(),
             nn.LayerNorm(self.concat_dim),
@@ -373,21 +381,21 @@ class Cophyloformer(nn.Module):
 
 
         attended_pairs = torch.cat([host_cls, parasite_cls, global_cross, cross_pooled], dim=-1)  # (B, 4*hidden_dim)
-        
-        attended_pairs = self.feature_mixer(attended_pairs)
 
-        # Change the modulation to cover more signal:
+        # Apply FiLM modulation on the shared representation before task-specific mixing
         if sim_time is not None:
-            # Make sim_time_fc output self.concat_dim * 2
             gamma_beta = self.sim_time_fc(sim_time)
             scale, shift = gamma_beta.chunk(2, dim=-1)
             scale = torch.tanh(scale)
-            shift = torch.tanh(shift)  # bound shift to prevent destabilizing the representation
+            shift = torch.tanh(shift)
             attended_pairs = attended_pairs * (1 + scale) + shift
 
-        out_cospeciation = self.cospeciation_head(attended_pairs)
-        out_switch = self.switch_head(attended_pairs)
+        cospec_feat = self.cospec_mixer(attended_pairs)
+        switch_feat = self.switch_mixer(attended_pairs)
+
+        out_cospeciation = self.cospeciation_head(cospec_feat)
+        out_switch = self.switch_head(switch_feat)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
 
-        return F.hardsigmoid(outputs)
+        return torch.sigmoid(outputs)
  

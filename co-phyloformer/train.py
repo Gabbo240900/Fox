@@ -257,14 +257,17 @@ def main(fabric: Fabric):
 
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-3 # lower learning rate (5e-5, or 1e-5).
+    lr = 1e-5 # lower learning rate (5e-5, or 1e-5).
     wd = 0
 
     # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.
     huber_delta = 1.0  # covers the full [0,1] label range quadratically
-    under_penalty = 2.5
+    # Per-event under-penalties:
+    #   cospeciation = 1.0 (symmetric) so the model can freely predict 0 for zero labels
+    #   host switches = 2.0 (still penalise underprediction, but less than before)
+    under_penalties = [1.0, 2.0]
 
-    def asymmetric_huber(pred, target):
+    def asymmetric_huber(pred, target, under_penalty=1.0):
         err = target - pred  # positive = underpredicting, negative = overpredicting
         abs_err = err.abs()
         loss = torch.where(
@@ -277,7 +280,7 @@ def main(fabric: Fabric):
                              torch.ones_like(err))
         return loss * weight
 
-    criterion = asymmetric_huber  # used by validation calls
+    criterion = asymmetric_huber  # used by validation calls (defaults to symmetric)
     # Explicitly emphasize host-switch learning and high-value tails.
     event_loss_weights = torch.tensor([1.0, 6.0], device=device)
     tail_weight_scale = 4.0
@@ -427,9 +430,9 @@ def main(fabric: Fabric):
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            # Asymmetric Huber: penalises underprediction more than overprediction.
-            loss_cospeciation = asymmetric_huber(outputs[:, 0], batch["labels"][:, 0])
-            loss_switches     = asymmetric_huber(outputs[:, 1], batch["labels"][:, 1])
+            # Asymmetric Huber with per-event penalties.
+            loss_cospeciation = asymmetric_huber(outputs[:, 0], batch["labels"][:, 0], under_penalty=under_penalties[0])
+            loss_switches     = asymmetric_huber(outputs[:, 1], batch["labels"][:, 1], under_penalty=under_penalties[1])
 
             # Tail-aware per-sample weighting + per-task reweighting.
             target_weights = 1.0 + tail_weight_scale * batch["labels"]

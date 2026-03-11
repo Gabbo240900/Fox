@@ -148,7 +148,7 @@ class FlashMSAEncoderLayer(nn.Module):
         return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=1024, seq_dim=256, num_layers=8, num_heads=8, axial_layers=1, leaf_attn_max_leaves=128):
+    def __init__(self, hidden_dim=1024, seq_dim=256, num_layers=8, num_heads=8, axial_layers=2, leaf_attn_max_leaves=256):
         super(MSAEncoder, self).__init__()
         # seq_dim: smaller dimension used for embedding + axial attention (saves memory on large MSAs)
         # hidden_dim: larger dimension used for CLS token + leaf transformer layers
@@ -162,9 +162,9 @@ class MSAEncoder(nn.Module):
             for _ in range(self.axial_layers)
         ])
 
-        self.norm = nn.LayerNorm(seq_dim)
-        # Project each leaf from seq_dim up to hidden_dim before appending CLS token
-        self.leaf_proj = nn.Linear(seq_dim, hidden_dim)
+        self.norm = nn.LayerNorm(seq_dim * 2)
+        # Project each leaf from 2*seq_dim (max+mean concat) up to hidden_dim before appending CLS token
+        self.leaf_proj = nn.Linear(seq_dim * 2, hidden_dim)
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         nn.init.trunc_normal_(self.cls_token, std=0.02)
@@ -190,7 +190,10 @@ class MSAEncoder(nn.Module):
         x_masked = x.masked_fill(~pad_mask.unsqueeze(-1), -1e4)
 
         # Max Pooling along the sequence dimension (S)
-        x, _ = torch.max(x_masked, dim=2)  # (B, N, seq_dim)
+        x_max, _ = torch.max(x_masked, dim=2)
+        x_mean = x_masked.sum(dim=2) / pad_mask.sum(dim=2, keepdim=True).float().clamp(min=1)
+        x = torch.cat([x_max, x_mean], dim=-1)  # then project 2*seq_dim -> hidden_dim
+
 
         x = self.norm(x)
         x = self.leaf_proj(x)  # (B, N, hidden_dim) — project up to full CLS dim
@@ -226,7 +229,7 @@ class Cophyloformer(nn.Module):
 
         self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
 
-        self.num_cross_layers = 2
+        self.num_cross_layers = 4
         # Bidirectional cross-attention: host→parasite and parasite→host
         self.cross_attn_h2p = nn.ModuleList([
             nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
@@ -257,8 +260,9 @@ class Cophyloformer(nn.Module):
         # Produce FiLM-style (scale, shift) for the full concatenated representation
         # Output is 2 * concat_dim so we can chunk into (scale, shift) each of size concat_dim.
         self.sim_time_fc = nn.Sequential(
-            nn.Linear(1, self.concat_dim * 2),
-            nn.Identity(),
+            nn.Linear(1, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, self.concat_dim * 2),
         )
         self.cospeciation_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
@@ -277,15 +281,7 @@ class Cophyloformer(nn.Module):
             nn.Linear(hidden_dim, 1)
         )
         
-        self.cospec_mixer = nn.Sequential(
-            nn.Linear(self.concat_dim, self.concat_dim),
-            nn.GELU(),
-            nn.LayerNorm(self.concat_dim),
-            nn.Dropout(0.1),
-            nn.Linear(self.concat_dim, self.concat_dim),
-            nn.GELU(),
-        )
-        self.switch_mixer = nn.Sequential(
+        self.feature_mixer = nn.Sequential(
             nn.Linear(self.concat_dim, self.concat_dim),
             nn.GELU(),
             nn.LayerNorm(self.concat_dim),
@@ -381,20 +377,19 @@ class Cophyloformer(nn.Module):
 
 
         attended_pairs = torch.cat([host_cls, parasite_cls, global_cross, cross_pooled], dim=-1)  # (B, 4*hidden_dim)
+        
+        attended_pairs = self.feature_mixer(attended_pairs)
 
-        # Apply FiLM modulation on the shared representation before task-specific mixing
+        # Change the modulation to cover more signal:
         if sim_time is not None:
+            # Make sim_time_fc output self.concat_dim * 2
             gamma_beta = self.sim_time_fc(sim_time)
             scale, shift = gamma_beta.chunk(2, dim=-1)
             scale = torch.tanh(scale)
-            shift = torch.tanh(shift)
             attended_pairs = attended_pairs * (1 + scale) + shift
 
-        cospec_feat = self.cospec_mixer(attended_pairs)
-        switch_feat = self.switch_mixer(attended_pairs)
-
-        out_cospeciation = self.cospeciation_head(cospec_feat)
-        out_switch = self.switch_head(switch_feat)
+        out_cospeciation = self.cospeciation_head(attended_pairs)
+        out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
 
         return torch.sigmoid(outputs)

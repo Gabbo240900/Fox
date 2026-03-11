@@ -203,7 +203,7 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(train_dataset, train_indices)
     val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
     device = fabric.device
-    epochs = 20
+    epochs = 40
 
     batch_size = 48
 
@@ -257,17 +257,19 @@ def main(fabric: Fabric):
 
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-5 # lower learning rate (5e-5, or 1e-5).
-    wd = 0
+    lr = 2e-5 # lower learning rate (5e-5, or 1e-5).
+    wd = 0.01
 
-    # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.
+    # Asymmetric Huber: underprediction (target > pred) is penalized more.
+    # under_penalty_base: base multiplier for underprediction.
+    # under_penalty_scale: extra penalty that scales with the target value,
+    #   so underpredicting GT=0.8 is penalized much harder than underpredicting GT=0.05.
+    #   Total penalty = base + scale * target  →  ranges from 2.5 (GT=0) to 7.5 (GT=1.0).
     huber_delta = 1.0  # covers the full [0,1] label range quadratically
-    # Per-event under-penalties:
-    #   cospeciation = 1.0 (symmetric) so the model can freely predict 0 for zero labels
-    #   host switches = 2.0 (still penalise underprediction, but less than before)
-    under_penalties = [1.0, 2.0]
+    under_penalty_base = 2.5
+    under_penalty_scale = 5.0
 
-    def asymmetric_huber(pred, target, under_penalty=1.0):
+    def asymmetric_huber(pred, target):
         err = target - pred  # positive = underpredicting, negative = overpredicting
         abs_err = err.abs()
         loss = torch.where(
@@ -275,15 +277,14 @@ def main(fabric: Fabric):
             0.5 * abs_err ** 2,
             huber_delta * (abs_err - 0.5 * huber_delta),
         )
-        weight = torch.where(err > 0,
-                             torch.full_like(err, under_penalty),
-                             torch.ones_like(err))
+        dynamic_penalty = under_penalty_base + under_penalty_scale * target
+        weight = torch.where(err > 0, dynamic_penalty, torch.ones_like(err))
         return loss * weight
 
-    criterion = asymmetric_huber  # used by validation calls (defaults to symmetric)
+    criterion = asymmetric_huber  # used by validation calls
     # Explicitly emphasize host-switch learning and high-value tails.
-    event_loss_weights = torch.tensor([1.0, 6.0], device=device)
-    tail_weight_scale = 4.0
+    event_loss_weights = torch.tensor([1.0, 5.0], device=device)
+    tail_weight_scale = 8.0
 
     model = Cophyloformer()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
@@ -311,7 +312,7 @@ def main(fabric: Fabric):
     # Scheduler should count *optimizer steps* (not micro-batches)
     steps_per_epoch = math.ceil(len(train_loader) / grad_accum_steps)
     total_steps = epochs * steps_per_epoch
-    warmup_steps = int(0.10 * total_steps)
+    warmup_steps = int(0.15 * total_steps)
 
     lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer,
@@ -349,6 +350,8 @@ def main(fabric: Fabric):
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
                 "huber_delta": huber_delta,
+                "under_penalty_base": under_penalty_base,
+                "under_penalty_scale": under_penalty_scale,
                 "event_loss_weights": event_loss_weights.tolist(),
                 "tail_weight_scale": tail_weight_scale,
                 "model_name": model.__class__.__name__,
@@ -430,9 +433,9 @@ def main(fabric: Fabric):
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            # Asymmetric Huber with per-event penalties.
-            loss_cospeciation = asymmetric_huber(outputs[:, 0], batch["labels"][:, 0], under_penalty=under_penalties[0])
-            loss_switches     = asymmetric_huber(outputs[:, 1], batch["labels"][:, 1], under_penalty=under_penalties[1])
+            # Asymmetric Huber: penalises underprediction more than overprediction.
+            loss_cospeciation = asymmetric_huber(outputs[:, 0], batch["labels"][:, 0])
+            loss_switches     = asymmetric_huber(outputs[:, 1], batch["labels"][:, 1])
 
             # Tail-aware per-sample weighting + per-task reweighting.
             target_weights = 1.0 + tail_weight_scale * batch["labels"]
@@ -451,7 +454,7 @@ def main(fabric: Fabric):
             is_accum_step = ((batch_idx + 1) % grad_accum_steps) == 0
             is_last_batch = (batch_idx + 1) == len(train_loader)
             if is_accum_step or is_last_batch:
-                #fabric.clip_gradients(model, optimizer, max_norm=1.0)
+                fabric.clip_gradients(model, optimizer, max_norm=1.0)
                 optimizer.step()
                 lr_scheduler.step()
 

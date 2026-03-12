@@ -148,7 +148,7 @@ class FlashMSAEncoderLayer(nn.Module):
         return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=1024, seq_dim=512, num_layers=8, num_heads=8, axial_layers=2, leaf_attn_max_leaves=256):
+    def __init__(self, hidden_dim=1024, seq_dim=256, num_layers=8, num_heads=8, axial_layers=2, leaf_attn_max_leaves=256):
         super(MSAEncoder, self).__init__()
         # seq_dim: smaller dimension used for embedding + axial attention (saves memory on large MSAs)
         # hidden_dim: larger dimension used for CLS token + leaf transformer layers
@@ -215,7 +215,7 @@ class MSAEncoder(nn.Module):
         return x, x[:, 0]
 
 class Cophyloformer(nn.Module):
-    def __init__(self, hidden_dim=1024, seq_dim=512, num_layers=8, num_heads=8):
+    def __init__(self, hidden_dim=1024, seq_dim=256, num_layers=8, num_heads=8):
         super(Cophyloformer, self).__init__()
         # Store hyperparameters for W&B logging
         self.hidden_dim = hidden_dim

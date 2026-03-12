@@ -8,7 +8,6 @@ def run_full_validation(
     event_names,
     device,
     event_loss_weights=None,
-    tail_weight_scale=1.0,
 ):
     model.eval()
     val_loss = 0.0
@@ -40,9 +39,8 @@ def run_full_validation(
                 batch['sim_time']  
             )
 
-            target_weights = 1.0 + tail_weight_scale * batch["labels"]
-            loss_cosp = (criterion(outputs[:, 0], batch["labels"][:, 0]) * target_weights[:, 0]).mean()
-            loss_sw = (criterion(outputs[:, 1], batch["labels"][:, 1]) * target_weights[:, 1]).mean()
+            loss_cosp = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
+            loss_sw = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
             loss = event_loss_weights[0] * loss_cosp + event_loss_weights[1] * loss_sw
 
             preds = outputs

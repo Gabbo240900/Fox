@@ -203,9 +203,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(train_dataset, train_indices)
     val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
     device = fabric.device
-    epochs = 40
+    epochs = 20
 
-    batch_size = 48
+    batch_size = 16
 
     # -----------------------------
     # Gradient accumulation
@@ -259,32 +259,10 @@ def main(fabric: Fabric):
 
     lr = 2e-5 # lower learning rate (5e-5, or 1e-5).
     wd = 0.01
-
-    # Asymmetric Huber: underprediction (target > pred) is penalized more.
-    # under_penalty_base: base multiplier for underprediction.
-    # under_penalty_scale: extra penalty that scales with the target value,
-    #   so underpredicting GT=0.8 is penalized much harder than underpredicting GT=0.05.
-    #   Total penalty = base + scale * target  →  ranges from 2.5 (GT=0) to 7.5 (GT=1.0).
-    huber_delta = 1.0  # covers the full [0,1] label range quadratically
-    under_penalty_base = 2.5
-    under_penalty_scale = 5.0
-
-    def asymmetric_huber(pred, target):
-        err = target - pred  # positive = underpredicting, negative = overpredicting
-        abs_err = err.abs()
-        loss = torch.where(
-            abs_err < huber_delta,
-            0.5 * abs_err ** 2,
-            huber_delta * (abs_err - 0.5 * huber_delta),
-        )
-        dynamic_penalty = under_penalty_base + under_penalty_scale * target
-        weight = torch.where(err > 0, dynamic_penalty, torch.ones_like(err))
-        return loss * weight
-
-    criterion = asymmetric_huber  # used by validation calls
+    criterion = nn.L1Loss(reduction="none")
+    
     # Explicitly emphasize host-switch learning and high-value tails.
     event_loss_weights = torch.tensor([1.0, 5.0], device=device)
-    tail_weight_scale = 8.0
 
     model = Cophyloformer()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
@@ -349,11 +327,8 @@ def main(fabric: Fabric):
                 "scheduler": "linear_warmup",
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
-                "huber_delta": huber_delta,
-                "under_penalty_base": under_penalty_base,
-                "under_penalty_scale": under_penalty_scale,
+                "loss": "l1",
                 "event_loss_weights": event_loss_weights.tolist(),
-                "tail_weight_scale": tail_weight_scale,
                 "model_name": model.__class__.__name__,
                 "dataset_size": len(dataset),  
                 **model_config                 
@@ -433,14 +408,11 @@ def main(fabric: Fabric):
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            # Asymmetric Huber: penalises underprediction more than overprediction.
-            loss_cospeciation = asymmetric_huber(outputs[:, 0], batch["labels"][:, 0])
-            loss_switches     = asymmetric_huber(outputs[:, 1], batch["labels"][:, 1])
+            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0])
+            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1])
 
-            # Tail-aware per-sample weighting + per-task reweighting.
-            target_weights = 1.0 + tail_weight_scale * batch["labels"]
-            weighted_cospeciation = (loss_cospeciation * target_weights[:, 0]).mean()
-            weighted_switches = (loss_switches * target_weights[:, 1]).mean()
+            weighted_cospeciation = loss_cospeciation.mean()
+            weighted_switches = loss_switches.mean()
             total_loss_tensor = (
                 event_loss_weights[0] * weighted_cospeciation +
                 event_loss_weights[1] * weighted_switches
@@ -470,7 +442,6 @@ def main(fabric: Fabric):
                     event_names,
                     device,
                     event_loss_weights=event_loss_weights,
-                    tail_weight_scale=tail_weight_scale,
                 )
                 if fabric.is_global_zero:
                     wandb.log({
@@ -627,8 +598,7 @@ def main(fabric: Fabric):
             criterion,
             event_names,
             device,
-            event_loss_weights=event_loss_weights,
-            tail_weight_scale=tail_weight_scale,
+            event_loss_weights=event_loss_weights
         )
         val_loss = val_results["val_loss"]
         val_mae = val_results["val_mae"]

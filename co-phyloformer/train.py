@@ -179,7 +179,7 @@ def collate_fn(batch):
     }
 
 
-def encode_sequence(sequence, max_len=128):
+def encode_sequence(sequence, max_len=500):
     """ Convert an MSA sequence string into a numerical tensor (simple one-hot encoding). """
     amino_acids = "ACDEFGHIKLMNPQRSTVWY-"  # 21 tokens: 20 AAs + gap
     aa_to_index = {aa: i for i, aa in enumerate(amino_acids)}
@@ -203,7 +203,7 @@ def main(fabric: Fabric):
     )
     train_dataset = LazyCophyloformerDataset(
         preencoded_dir,
-        mask_prob=0.1,
+        mask_prob=0.0,
         pt_files=dataset.pt_files
     )
     val_dataset = LazyCophyloformerDataset(
@@ -216,7 +216,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 20
 
-    batch_size = 16
+    batch_size = 4
 
     # -----------------------------
     # Gradient accumulation
@@ -280,8 +280,8 @@ def main(fabric: Fabric):
             print(f"  {name}: mean={label_mean[i]:.4f}, std={label_std[i]:.4f}")
 
     lr = 1e-4
-    wd = 0.01
-    criterion = nn.L1Loss(reduction="none")
+    wd = 0.0
+    criterion = nn.MSELoss(reduction="none")
 
     # Equal weights: targets are normalized so both events have unit variance.
     event_loss_weights = torch.tensor([1.0, 1.0], device=device)
@@ -349,7 +349,7 @@ def main(fabric: Fabric):
                 "scheduler": "linear_warmup",
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
-                "loss": "l1",
+                "loss": "mse",
                 "event_loss_weights": event_loss_weights.tolist(),
                 "model_name": model.__class__.__name__,
                 "dataset_size": len(dataset),  
@@ -431,7 +431,8 @@ def main(fabric: Fabric):
 
             # Normalize targets to zero mean / unit std before computing loss.
             # Model predicts in normalized space; denormalize for metrics.
-            labels_norm = (batch["labels"] - label_mean) / label_std
+            # Clamp to [-5, 5] to prevent outliers from causing NaN gradients.
+            labels_norm = ((batch["labels"] - label_mean) / label_std).clamp(-5.0, 5.0)
 
             loss_cospeciation = criterion(outputs[:, 0], labels_norm[:, 0])
             loss_switches     = criterion(outputs[:, 1], labels_norm[:, 1])

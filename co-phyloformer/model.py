@@ -148,7 +148,7 @@ class FlashMSAEncoderLayer(nn.Module):
         return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=1024, seq_dim=256, num_layers=8, num_heads=8, axial_layers=2, leaf_attn_max_leaves=256):
+    def __init__(self, hidden_dim=1024, seq_dim=256, num_layers=8, num_heads=8, axial_layers=4, leaf_attn_max_leaves=256):
         super(MSAEncoder, self).__init__()
         # seq_dim: smaller dimension used for embedding + axial attention (saves memory on large MSAs)
         # hidden_dim: larger dimension used for CLS token + leaf transformer layers
@@ -239,7 +239,9 @@ class Cophyloformer(nn.Module):
             nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
             for _ in range(self.num_cross_layers)
         ])
-        # Pre-norm + FFN for each direction
+        # Pre-norm for attention (query side) + pre-norm for FFN — both directions
+        self.cross_attn_norms_h = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
+        self.cross_attn_norms_p = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
         self.cross_norms_h = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
         self.cross_norms_p = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
         self.cross_ffns_h = nn.ModuleList([
@@ -353,13 +355,15 @@ class Cophyloformer(nn.Module):
         cross_para = parasite_seq
 
         for i in range(self.num_cross_layers):
-            # Host attends to parasite
-            h_attn, _ = self.cross_attn_h2p[i](cross_host, cross_para, cross_para, key_padding_mask=kv_pad_mask)
+            # Host attends to parasite (pre-norm on query side)
+            h_q = self.cross_attn_norms_h[i](cross_host)
+            h_attn, _ = self.cross_attn_h2p[i](h_q, cross_para, cross_para, key_padding_mask=kv_pad_mask)
             cross_host = cross_host + h_attn
             cross_host = cross_host + self.cross_ffns_h[i](self.cross_norms_h[i](cross_host))
 
-            # Parasite attends to updated host
-            p_attn, _ = self.cross_attn_p2h[i](cross_para, cross_host, cross_host, key_padding_mask=kv_pad_mask)
+            # Parasite attends to updated host (pre-norm on query side)
+            p_q = self.cross_attn_norms_p[i](cross_para)
+            p_attn, _ = self.cross_attn_p2h[i](p_q, cross_host, cross_host, key_padding_mask=kv_pad_mask)
             cross_para = cross_para + p_attn
             cross_para = cross_para + self.cross_ffns_p[i](self.cross_norms_p[i](cross_para))
 

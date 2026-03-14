@@ -45,7 +45,7 @@ def run_full_validation(
 
             # Loss in normalized space (same space as training loss).
             if label_mean is not None and label_std is not None:
-                labels_norm = (batch["labels"] - label_mean) / label_std
+                labels_norm = ((batch["labels"] - label_mean) / label_std).clamp(-5.0, 5.0)
                 loss_cosp = criterion(outputs[:, 0], labels_norm[:, 0]).mean()
                 loss_sw = criterion(outputs[:, 1], labels_norm[:, 1]).mean()
             else:

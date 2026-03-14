@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from typing import Optional
 
 
@@ -148,7 +149,7 @@ class FlashMSAEncoderLayer(nn.Module):
         return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=1024, seq_dim=256, num_layers=8, num_heads=8, axial_layers=4, leaf_attn_max_leaves=256):
+    def __init__(self, hidden_dim=1024, seq_dim=128, num_layers=8, num_heads=8, axial_layers=4, leaf_attn_max_leaves=256):
         super(MSAEncoder, self).__init__()
         # seq_dim: smaller dimension used for embedding + axial attention (saves memory on large MSAs)
         # hidden_dim: larger dimension used for CLS token + leaf transformer layers
@@ -182,8 +183,9 @@ class MSAEncoder(nn.Module):
         x = self.embedding(x_ids)  # (B, N, S, seq_dim)
 
         # Axial attention over the MSA grid (N x S) before pooling (at seq_dim)
+        # Gradient checkpointing trades ~30% compute for ~4x activation memory savings.
         for blk in self.axial_blocks:
-            x = blk(x, x_ids)
+            x = checkpoint(blk, x, x_ids, use_reentrant=False)
 
         # Mask padding positions (PAD token id = 22) so pooling ignores padded tokens
         pad_mask = (x_ids != 22)  # (B, N, S)
@@ -215,7 +217,7 @@ class MSAEncoder(nn.Module):
         return x, x[:, 0]
 
 class Cophyloformer(nn.Module):
-    def __init__(self, hidden_dim=1024, seq_dim=256, num_layers=8, num_heads=8):
+    def __init__(self, hidden_dim=1024, seq_dim=128, num_layers=8, num_heads=8):
         super(Cophyloformer, self).__init__()
         # Store hyperparameters for W&B logging
         self.hidden_dim = hidden_dim

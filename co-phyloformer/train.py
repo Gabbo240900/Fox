@@ -21,8 +21,8 @@ from validation import run_full_validation, compute_val_predictions
 import glob
 import math
 
-torch.backends.cuda.enable_flash_sdp(False)
-torch.backends.cuda.enable_mem_efficient_sdp(False)
+torch.backends.cuda.enable_flash_sdp(True)
+torch.backends.cuda.enable_mem_efficient_sdp(True)
 torch.backends.cuda.enable_math_sdp(True)
 torch.set_float32_matmul_precision('high')
 

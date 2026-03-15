@@ -214,9 +214,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(train_dataset, train_indices)
     val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
     device = fabric.device
-    epochs = 20
+    epochs = 5
 
-    batch_size = 4
+    batch_size = 16
 
     # -----------------------------
     # Gradient accumulation
@@ -281,7 +281,7 @@ def main(fabric: Fabric):
 
     lr = 1e-4
     wd = 0.0
-    criterion = nn.MSELoss(reduction="none")
+    criterion = nn.L1Loss(reduction="none")
 
     # Equal weights: targets are normalized so both events have unit variance.
     event_loss_weights = torch.tensor([1.0, 1.0], device=device)

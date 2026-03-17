@@ -203,9 +203,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(train_dataset, train_indices)
     val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
     device = fabric.device
-    epochs = 10
+    epochs = 500
 
-    batch_size = 16
+    batch_size = 4
 
     # -----------------------------
     # Gradient accumulation

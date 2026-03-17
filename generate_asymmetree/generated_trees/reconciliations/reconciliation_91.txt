@@ -1,0 +1,11 @@
+Speciation: 29
+Duplication: 9
+Loss: 5
+Total Events: 43
+Speciation_freq: 0.6744
+Loss_freq: 0.1163
+HGT_freq: 0.0000
+Duplication_freq: 0.2093
+Host_num_leaves: 26
+Symbiont_num_leaves: 44
+Sim_time: 1.5

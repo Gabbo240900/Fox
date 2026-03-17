@@ -28,10 +28,13 @@ generate_treeducken/generated_trees/test
 generate_treeducken/generated_trees/*.zip
 generate_treeducken/taxa_summary.csv
 
-co-phyloformer/error_files
+co-phyloformer_asym/error_files
 # do not share the model 
 co-phyloformer/cophyloformer_custom_model.pth
 co-phyloformer/checkpoints
+
+co-phyloformer_asym/cophyloformer_custom_model.pth
+co-phyloformer_asym/checkpoints
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

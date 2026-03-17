@@ -10,7 +10,7 @@
 #SBATCH --ntasks-per-node=4
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=24 
-#SBATCH --time=1:00:00 
+#SBATCH --time=2:00:00 
 
 
 
@@ -56,7 +56,7 @@ set -x
 # STEP 3: Training phase 
 export WANDB_ENTITY=cophylo_team           
 export WANDB_PROJECT=CoPhyloformer
-export WANDB_NAME=Dev_training_overfitting
+export WANDB_NAME=Dev_training_overfitting_asym
 export WANDB_MODE=offline    # "online", "offline", or "disabled" 
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300     

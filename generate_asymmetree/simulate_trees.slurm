@@ -1,0 +1,58 @@
+#!/bin/bash
+#SBATCH --job-name=asym_simulate_trees
+#SBATCH --partition=cpu_p1
+#SBATCH --account=vcu@cpu
+#SBATCH --qos=qos_cpu-t4
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=20
+#SBATCH --hint=nomultithread
+#SBATCH --time=100:00:00 
+#SBATCH --output=simulate_trees%j.out 
+#SBATCH --error=simulate_trees%j.err  
+
+
+set -euo pipefail
+module purge
+module load r/4.4.1
+module load gcc/11.3.1
+export R_LIBS_USER=$ALL_CCFRWORK/r_envs/treeducken_env/lib
+export MPLCONFIGDIR=$ALL_CCFRWORK/tmp/mpl_cache
+export TRANSFORMERS_CACHE=$ALL_CCFRWORK/tmp/transformers_cache
+
+module load miniforge/24.9.0
+conda activate cophylo
+
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
+export MKL_NUM_THREADS=$OMP_NUM_THREADS
+
+export OPENBLAS_NUM_THREADS=$OMP_NUM_THREADS
+export NUMEXPR_NUM_THREADS=$OMP_NUM_THREADS
+export VECLIB_MAXIMUM_THREADS=$OMP_NUM_THREADS
+export BLIS_NUM_THREADS=$OMP_NUM_THREADS
+
+
+# ECHO
+set -x 
+
+# STEP 0: remove former datasets
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/associations/ -mindepth 1 -delete
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/Datasets/ -mindepth 1 -delete
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/host_tree/ -mindepth 1 -delete
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/summaries/ -mindepth 1 -delete
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/symb_tree/ -mindepth 1 -delete
+
+
+# STEP 1: generate host trees
+python /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generate_trees.py  
+
+# STEP 2: Simulate alignments 
+python /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/alisim.py /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/Datasets \
+  --substitution LG \
+  --gamma GC \
+  --iqtree /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/bin/bin_linux/iqtree_2.2.0 \
+  --length 500 \
+  --max-attempts 1 \
+  --allow-duplicate-sequences \
+  --n_cores ${SLURM_CPUS_PER_TASK} \
+  --temp-dir /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/alisim_tmp

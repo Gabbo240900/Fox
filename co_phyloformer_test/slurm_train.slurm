@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=cophyloformer
+#SBATCH --job-name=dev_training_cophyloformer
 #SBATCH --account=vcu@h100
-#SBATCH --qos=qos_gpu_h100-t3
+#SBATCH --qos=qos_gpu_h100-dev
 #SBATCH --output=error_files/cophyloformer_%j.out
 #SBATCH --error=error_files/cophyloformer_%j.err
 #SBATCH --constraint=h100
@@ -10,7 +10,7 @@
 #SBATCH --ntasks-per-node=4
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=24
-#SBATCH --time=20:00:00
+#SBATCH --time=2:00:00
 
 
 # ENVIRONMENT SETUP

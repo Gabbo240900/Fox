@@ -193,7 +193,7 @@ def encode_sequence(sequence, max_len=500):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/new_preencoded_pt/"
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
     # Build file list once, then create train/val datasets with different masking policies.
     dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0)
     # Train/Validation Split
@@ -214,7 +214,7 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(train_dataset, train_indices)
     val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
     device = fabric.device
-    epochs = 5
+    epochs = 500
 
     batch_size = 16
 

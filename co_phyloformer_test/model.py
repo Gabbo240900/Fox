@@ -19,7 +19,7 @@ Architecture overview:
 """
 
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -166,7 +166,7 @@ class LeafAxialAttention(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        padding_mask: torch.BoolTensor | None = None,
+        padding_mask: Optional[torch.BoolTensor] = None,
     ) -> torch.Tensor:
         """
         Args:

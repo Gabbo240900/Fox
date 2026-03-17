@@ -21,6 +21,7 @@ import time
 import math
 from contextlib import nullcontext
 from pathlib import Path
+from typing import Tuple
 
 import numpy as np
 import torch
@@ -61,7 +62,7 @@ except ImportError as e:
 # Distributed helpers
 # ---------------------------------------------------------------------------
 
-def init_distributed() -> tuple[int, int, int]:
+def init_distributed() -> Tuple[int, int, int]:
     """Initialise the distributed process group and return (rank, local_rank, world_size).
 
     Handles two launch patterns:
@@ -181,7 +182,7 @@ def load_checkpoint(
     scheduler,
     scaler,
     device: torch.device,
-) -> tuple[int, float]:
+) -> Tuple[int, float]:
     checkpoint = torch.load(path, map_location=device)
     raw_model = model.module if hasattr(model, "module") else model
     raw_model.load_state_dict(checkpoint["model_state_dict"])
@@ -209,7 +210,7 @@ def run_epoch(
     amp_dtype: torch.dtype = torch.bfloat16,
     use_amp: bool = True,
     world_size: int = 1,
-) -> tuple[float, torch.Tensor, torch.Tensor]:
+) -> Tuple[float, torch.Tensor, torch.Tensor]:
     """Run one training or validation epoch.
 
     Training mode: pass ``optimizer`` (non-None).

@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=dev_training_cophyloformer
+#SBATCH --job-name=cophyloformer
 #SBATCH --account=vcu@h100
-#SBATCH --qos=qos_gpu_h100-dev
+#SBATCH --qos=qos_gpu_h100-t3
 #SBATCH --output=error_files/cophyloformer_%j.out
 #SBATCH --error=error_files/cophyloformer_%j.err
 #SBATCH --constraint=h100
@@ -10,7 +10,7 @@
 #SBATCH --ntasks-per-node=4
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=24
-#SBATCH --time=2:00:00
+#SBATCH --time=20:00:00
 
 
 # ENVIRONMENT SETUP
@@ -64,7 +64,7 @@ export WANDB__SERVICE_WAIT=300
 
 # PATHS
 CODE_DIR=$ALL_CCFRWORK/Co-Phyloformer/co_phyloformer_test
-DATA_DIR=$ALL_CCFRWORK/Co-Phyloformer/generate_asymmetree/Datasets                  # fast Lustre scratch for 1M+ files
+DATA_DIR=$ALL_CCFRWORK/Co-Phyloformer/generate_asymmetree/generated_trees/Datasets                  # fast Lustre scratch for 1M+ files
 MANIFEST=$DATA_DIR/manifest.txt             # pre-built file list
 CKPT_DIR=$ALL_CCFRWORK/Co-Phyloformer/co_phyloformer_test/checkpoints
 

@@ -36,11 +36,11 @@ python alisim.py test_data/Datasets
 
 
 python generate_trees.py 
-python /Users/gabriele/Co-phyloformer/generate_assymmetree/alisim.py /Users/gabriele/Co-phyloformer/generate_assymmetree/generated_trees/Datasets \
+python /Users/gabriele/Co-phyloformer/generate_asymmetree/alisim.py /Users/gabriele/Co-phyloformer/generate_asymmetree/generated_trees/Datasets \
   --substitution LG \
   --gamma GC \
   --iqtree /Users/gabriele/Co-phyloformer/bin/bin_macos/iqtree_2.2.0 \
-  --length 250 \
+  --length 500 \
   --max-attempts 1 \
   --allow-duplicate-sequences \
   --temp-dir /Users/gabriele/Co-phyloformer/alisim_tmp

@@ -31,6 +31,21 @@ python alisim.py test_data/Datasets
 --max-attempts 1
 --allow-duplicate-sequences
 
+
+
+
+
+python generate_trees.py 
+python /Users/gabriele/Co-phyloformer/generate_assymmetree/alisim.py /Users/gabriele/Co-phyloformer/generate_assymmetree/generated_trees/Datasets \
+  --substitution LG \
+  --gamma GC \
+  --iqtree /Users/gabriele/Co-phyloformer/bin/bin_macos/iqtree_2.2.0 \
+  --length 250 \
+  --max-attempts 1 \
+  --allow-duplicate-sequences \
+  --temp-dir /Users/gabriele/Co-phyloformer/alisim_tmp
+
+
 ### Train model
 
 python train.py

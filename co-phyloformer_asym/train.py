@@ -251,7 +251,7 @@ def main(fabric: Fabric):
 
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-4
+    lr = 3e-4
     wd = 0.0
     criterion = nn.L1Loss(reduction="none")
 

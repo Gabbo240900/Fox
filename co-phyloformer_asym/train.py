@@ -181,7 +181,7 @@ def encode_sequence(sequence, max_len=500):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_preencoded_pt/"
+    preencoded_dir = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     # Build file list once, then create train/val datasets with different masking policies.
     dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0)

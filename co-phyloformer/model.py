@@ -261,13 +261,6 @@ class Cophyloformer(nn.Module):
 
         self.concat_dim = 4 * hidden_dim
 
-        # Produce FiLM-style (scale, shift) for the full concatenated representation
-        # Output is 2 * concat_dim so we can chunk into (scale, shift) each of size concat_dim.
-        self.sim_time_fc = nn.Sequential(
-            nn.Linear(1, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, self.concat_dim * 2),
-        )
         self.cospeciation_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
             nn.Linear(self.concat_dim, hidden_dim * 2),
@@ -294,7 +287,7 @@ class Cophyloformer(nn.Module):
             nn.GELU(),
         )
 
-    def forward(self, host_msa, parasite_msa, mappings, sim_time):
+    def forward(self, host_msa, parasite_msa, mappings):
         # Encode host and parasite MSAs
         host_emb, host_cls = self.host_encoder(host_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
         parasite_emb, parasite_cls = self.parasite_encoder(parasite_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
@@ -384,15 +377,7 @@ class Cophyloformer(nn.Module):
 
         attended_pairs = torch.cat([host_cls, parasite_cls, global_cross, cross_pooled], dim=-1)  # (B, 4*hidden_dim)
         
-        attended_pairs = self.feature_mixer(attended_pairs)
-
-        # Change the modulation to cover more signal:
-        if sim_time is not None:
-            # Make sim_time_fc output self.concat_dim * 2
-            gamma_beta = self.sim_time_fc(sim_time)
-            scale, shift = gamma_beta.chunk(2, dim=-1)
-            scale = torch.tanh(scale)
-            attended_pairs = attended_pairs * (1 + scale) + shift
+        attended_pairs = attended_pairs + self.feature_mixer(attended_pairs)
 
         out_cospeciation = self.cospeciation_head(attended_pairs)
         out_switch = self.switch_head(attended_pairs)

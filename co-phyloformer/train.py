@@ -279,9 +279,9 @@ def main(fabric: Fabric):
         for i, name in enumerate(event_names):
             print(f"  {name}: mean={label_mean[i]:.4f}, std={label_std[i]:.4f}")
 
-    lr = 1e-4
-    wd = 0.0
-    criterion = nn.L1Loss(reduction="none")
+    lr = 3e-4
+    wd = 1e-5
+    criterion = nn.HuberLoss(reduction="none", delta=1.0)
 
     # Equal weights: targets are normalized so both events have unit variance.
     event_loss_weights = torch.tensor([1.0, 1.0], device=device)
@@ -415,7 +415,6 @@ def main(fabric: Fabric):
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch["sim_time"],
             )
 
             with torch.no_grad():
@@ -432,13 +431,18 @@ def main(fabric: Fabric):
             # Normalize targets to zero mean / unit std before computing loss.
             # Model predicts in normalized space; denormalize for metrics.
             # Clamp to [-5, 5] to prevent outliers from causing NaN gradients.
-            labels_norm = ((batch["labels"] - label_mean) / label_std).clamp(-5.0, 5.0)
+            labels_norm = (batch["labels"] - label_mean) / label_std
+
+            # Upweight outliers: samples with high true values get higher loss weight.
+            # gamma=2.0 means a sample 2 std above mean gets 5x the weight of mean.
+            gamma = 2.0
+            outlier_weights = (1.0 + gamma * labels_norm.abs().detach())  # [B, 2]
 
             loss_cospeciation = criterion(outputs[:, 0], labels_norm[:, 0])
             loss_switches     = criterion(outputs[:, 1], labels_norm[:, 1])
 
-            weighted_cospeciation = loss_cospeciation.mean()
-            weighted_switches = loss_switches.mean()
+            weighted_cospeciation = (loss_cospeciation * outlier_weights[:, 0]).mean()
+            weighted_switches     = (loss_switches     * outlier_weights[:, 1]).mean()
             total_loss_tensor = (
                 event_loss_weights[0] * weighted_cospeciation +
                 event_loss_weights[1] * weighted_switches

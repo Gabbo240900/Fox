@@ -132,23 +132,6 @@ def load_checkpoint(model, optimizer, checkpoint_path, map_location=None):
     batch_idx = checkpoint.get('batch_idx', None)
     return epoch, val_loss, batch_idx
 
-def compute_label_stats(train_subset):
-    """Compute per-event mean and std from training labels (run on each rank independently)."""
-    all_labels = []
-    stats_loader = DataLoader(
-        train_subset,
-        batch_size=256,
-        shuffle=False,
-        collate_fn=collate_fn,
-        num_workers=4,
-    )
-    for batch in stats_loader:
-        all_labels.append(batch["labels"])
-    all_labels = torch.cat(all_labels, dim=0)  # [N, num_events]
-    mean = all_labels.mean(dim=0)
-    std = all_labels.std(dim=0).clamp(min=1e-6)
-    return mean, std
-
 
 def collate_fn(batch):
     """Pads MSA sequences dynamically to match batch size."""
@@ -267,17 +250,6 @@ def main(fabric: Fabric):
     )
 
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
-
-    # Compute label statistics from training set for target normalization.
-    # All ranks compute independently (same split → same result).
-    if fabric.is_global_zero:
-        print("Computing label statistics from training set...")
-    label_mean, label_std = compute_label_stats(train_subset)
-    label_mean = label_mean.to(device)
-    label_std = label_std.to(device)
-    if fabric.is_global_zero:
-        for i, name in enumerate(event_names):
-            print(f"  {name}: mean={label_mean[i]:.4f}, std={label_std[i]:.4f}")
 
     lr = 1e-4
     wd = 0.0
@@ -418,24 +390,17 @@ def main(fabric: Fabric):
                 batch["sim_time"],
             )
 
-            with torch.no_grad():
-                outputs_orig = outputs.detach() * label_std + label_mean
             for idx in range(outputs.shape[0]):
                 all_train_prediction_data.append({
                     "Sample_Index": batch_idx * outputs.shape[0] + idx,
-                    "Cospeciations_Pred": outputs_orig[idx, 0].item(),
+                    "Cospeciations_Pred": outputs[idx, 0].item(),
                     "Cospeciations_GT": batch["labels"][idx, 0].item(),
-                    "Host_switches_Pred": outputs_orig[idx, 1].item(),
+                    "Host_switches_Pred": outputs[idx, 1].item(),
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            # Normalize targets to zero mean / unit std before computing loss.
-            # Model predicts in normalized space; denormalize for metrics.
-            # Clamp to [-5, 5] to prevent outliers from causing NaN gradients.
-            labels_norm = ((batch["labels"] - label_mean) / label_std).clamp(-5.0, 5.0)
-
-            loss_cospeciation = criterion(outputs[:, 0], labels_norm[:, 0])
-            loss_switches     = criterion(outputs[:, 1], labels_norm[:, 1])
+            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0])
+            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1])
 
             weighted_cospeciation = loss_cospeciation.mean()
             weighted_switches = loss_switches.mean()
@@ -468,8 +433,6 @@ def main(fabric: Fabric):
                     event_names,
                     device,
                     event_loss_weights=event_loss_weights,
-                    label_mean=label_mean,
-                    label_std=label_std,
                 )
                 if fabric.is_global_zero:
                     log_dict = {
@@ -517,8 +480,7 @@ def main(fabric: Fabric):
             num_batches += 1
 
             with torch.no_grad():
-                # Denormalize predictions to original scale for metrics.
-                preds = outputs.detach() * label_std + label_mean
+                preds = outputs.detach()
                 labels = batch["labels"].detach()
 
                 abs_err = (preds - labels).abs()
@@ -631,8 +593,6 @@ def main(fabric: Fabric):
             event_names,
             device,
             event_loss_weights=event_loss_weights,
-            label_mean=label_mean,
-            label_std=label_std,
         )
         val_loss = val_results["val_loss"]
         val_mae = val_results["val_mae"]
@@ -709,7 +669,7 @@ def main(fabric: Fabric):
         output_path = "final_predictions.csv"
 
         # Compute full validation predictions properly
-        val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device, label_mean=label_mean, label_std=label_std)
+        val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
 
         rows = []
         for i in range(len(val_preds_tensor)):

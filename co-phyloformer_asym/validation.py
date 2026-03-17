@@ -8,8 +8,7 @@ def run_full_validation(
     event_names,
     device,
     event_loss_weights=None,
-    label_mean=None,
-    label_std=None,
+
 ):
     model.eval()
     val_loss = 0.0
@@ -43,24 +42,13 @@ def run_full_validation(
                 batch['sim_time']
             )
 
-            # Loss in normalized space (same space as training loss).
-            if label_mean is not None and label_std is not None:
-                labels_norm = ((batch["labels"] - label_mean) / label_std).clamp(-5.0, 5.0)
-                loss_cosp = criterion(outputs[:, 0], labels_norm[:, 0]).mean()
-                loss_sw = criterion(outputs[:, 1], labels_norm[:, 1]).mean()
-            else:
-                loss_cosp = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
-                loss_sw = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
-
+            loss_cosp = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
+            loss_sw = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
             loss = event_loss_weights[0] * loss_cosp + event_loss_weights[1] * loss_sw
             val_loss += loss.item()
             val_batches += 1
 
-            # Denormalize predictions for interpretable metrics.
-            if label_mean is not None and label_std is not None:
-                preds = outputs * label_std + label_mean
-            else:
-                preds = outputs
+            preds = outputs
 
             labels = batch["labels"]
             all_preds_orig.append(preds.cpu())
@@ -122,7 +110,7 @@ def run_full_validation(
     }
 
 
-def compute_val_predictions(model, val_loader, device, label_mean=None, label_std=None):
+def compute_val_predictions(model, val_loader, device):
     preds_list = []
     labels_list = []
     model.eval()
@@ -141,10 +129,6 @@ def compute_val_predictions(model, val_loader, device, label_mean=None, label_st
                 batch["mappings"],
                 batch['sim_time']
             )
-
-            # Denormalize to original scale for plotting.
-            if label_mean is not None and label_std is not None:
-                outputs = outputs * label_std + label_mean
 
             preds_list.append(outputs.cpu())
             labels_list.append(batch["labels"].cpu())

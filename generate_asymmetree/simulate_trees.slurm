@@ -38,9 +38,9 @@ set -x
 # STEP 0: remove former datasets
 find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/associations/ -mindepth 1 -delete
 find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/Datasets/ -mindepth 1 -delete
-find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/host_tree/ -mindepth 1 -delete
-find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/summaries/ -mindepth 1 -delete
-find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/symb_tree/ -mindepth 1 -delete
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/gene_trees/ -mindepth 1 -delete
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/species_trees/ -mindepth 1 -delete
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/reconciliations/ -mindepth 1 -delete
 
 
 # STEP 1: generate host trees

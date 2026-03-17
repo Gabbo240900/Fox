@@ -62,5 +62,4 @@ export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300     
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
-export RESUME_CKPT=checkpoints/val_checkpoint_epoch4_step461.pth
 srun python train.py

@@ -280,7 +280,7 @@ def main(fabric: Fabric):
             print(f"  {name}: mean={label_mean[i]:.4f}, std={label_std[i]:.4f}")
 
     lr = 3e-4
-    wd = 1e-5
+    wd = 0
     criterion = nn.HuberLoss(reduction="none", delta=1.0)
 
     # Equal weights: targets are normalized so both events have unit variance.

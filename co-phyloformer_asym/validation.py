@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 # BEST CONFIGURATION SO FAR FOR SMALL DATASETS
 def run_full_validation(
     fabric,
@@ -41,11 +40,12 @@ def run_full_validation(
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
+                batch['sim_time']
             )
 
             # Loss in normalized space (same space as training loss).
             if label_mean is not None and label_std is not None:
-                labels_norm = (batch["labels"] - label_mean) / label_std
+                labels_norm = ((batch["labels"] - label_mean) / label_std).clamp(-5.0, 5.0)
                 loss_cosp = criterion(outputs[:, 0], labels_norm[:, 0]).mean()
                 loss_sw = criterion(outputs[:, 1], labels_norm[:, 1]).mean()
             else:
@@ -139,6 +139,7 @@ def compute_val_predictions(model, val_loader, device, label_mean=None, label_st
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
+                batch['sim_time']
             )
 
             # Denormalize to original scale for plotting.

@@ -1,9 +1,11 @@
 
 import torch
+import pandas as pd
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from model import Cophyloformer
+from data import CophylogenyDataset
 from torch.nn import functional as F
 import time
 import numpy as np
@@ -12,7 +14,7 @@ from plot import plot_event_metric_over_epochs, plot_epoch_loss_curve, plot_labe
 from sklearn.model_selection import train_test_split
 from transformers import get_cosine_schedule_with_warmup
 from tqdm import tqdm
-import csv
+from itertools import islice
 import wandb
 from lightning.fabric import Fabric
 from lightning.fabric.utilities.seed import seed_everything
@@ -21,8 +23,12 @@ from validation import run_full_validation, compute_val_predictions
 import glob
 import math
 
-torch.backends.cuda.enable_flash_sdp(True)
-torch.backends.cuda.enable_mem_efficient_sdp(True)
+# BEST CONFIGURATION SO FAR FOR SMALL DATASETS
+# Log host switch 
+#try new overfitting example again 
+
+torch.backends.cuda.enable_flash_sdp(False)
+torch.backends.cuda.enable_mem_efficient_sdp(False)
 torch.backends.cuda.enable_math_sdp(True)
 torch.set_float32_matmul_precision('high')
 
@@ -132,7 +138,6 @@ def load_checkpoint(model, optimizer, checkpoint_path, map_location=None):
     batch_idx = checkpoint.get('batch_idx', None)
     return epoch, val_loss, batch_idx
 
-
 def collate_fn(batch):
     """Pads MSA sequences dynamically to match batch size."""
     # After dataset pre-filtering, no element should be None.
@@ -176,7 +181,8 @@ def encode_sequence(sequence, max_len=500):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_preencoded_pt/"
+    #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     # Build file list once, then create train/val datasets with different masking policies.
     dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0)
     # Train/Validation Split
@@ -186,7 +192,7 @@ def main(fabric: Fabric):
     )
     train_dataset = LazyCophyloformerDataset(
         preencoded_dir,
-        mask_prob=0.0,
+        mask_prob=0.1,
         pt_files=dataset.pt_files
     )
     val_dataset = LazyCophyloformerDataset(
@@ -197,9 +203,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(train_dataset, train_indices)
     val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
     device = fabric.device
-    epochs = 500
+    epochs = 10
 
-    batch_size = 4
+    batch_size = 16
 
     # -----------------------------
     # Gradient accumulation
@@ -251,12 +257,30 @@ def main(fabric: Fabric):
 
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 3e-4
-    wd = 0.0
-    criterion = nn.L1Loss(reduction="none")
+    lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
+    wd = 0
 
-    # Equal weights: targets are normalized so both events have unit variance.
-    event_loss_weights = torch.tensor([1.0, 1.0], device=device)
+    # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.
+    huber_delta = 1.0  # covers the full [0,1] label range quadratically
+    under_penalty = 2.5
+
+    def asymmetric_huber(pred, target):
+        err = target - pred  # positive = underpredicting, negative = overpredicting
+        abs_err = err.abs()
+        loss = torch.where(
+            abs_err < huber_delta,
+            0.5 * abs_err ** 2,
+            huber_delta * (abs_err - 0.5 * huber_delta),
+        )
+        weight = torch.where(err > 0,
+                             torch.full_like(err, under_penalty),
+                             torch.ones_like(err))
+        return loss * weight
+
+    criterion = asymmetric_huber  # used by validation calls
+    # Explicitly emphasize host-switch learning and high-value tails.
+    event_loss_weights = torch.tensor([1.0, 3.0], device=device)
+    tail_weight_scale = 4.0
 
     model = Cophyloformer()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
@@ -284,7 +308,7 @@ def main(fabric: Fabric):
     # Scheduler should count *optimizer steps* (not micro-batches)
     steps_per_epoch = math.ceil(len(train_loader) / grad_accum_steps)
     total_steps = epochs * steps_per_epoch
-    warmup_steps = int(0.15 * total_steps)
+    warmup_steps = int(0.10 * total_steps)
 
     lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer,
@@ -321,8 +345,9 @@ def main(fabric: Fabric):
                 "scheduler": "linear_warmup",
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
-                "loss": "mse",
+                "huber_delta": huber_delta,
                 "event_loss_weights": event_loss_weights.tolist(),
+                "tail_weight_scale": tail_weight_scale,
                 "model_name": model.__class__.__name__,
                 "dataset_size": len(dataset),  
                 **model_config                 
@@ -347,6 +372,9 @@ def main(fabric: Fabric):
     val_mre_history = []
     val_smape_history = []
     val_loss_history = []
+
+    val_predictions_data = []
+    best_step_predictions = None
 
     # Training loop over all batches per epoch (no micro-epochs)
     for epoch in range(start_epoch, epochs):
@@ -399,11 +427,14 @@ def main(fabric: Fabric):
                     "Host_switches_GT": batch["labels"][idx, 1].item(),
                 })
 
-            loss_cospeciation = criterion(outputs[:, 0], batch["labels"][:, 0])
-            loss_switches     = criterion(outputs[:, 1], batch["labels"][:, 1])
+            # Asymmetric Huber: penalises underprediction more than overprediction.
+            loss_cospeciation = asymmetric_huber(outputs[:, 0], batch["labels"][:, 0])
+            loss_switches     = asymmetric_huber(outputs[:, 1], batch["labels"][:, 1])
 
-            weighted_cospeciation = loss_cospeciation.mean()
-            weighted_switches = loss_switches.mean()
+            # Tail-aware per-sample weighting + per-task reweighting.
+            target_weights = 1.0 + tail_weight_scale * batch["labels"]
+            weighted_cospeciation = (loss_cospeciation * target_weights[:, 0]).mean()
+            weighted_switches = (loss_switches * target_weights[:, 1]).mean()
             total_loss_tensor = (
                 event_loss_weights[0] * weighted_cospeciation +
                 event_loss_weights[1] * weighted_switches
@@ -433,9 +464,10 @@ def main(fabric: Fabric):
                     event_names,
                     device,
                     event_loss_weights=event_loss_weights,
+                    tail_weight_scale=tail_weight_scale,
                 )
                 if fabric.is_global_zero:
-                    log_dict = {
+                    wandb.log({
                         "train/loss_step": total_loss_tensor.item(),
                         "lr": optimizer.param_groups[0]['lr'],
                         "step": epoch * (len(train_loader) // grad_accum_steps + (1 if (len(train_loader) % grad_accum_steps) else 0)) + (batch_idx // grad_accum_steps),
@@ -443,13 +475,8 @@ def main(fabric: Fabric):
                         **{f"val/MAE_step/{event_names[i]}": val_results["val_mae"][i] for i in range(len(event_names))},
                         **{f"val/MSE_step/{event_names[i]}": val_results["val_mse"][i] for i in range(len(event_names))},
                         **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
-                        **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))},
-                    }
-                    if val_results["val_preds_orig"] is not None:
-                        vp = val_results["val_preds_orig"]
-                        for i, name in enumerate(event_names):
-                            log_dict[f"val/pred_hist/{name}"] = wandb.Histogram(vp[:, i].numpy())
-                    wandb.log(log_dict)
+                        **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))}
+                    })
                     ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
                     save_checkpoint(
                         model,
@@ -464,6 +491,7 @@ def main(fabric: Fabric):
                     # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
                     if val_results["val_loss"] < best_val_loss:
                         best_val_loss = val_results["val_loss"]
+                        val_predictions_data = val_results
                         ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
                         save_checkpoint(
                             model,
@@ -497,6 +525,7 @@ def main(fabric: Fabric):
                 rel_err = abs_err / (labels_abs + eps_vec)
                 smape   = 2 * abs_err / (preds.abs() + labels_abs + eps_vec)
 
+                current_step = batch_idx + 1
                 if current_step in val_checkpoints:
                     batch_mae   = abs_err.mean(dim=0).detach().cpu().tolist()
                     batch_mse   = sq_err.mean(dim=0).detach().cpu().tolist()
@@ -593,6 +622,7 @@ def main(fabric: Fabric):
             event_names,
             device,
             event_loss_weights=event_loss_weights,
+            tail_weight_scale=tail_weight_scale,
         )
         val_loss = val_results["val_loss"]
         val_mae = val_results["val_mae"]
@@ -666,6 +696,8 @@ def main(fabric: Fabric):
         )
 
         # Save final epoch predictions to a CSV file
+        import csv
+
         output_path = "final_predictions.csv"
 
         # Compute full validation predictions properly
@@ -689,7 +721,11 @@ def main(fabric: Fabric):
 
         print(f"Final predictions saved to {output_path}")
 
+
         # --- Combined Train + Val Scatter Plots (Pred vs GT) ---
+        val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
+
+
         # Cospeciations
         plot_labels_vs_predictions(
             train_labels=[row["Cospeciations_GT"] for row in all_train_prediction_data],

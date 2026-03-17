@@ -8,7 +8,7 @@ def run_full_validation(
     event_names,
     device,
     event_loss_weights=None,
-
+    tail_weight_scale=1.0,
 ):
     model.eval()
     val_loss = 0.0
@@ -19,8 +19,6 @@ def run_full_validation(
     val_sum_smape = torch.zeros(len(event_names), device=device)
     running_min_nonzero = torch.full((len(event_names),), float('inf'), device=device)
     val_sample_count = 0
-    all_preds_orig = []  # for histogram logging
-
     if event_loss_weights is None:
         event_loss_weights = torch.ones(len(event_names), device=device)
     else:
@@ -32,31 +30,31 @@ def run_full_validation(
                 continue
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device)
+            batch["sim_time"] = batch["sim_time"].to(device)  
             batch["labels"] = batch["labels"].to(device)
 
             outputs = model(
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch['sim_time']
+                batch['sim_time']  
             )
 
-            loss_cosp = criterion(outputs[:, 0], batch["labels"][:, 0]).mean()
-            loss_sw = criterion(outputs[:, 1], batch["labels"][:, 1]).mean()
+            target_weights = 1.0 + tail_weight_scale * batch["labels"]
+            loss_cosp = (criterion(outputs[:, 0], batch["labels"][:, 0]) * target_weights[:, 0]).mean()
+            loss_sw = (criterion(outputs[:, 1], batch["labels"][:, 1]) * target_weights[:, 1]).mean()
             loss = event_loss_weights[0] * loss_cosp + event_loss_weights[1] * loss_sw
-            val_loss += loss.item()
-            val_batches += 1
 
             preds = outputs
-
             labels = batch["labels"]
-            all_preds_orig.append(preds.cpu())
+
+            val_loss += loss.item()
+            val_batches += 1
 
             abs_err = (preds - labels).abs()
             labels_abs = labels.abs()
             sq_err  = abs_err ** 2
-
+            
             safe_labels = torch.where(labels_abs > 0, labels_abs, torch.full_like(labels_abs, float('inf')))
             batch_min = torch.amin(safe_labels, dim=0)
             running_min_nonzero = torch.minimum(running_min_nonzero, batch_min)
@@ -97,16 +95,12 @@ def run_full_validation(
     val_mre = (val_sum_rel / denom).cpu().tolist()
     val_smape = (val_sum_smape / denom).cpu().tolist()
 
-    # Concatenate predictions from this rank for histogram logging.
-    val_preds_orig = torch.cat(all_preds_orig, dim=0) if all_preds_orig else None
-
     return {
         "val_loss": val_loss,
         "val_mae": val_mae,
         "val_mse": val_mse,
         "val_mre": val_mre,
         "val_smape": val_smape,
-        "val_preds_orig": val_preds_orig,  # [N, num_events] in original scale
     }
 
 
@@ -121,13 +115,13 @@ def compute_val_predictions(model, val_loader, device):
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
             batch["labels"] = batch["labels"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device)
+            batch["sim_time"] = batch["sim_time"].to(device)  
 
             outputs = model(
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch['sim_time']
+                batch['sim_time'] 
             )
 
             preds_list.append(outputs.cpu())

@@ -2,7 +2,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
 from typing import Optional
 
 
@@ -149,7 +148,7 @@ class FlashMSAEncoderLayer(nn.Module):
         return x
     
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=1024, seq_dim=256, num_layers=8, num_heads=8, axial_layers=4, leaf_attn_max_leaves=256):
+    def __init__(self, hidden_dim=1024, seq_dim=256, num_layers=8, num_heads=8, axial_layers=1, leaf_attn_max_leaves=256):
         super(MSAEncoder, self).__init__()
         # seq_dim: smaller dimension used for embedding + axial attention (saves memory on large MSAs)
         # hidden_dim: larger dimension used for CLS token + leaf transformer layers
@@ -163,9 +162,9 @@ class MSAEncoder(nn.Module):
             for _ in range(self.axial_layers)
         ])
 
-        self.norm = nn.LayerNorm(seq_dim * 2)
-        # Project each leaf from 2*seq_dim (max+mean concat) up to hidden_dim before appending CLS token
-        self.leaf_proj = nn.Linear(seq_dim * 2, hidden_dim)
+        self.norm = nn.LayerNorm(seq_dim)
+        # Project each leaf from seq_dim up to hidden_dim before appending CLS token
+        self.leaf_proj = nn.Linear(seq_dim, hidden_dim)
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         nn.init.trunc_normal_(self.cls_token, std=0.02)
@@ -183,19 +182,15 @@ class MSAEncoder(nn.Module):
         x = self.embedding(x_ids)  # (B, N, S, seq_dim)
 
         # Axial attention over the MSA grid (N x S) before pooling (at seq_dim)
-        # Gradient checkpointing trades ~30% compute for ~4x activation memory savings.
         for blk in self.axial_blocks:
-            x = checkpoint(blk, x, x_ids, use_reentrant=False)
+            x = blk(x, x_ids)
 
         # Mask padding positions (PAD token id = 22) so pooling ignores padded tokens
         pad_mask = (x_ids != 22)  # (B, N, S)
         x_masked = x.masked_fill(~pad_mask.unsqueeze(-1), -1e4)
 
         # Max Pooling along the sequence dimension (S)
-        x_max, _ = torch.max(x_masked, dim=2)
-        x_mean = x_masked.sum(dim=2) / pad_mask.sum(dim=2, keepdim=True).float().clamp(min=1)
-        x = torch.cat([x_max, x_mean], dim=-1)  # then project 2*seq_dim -> hidden_dim
-
+        x, _ = torch.max(x_masked, dim=2)  # (B, N, seq_dim)
 
         x = self.norm(x)
         x = self.leaf_proj(x)  # (B, N, hidden_dim) — project up to full CLS dim
@@ -231,7 +226,7 @@ class Cophyloformer(nn.Module):
 
         self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
 
-        self.num_cross_layers = 4
+        self.num_cross_layers = 2
         # Bidirectional cross-attention: host→parasite and parasite→host
         self.cross_attn_h2p = nn.ModuleList([
             nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
@@ -241,9 +236,7 @@ class Cophyloformer(nn.Module):
             nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
             for _ in range(self.num_cross_layers)
         ])
-        # Pre-norm for attention (query side) + pre-norm for FFN — both directions
-        self.cross_attn_norms_h = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
-        self.cross_attn_norms_p = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
+        # Pre-norm + FFN for each direction
         self.cross_norms_h = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
         self.cross_norms_p = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
         self.cross_ffns_h = nn.ModuleList([
@@ -264,9 +257,8 @@ class Cophyloformer(nn.Module):
         # Produce FiLM-style (scale, shift) for the full concatenated representation
         # Output is 2 * concat_dim so we can chunk into (scale, shift) each of size concat_dim.
         self.sim_time_fc = nn.Sequential(
-            nn.Linear(1, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, self.concat_dim * 2),
+            nn.Linear(1, self.concat_dim * 2),
+            nn.Identity(),
         )
         self.cospeciation_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
@@ -357,15 +349,13 @@ class Cophyloformer(nn.Module):
         cross_para = parasite_seq
 
         for i in range(self.num_cross_layers):
-            # Host attends to parasite (pre-norm on query side)
-            h_q = self.cross_attn_norms_h[i](cross_host)
-            h_attn, _ = self.cross_attn_h2p[i](h_q, cross_para, cross_para, key_padding_mask=kv_pad_mask)
+            # Host attends to parasite
+            h_attn, _ = self.cross_attn_h2p[i](cross_host, cross_para, cross_para, key_padding_mask=kv_pad_mask)
             cross_host = cross_host + h_attn
             cross_host = cross_host + self.cross_ffns_h[i](self.cross_norms_h[i](cross_host))
 
-            # Parasite attends to updated host (pre-norm on query side)
-            p_q = self.cross_attn_norms_p[i](cross_para)
-            p_attn, _ = self.cross_attn_p2h[i](p_q, cross_host, cross_host, key_padding_mask=kv_pad_mask)
+            # Parasite attends to updated host
+            p_attn, _ = self.cross_attn_p2h[i](cross_para, cross_host, cross_host, key_padding_mask=kv_pad_mask)
             cross_para = cross_para + p_attn
             cross_para = cross_para + self.cross_ffns_p[i](self.cross_norms_p[i](cross_para))
 
@@ -398,5 +388,5 @@ class Cophyloformer(nn.Module):
         out_switch = self.switch_head(attended_pairs)
         outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
 
-        return outputs
+        return torch.sigmoid(outputs)
  

@@ -216,7 +216,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 500
 
-    batch_size = 16
+    batch_size = 4
 
     # -----------------------------
     # Gradient accumulation

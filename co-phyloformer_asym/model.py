@@ -320,7 +320,7 @@ class Cophyloformer(nn.Module):
             nn.Linear(self.concat_dim, self.concat_dim),
             nn.GELU(),
             nn.LayerNorm(self.concat_dim),
-            nn.Dropout(0.0),   # 0.0 → allow overfitting; restore to 0.1 for production
+            nn.Dropout(0.1),
             nn.Linear(self.concat_dim, self.concat_dim),
             nn.GELU(),
         )

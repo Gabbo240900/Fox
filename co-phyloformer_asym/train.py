@@ -194,7 +194,7 @@ def main(fabric: Fabric):
     )
     train_dataset = LazyCophyloformerDataset(
         preencoded_dir,
-        mask_prob=0.0,
+        mask_prob=0.1,
         pt_files=dataset.pt_files
     )
     val_dataset = LazyCophyloformerDataset(
@@ -281,7 +281,7 @@ def main(fabric: Fabric):
 
     criterion = asymmetric_huber  # used by validation calls
     # Explicitly emphasize host-switch learning and high-value tails.
-    event_loss_weights = torch.tensor([1.0, 1.0, 1.0, 1.0], device=device)
+    event_loss_weights = torch.tensor([1.0, 2.0, 1.0, 1.0], device=device)
     tail_weight_scale = 4.0
 
     model = Cophyloformer()

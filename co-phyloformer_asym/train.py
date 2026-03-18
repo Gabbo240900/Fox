@@ -280,8 +280,10 @@ def main(fabric: Fabric):
         return loss * weight
 
     criterion = asymmetric_huber  # used by validation calls
-    # Explicitly emphasize host-switch learning and high-value tails.
-    event_loss_weights = torch.tensor([1.0, 2.0, 1.0, 1.0], device=device)
+    # Heavily upweight Loss and Duplication: their labels are small so their raw
+    # Huber values are tiny — without boosting, Speciation/HGT dominate the gradient.
+    # Restore to [1.0, 2.0, 1.0, 1.0] for production on larger datasets.
+    event_loss_weights = torch.tensor([1.0, 1.0, 1.0, 1.0], device=device)
     tail_weight_scale = 4.0
 
     model = Cophyloformer()

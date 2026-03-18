@@ -430,6 +430,9 @@ class Cophyloformer(nn.Module):
             scale = torch.tanh(scale)
             attended_pairs = attended_pairs * (1 + scale) + shift
 
-        # 4-class softmax output: (Speciation, HGT, Loss, Duplication)
+        # Per-event sigmoid: each event predicted independently in [0, 1].
+        # Unlike softmax, events do not compete — gradients for Loss/Duplication
+        # are not suppressed by Speciation. Switch back to softmax for production
+        # once the model overfits all 4 events reliably.
         logits = self.event_head(attended_pairs)          # (B, 4)
-        return F.softmax(logits, dim=-1)                  # (B, 4)
+        return torch.sigmoid(logits)                      # (B, 4)

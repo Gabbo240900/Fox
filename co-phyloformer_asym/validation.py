@@ -41,9 +41,10 @@ def run_full_validation(
             )
 
             target_weights = 1.0 + tail_weight_scale * batch["labels"]
-            loss_cosp = (criterion(outputs[:, 0], batch["labels"][:, 0]) * target_weights[:, 0]).mean()
-            loss_sw = (criterion(outputs[:, 1], batch["labels"][:, 1]) * target_weights[:, 1]).mean()
-            loss = event_loss_weights[0] * loss_cosp + event_loss_weights[1] * loss_sw
+            loss = sum(
+                event_loss_weights[i] * (criterion(outputs[:, i], batch["labels"][:, i]) * target_weights[:, i]).mean()
+                for i in range(len(event_names))
+            )
 
             preds = outputs
             labels = batch["labels"]

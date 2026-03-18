@@ -1,9 +1,9 @@
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
-
 
 
 class AxialMSABlockLite(nn.Module):
@@ -84,6 +84,7 @@ class AxialMSABlockLite(nn.Module):
 
         return x
 
+
 class FlashMSAEncoderLayer(nn.Module):
     def __init__(self, hidden_dim, num_heads):
         super().__init__()
@@ -117,7 +118,7 @@ class FlashMSAEncoderLayer(nn.Module):
         q = q.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)  # (B, H, N, Hd)
         k = k.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
-        
+
         q_fp32 = q.float()  # (B, H, N, Hd)
         k_fp32 = k.float()  # (B, H, N, Hd)
         v_fp32 = v.float()  # (B, H, N, Hd)
@@ -140,16 +141,26 @@ class FlashMSAEncoderLayer(nn.Module):
         out = torch.matmul(attn, v_fp32)  # (B, H, N, Hd)
 
         out = out.to(dtype=q.dtype)
-
         out = out.transpose(1, 2).contiguous().view(B, N, D)
 
         x = x + self.proj(out)
         x = x + self.ff(self.norm2(x))
         return x
-    
+
+
 class MSAEncoder(nn.Module):
-    def __init__(self, hidden_dim=1024, seq_dim=256, num_layers=8, num_heads=8, axial_layers=1, leaf_attn_max_leaves=256):
+    def __init__(
+        self,
+        hidden_dim=1024,
+        seq_dim=256,
+        num_layers=8,
+        num_heads=8,
+        axial_layers=1,
+        leaf_attn_max_leaves=256,
+        gradient_checkpointing: bool = False,
+    ):
         super(MSAEncoder, self).__init__()
+        self.gradient_checkpointing = gradient_checkpointing
         # seq_dim: smaller dimension used for embedding + axial attention (saves memory on large MSAs)
         # hidden_dim: larger dimension used for CLS token + leaf transformer layers
         seq_heads = max(1, num_heads * seq_dim // hidden_dim)  # scale heads proportionally to seq_dim
@@ -174,16 +185,37 @@ class MSAEncoder(nn.Module):
         ])
         self.final_norm = nn.LayerNorm(hidden_dim)
         self.mask_token_id = 23
-        
+
+    @staticmethod
+    def _sinusoidal_pe(seq_len: int, d_model: int, device: torch.device) -> torch.Tensor:
+        """Sinusoidal positional encoding of shape [seq_len, d_model]."""
+        pe = torch.zeros(seq_len, d_model, device=device)
+        position = torch.arange(seq_len, device=device).unsqueeze(1).float()
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2, device=device).float()
+            * (-math.log(10000.0) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term[:d_model // 2])
+        return pe  # (S, seq_dim)
 
     def forward(self, x):
         # x: (B, N, S) token ids
         x_ids = x
         x = self.embedding(x_ids)  # (B, N, S, seq_dim)
 
+        # Sinusoidal positional encoding along sequence dimension S
+        S, seq_dim = x.shape[2], x.shape[3]
+        pe = self._sinusoidal_pe(S, seq_dim, x.device)  # (S, seq_dim)
+        x = x + pe.unsqueeze(0).unsqueeze(0)            # broadcast over (B, N)
+
         # Axial attention over the MSA grid (N x S) before pooling (at seq_dim)
         for blk in self.axial_blocks:
-            x = blk(x, x_ids)
+            if self.gradient_checkpointing and self.training:
+                from torch.utils.checkpoint import checkpoint
+                x = checkpoint(blk, x, x_ids, use_reentrant=False)
+            else:
+                x = blk(x, x_ids)
 
         # Mask padding positions (PAD token id = 22) so pooling ignores padded tokens
         pad_mask = (x_ids != 22)  # (B, N, S)
@@ -203,16 +235,33 @@ class MSAEncoder(nn.Module):
 
         # key_padding_mask over sequence (CLS + leaves): True means PAD/ignore
         cls_present = torch.ones((leaf_present.size(0), 1), device=leaf_present.device, dtype=torch.bool)
-        seq_present = torch.cat([cls_present, leaf_present], dim=1)      # (B, N+1)
-        key_padding_mask = ~seq_present                                  # (B, N+1)
+        seq_present = torch.cat([cls_present, leaf_present], dim=1)  # (B, N+1)
+        key_padding_mask = ~seq_present                               # (B, N+1)
 
-        for li, layer in enumerate(self.layers):
-            x = layer(x, key_padding_mask=key_padding_mask)
+        for layer in self.layers:
+            if self.gradient_checkpointing and self.training:
+                from torch.utils.checkpoint import checkpoint
+                x = checkpoint(
+                    lambda _x: layer(_x, key_padding_mask=key_padding_mask),
+                    x,
+                    use_reentrant=False,
+                )
+            else:
+                x = layer(x, key_padding_mask=key_padding_mask)
+
         x = self.final_norm(x)
         return x, x[:, 0]
 
+
 class Cophyloformer(nn.Module):
-    def __init__(self, hidden_dim=1024, seq_dim=256, num_layers=8, num_heads=8):
+    def __init__(
+        self,
+        hidden_dim=1024,
+        seq_dim=256,
+        num_layers=8,
+        num_heads=8,
+        gradient_checkpointing: bool = False,
+    ):
         super(Cophyloformer, self).__init__()
         # Store hyperparameters for W&B logging
         self.hidden_dim = hidden_dim
@@ -221,8 +270,14 @@ class Cophyloformer(nn.Module):
         self.num_heads = num_heads
         self.embedding_dim = hidden_dim
 
-        self.host_encoder = MSAEncoder(hidden_dim, seq_dim, num_layers, num_heads)
-        self.parasite_encoder = MSAEncoder(hidden_dim, seq_dim, num_layers, num_heads)
+        self.host_encoder = MSAEncoder(
+            hidden_dim, seq_dim, num_layers, num_heads,
+            gradient_checkpointing=gradient_checkpointing,
+        )
+        self.parasite_encoder = MSAEncoder(
+            hidden_dim, seq_dim, num_layers, num_heads,
+            gradient_checkpointing=gradient_checkpointing,
+        )
 
         self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
 
@@ -260,23 +315,7 @@ class Cophyloformer(nn.Module):
             nn.Linear(1, self.concat_dim * 2),
             nn.Identity(),
         )
-        self.cospeciation_head = nn.Sequential(
-            nn.LayerNorm(self.concat_dim),
-            nn.Linear(self.concat_dim, hidden_dim * 2),
-            nn.GELU(),
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, 1) # No Sigmoid here
-        )
-        self.switch_head = nn.Sequential(
-            nn.LayerNorm(self.concat_dim),
-            nn.Linear(self.concat_dim, hidden_dim * 2),
-            nn.GELU(),
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, 1)
-        )
-        
+
         self.feature_mixer = nn.Sequential(
             nn.Linear(self.concat_dim, self.concat_dim),
             nn.GELU(),
@@ -286,15 +325,25 @@ class Cophyloformer(nn.Module):
             nn.GELU(),
         )
 
+        # Single 4-class head: Speciation, HGT, Loss, Duplication
+        self.event_head = nn.Sequential(
+            nn.LayerNorm(self.concat_dim),
+            nn.Linear(self.concat_dim, hidden_dim * 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 4),
+        )
+
     def forward(self, host_msa, parasite_msa, mappings, sim_time):
         # Encode host and parasite MSAs
-        host_emb, host_cls = self.host_encoder(host_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
-        parasite_emb, parasite_cls = self.parasite_encoder(parasite_msa)  # (batch, num_leaves+1, hidden_dim), (batch, hidden_dim)
-        
+        host_emb, host_cls = self.host_encoder(host_msa)          # (B, N+1, D), (B, D)
+        parasite_emb, parasite_cls = self.parasite_encoder(parasite_msa)  # (B, N+1, D), (B, D)
+
         global_cross, _ = self.cross_attention(
-            host_cls.unsqueeze(1),         # (B,1,D) queries
-            parasite_cls.unsqueeze(1),     # (B,1,D) keys
-            parasite_cls.unsqueeze(1)      # (B,1,D) values
+            host_cls.unsqueeze(1),       # (B,1,D) queries
+            parasite_cls.unsqueeze(1),   # (B,1,D) keys
+            parasite_cls.unsqueeze(1)    # (B,1,D) values
         )
         global_cross = global_cross.squeeze(1)  # (B,D)
 
@@ -321,8 +370,7 @@ class Cophyloformer(nn.Module):
             host_idx[i, : h.numel()] = h
             para_idx[i, : p.numel()] = p
 
-        # Gather mapped leaf embeddings in batch
-        # (B, max_pairs) -> (B, max_pairs, D)
+        # Gather mapped leaf embeddings in batch: (B, max_pairs) -> (B, max_pairs, D)
         safe_host_idx = host_idx.clamp(min=0)
         safe_para_idx = para_idx.clamp(min=0)
 
@@ -371,22 +419,17 @@ class Cophyloformer(nn.Module):
         para_pooled = masked_softmax_pool(self.pair_pool_score_p(cross_para).squeeze(-1), cross_para, pair_present)
         cross_pooled = (host_pooled + para_pooled) / 2  # (B, D)
 
+        attended_pairs = torch.cat([host_cls, parasite_cls, global_cross, cross_pooled], dim=-1)  # (B, 4*D)
 
-        attended_pairs = torch.cat([host_cls, parasite_cls, global_cross, cross_pooled], dim=-1)  # (B, 4*hidden_dim)
-        
         attended_pairs = self.feature_mixer(attended_pairs)
 
-        # Change the modulation to cover more signal:
+        # FiLM conditioning on simulation time
         if sim_time is not None:
-            # Make sim_time_fc output self.concat_dim * 2
             gamma_beta = self.sim_time_fc(sim_time)
             scale, shift = gamma_beta.chunk(2, dim=-1)
             scale = torch.tanh(scale)
             attended_pairs = attended_pairs * (1 + scale) + shift
 
-        out_cospeciation = self.cospeciation_head(attended_pairs)
-        out_switch = self.switch_head(attended_pairs)
-        outputs = torch.cat([out_cospeciation, out_switch], dim=-1)
-
-        return torch.sigmoid(outputs)
- 
+        # 4-class softmax output: (Speciation, HGT, Loss, Duplication)
+        logits = self.event_head(attended_pairs)          # (B, 4)
+        return F.softmax(logits, dim=-1)                  # (B, 4)

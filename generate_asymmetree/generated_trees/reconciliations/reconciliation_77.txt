@@ -1,0 +1,12 @@
+Loss: 16
+Speciation: 66
+Duplication: 20
+Horizontal Gene Transfer: 7
+Total Events: 109
+Speciation_freq: 0.6055
+Loss_freq: 0.1468
+HGT_freq: 0.0642
+Duplication_freq: 0.1835
+Host_num_leaves: 36
+Symbiont_num_leaves: 110
+Sim_time: 2

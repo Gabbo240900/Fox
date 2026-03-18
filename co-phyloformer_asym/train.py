@@ -34,8 +34,10 @@ torch.set_float32_matmul_precision('high')
 
 seed_everything(42)
 event_names = [
-    "Cospeciations",
-    "Host_spread/Switches"
+    "Speciation",
+    "HGT",
+    "Loss",
+    "Duplication",
 ]
 
 start_time = time.time()  # Record start time
@@ -279,7 +281,7 @@ def main(fabric: Fabric):
 
     criterion = asymmetric_huber  # used by validation calls
     # Explicitly emphasize host-switch learning and high-value tails.
-    event_loss_weights = torch.tensor([1.0, 3.0], device=device)
+    event_loss_weights = torch.tensor([1.0, 2.0, 1.0, 1.0], device=device)
     tail_weight_scale = 4.0
 
     model = Cophyloformer()
@@ -419,25 +421,18 @@ def main(fabric: Fabric):
             )
 
             for idx in range(outputs.shape[0]):
-                all_train_prediction_data.append({
-                    "Sample_Index": batch_idx * outputs.shape[0] + idx,
-                    "Cospeciations_Pred": outputs[idx, 0].item(),
-                    "Cospeciations_GT": batch["labels"][idx, 0].item(),
-                    "Host_switches_Pred": outputs[idx, 1].item(),
-                    "Host_switches_GT": batch["labels"][idx, 1].item(),
-                })
+                row = {"Sample_Index": batch_idx * outputs.shape[0] + idx}
+                for i, event in enumerate(event_names):
+                    row[f"{event}_Pred"] = outputs[idx, i].item()
+                    row[f"{event}_GT"] = batch["labels"][idx, i].item()
+                all_train_prediction_data.append(row)
 
             # Asymmetric Huber: penalises underprediction more than overprediction.
-            loss_cospeciation = asymmetric_huber(outputs[:, 0], batch["labels"][:, 0])
-            loss_switches     = asymmetric_huber(outputs[:, 1], batch["labels"][:, 1])
-
             # Tail-aware per-sample weighting + per-task reweighting.
             target_weights = 1.0 + tail_weight_scale * batch["labels"]
-            weighted_cospeciation = (loss_cospeciation * target_weights[:, 0]).mean()
-            weighted_switches = (loss_switches * target_weights[:, 1]).mean()
-            total_loss_tensor = (
-                event_loss_weights[0] * weighted_cospeciation +
-                event_loss_weights[1] * weighted_switches
+            total_loss_tensor = sum(
+                event_loss_weights[i] * (asymmetric_huber(outputs[:, i], batch["labels"][:, i]) * target_weights[:, i]).mean()
+                for i in range(len(event_names))
             )
 
             loss_to_backprop = total_loss_tensor / grad_accum_steps
@@ -703,18 +698,16 @@ def main(fabric: Fabric):
         # Compute full validation predictions properly
         val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
 
+        fieldnames = ["Sample_Index"] + [f"{e}_Pred" for e in event_names] + [f"{e}_GT" for e in event_names]
         rows = []
         for i in range(len(val_preds_tensor)):
-            rows.append({
-                "Sample_Index": i,
-                "Cospeciations_Pred": float(val_preds_tensor[i, 0]),
-                "Cospeciations_GT": float(val_labels_tensor[i, 0]),
-                "Host_switches_Pred": float(val_preds_tensor[i, 1]),
-                "Host_switches_GT": float(val_labels_tensor[i, 1]),
-            })
+            row = {"Sample_Index": i}
+            for j, event in enumerate(event_names):
+                row[f"{event}_Pred"] = float(val_preds_tensor[i, j])
+                row[f"{event}_GT"] = float(val_labels_tensor[i, j])
+            rows.append(row)
 
         with open(output_path, mode="w", newline="") as csv_file:
-            fieldnames = ["Sample_Index", "Cospeciations_Pred", "Cospeciations_GT", "Host_switches_Pred", "Host_switches_GT"]
             writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
@@ -726,31 +719,20 @@ def main(fabric: Fabric):
         val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
 
 
-        # Cospeciations
-        plot_labels_vs_predictions(
-            train_labels=[row["Cospeciations_GT"] for row in all_train_prediction_data],
-            train_preds=[row["Cospeciations_Pred"] for row in all_train_prediction_data],
-            val_labels=val_labels_tensor[:, 0].numpy(),
-            val_preds=val_preds_tensor[:, 0].numpy(),
-            event_name="Cospeciations",
-            filename="combined_label_vs_pred_cospeciations.png"
-        )
+        plot_images = {"plots/loss_curve": wandb.Image("combined_loss.png")}
+        for j, event in enumerate(event_names):
+            fname = f"combined_label_vs_pred_{event.lower()}.png"
+            plot_labels_vs_predictions(
+                train_labels=[row[f"{event}_GT"] for row in all_train_prediction_data],
+                train_preds=[row[f"{event}_Pred"] for row in all_train_prediction_data],
+                val_labels=val_labels_tensor[:, j].numpy(),
+                val_preds=val_preds_tensor[:, j].numpy(),
+                event_name=event,
+                filename=fname,
+            )
+            plot_images[f"plots/labels_vs_preds_{event.lower()}"] = wandb.Image(fname)
 
-        # Host switches
-        plot_labels_vs_predictions(
-            train_labels=[row["Host_switches_GT"] for row in all_train_prediction_data],
-            train_preds=[row["Host_switches_Pred"] for row in all_train_prediction_data],
-            val_labels=val_labels_tensor[:, 1].numpy(),
-            val_preds=val_preds_tensor[:, 1].numpy(),
-            event_name="Host Switches",
-            filename="combined_label_vs_pred_switches.png"
-        )
-
-        wandb.log({
-            "plots/loss_curve": wandb.Image("combined_loss.png"),
-            "plots/labels_vs_preds_cospeciations": wandb.Image("combined_label_vs_pred_cospeciations.png"),
-            "plots/labels_vs_preds_host_switches": wandb.Image("combined_label_vs_pred_switches.png")
-        })
+        wandb.log(plot_images)
 
         # Save and log model as a W&B model artifact
         model_path = "cophyloformer_custom_model.pth"

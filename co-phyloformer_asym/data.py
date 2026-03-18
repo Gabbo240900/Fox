@@ -25,8 +25,10 @@ class CophylogenyDataset(Dataset):
         }
 
         event_name_map = {
-            "Speciation_freq": "Cospeciations",
-            "HGT_freq": "Host_spread/Switches",
+            "Speciation_freq": "Speciation",
+            "HGT_freq": "HGT",
+            "Loss_freq": "Loss",
+            "Duplication_freq": "Duplication",
             "Sim_time": "Sim_time",
         }
 

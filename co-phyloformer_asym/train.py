@@ -212,7 +212,7 @@ def main(fabric: Fabric):
     # -----------------------------
     # Gradient accumulation
     # -----------------------------
-    grad_accum_steps = 1   # 1 → max optimizer steps per sample; restore to 4 for production
+    grad_accum_steps = 4  # 1 → max optimizer steps per sample; restore to 4 for production
 
     # -----------------------------
     # DDP-safe sampling

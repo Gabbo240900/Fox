@@ -194,7 +194,7 @@ def main(fabric: Fabric):
     )
     train_dataset = LazyCophyloformerDataset(
         preencoded_dir,
-        mask_prob=0.1,
+        mask_prob=0.0,   # 0.0 → no token masking, allow overfitting; restore to 0.1 for production
         pt_files=dataset.pt_files
     )
     val_dataset = LazyCophyloformerDataset(
@@ -212,7 +212,7 @@ def main(fabric: Fabric):
     # -----------------------------
     # Gradient accumulation
     # -----------------------------
-    grad_accum_steps = 4
+    grad_accum_steps = 1   # 1 → max optimizer steps per sample; restore to 4 for production
 
     # -----------------------------
     # DDP-safe sampling
@@ -259,30 +259,19 @@ def main(fabric: Fabric):
 
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
+    lr = 5e-4  # higher LR for fast convergence on small data; restore to 1e-4 for production
     wd = 0
 
-    # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.
-    huber_delta = 1.0  # covers the full [0,1] label range quadratically
-    under_penalty = 2.5
+    # Plain MSE — symmetric, equal gradient magnitude per event, no bias toward over/under prediction.
+    # Restore to asymmetric_huber for production to handle imbalanced tails.
+    def per_sample_mse(pred, target):
+        return (pred - target) ** 2
 
-    def asymmetric_huber(pred, target):
-        err = target - pred  # positive = underpredicting, negative = overpredicting
-        abs_err = err.abs()
-        loss = torch.where(
-            abs_err < huber_delta,
-            0.5 * abs_err ** 2,
-            huber_delta * (abs_err - 0.5 * huber_delta),
-        )
-        weight = torch.where(err > 0,
-                             torch.full_like(err, under_penalty),
-                             torch.ones_like(err))
-        return loss * weight
-
-    criterion = asymmetric_huber  # used by validation calls
-    # Explicitly emphasize host-switch learning and high-value tails.
-    event_loss_weights = torch.tensor([1.0, 2.0, 1.0, 1.0], device=device)
-    tail_weight_scale = 4.0
+    criterion = per_sample_mse  # used by validation calls
+    # Uniform event weights: all 4 events contribute equally so Loss/Duplication are not drowned out.
+    # Restore to [1.0, 2.0, 1.0, 1.0] for production.
+    event_loss_weights = torch.tensor([1.0, 1.0, 1.0, 1.0], device=device)
+    tail_weight_scale = 0.0  # 0.0 → uniform per-sample gradient; restore to 4.0 for production
 
     model = Cophyloformer()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
@@ -310,7 +299,7 @@ def main(fabric: Fabric):
     # Scheduler should count *optimizer steps* (not micro-batches)
     steps_per_epoch = math.ceil(len(train_loader) / grad_accum_steps)
     total_steps = epochs * steps_per_epoch
-    warmup_steps = int(0.10 * total_steps)
+    warmup_steps = 5  # near-instant warmup for overfitting; restore to int(0.10 * total_steps) for production
 
     lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer,
@@ -347,7 +336,7 @@ def main(fabric: Fabric):
                 "scheduler": "linear_warmup",
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
-                "huber_delta": huber_delta,
+                "loss_fn": "per_sample_mse",
                 "event_loss_weights": event_loss_weights.tolist(),
                 "tail_weight_scale": tail_weight_scale,
                 "model_name": model.__class__.__name__,

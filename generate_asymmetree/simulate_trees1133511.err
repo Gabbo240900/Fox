@@ -1,0 +1,4 @@
++ find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/associations/ -mindepth 1 -delete
++ find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/Datasets/ -mindepth 1 -delete
++ find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/host_tree/ -mindepth 1 -delete
+find: ‘/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/host_tree/’: No such file or directory

@@ -40,11 +40,8 @@ def run_full_validation(
                 batch['sim_time']  
             )
 
-            target_weights = 1.0 + tail_weight_scale * batch["labels"]
-            loss = sum(
-                event_loss_weights[i] * (criterion(outputs[:, i], batch["labels"][:, i]) * target_weights[:, i]).mean()
-                for i in range(len(event_names))
-            )
+            # KL divergence over the full 4-event distribution (outputs and labels both sum to 1).
+            loss = criterion(outputs, batch["labels"])
 
             preds = outputs
             labels = batch["labels"]

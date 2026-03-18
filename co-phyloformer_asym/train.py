@@ -262,16 +262,19 @@ def main(fabric: Fabric):
     lr = 5e-4  # higher LR for fast convergence on small data; restore to 1e-4 for production
     wd = 0
 
-    # Plain MSE — symmetric, equal gradient magnitude per event, no bias toward over/under prediction.
-    # Restore to asymmetric_huber for production to handle imbalanced tails.
-    def per_sample_mse(pred, target):
-        return (pred - target) ** 2
+    # KL divergence — correct loss when both predictions and labels are probability distributions
+    # summing to 1.  F.kl_div expects log-probabilities as first arg.
+    # Clamp labels away from 0 to avoid 0*log(0) = NaN; clamp preds away from 0 to avoid log(0) = -inf.
+    def criterion(pred, target):
+        """KL( target || pred ) averaged over the batch."""
+        return F.kl_div(
+            pred.clamp(min=1e-8).log(),   # (B, 4) log-probs
+            target.clamp(min=1e-8),       # (B, 4) target probs — F.kl_div needs plain probs here
+            reduction='batchmean',        # divide by B, sum over classes
+        )
 
-    criterion = per_sample_mse  # used by validation calls
-    # Uniform event weights: all 4 events contribute equally so Loss/Duplication are not drowned out.
-    # Restore to [1.0, 2.0, 1.0, 1.0] for production.
-    event_loss_weights = torch.tensor([1.0, 1.0, 1.0, 1.0], device=device)
-    tail_weight_scale = 0.0  # 0.0 → uniform per-sample gradient; restore to 4.0 for production
+    event_loss_weights = torch.tensor([1.0, 1.0, 1.0, 1.0], device=device)  # restore to [1,2,1,1] for production
+    tail_weight_scale = 0.0  # not used with KL; restore for asymmetric_huber in production
 
     model = Cophyloformer()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
@@ -336,7 +339,7 @@ def main(fabric: Fabric):
                 "scheduler": "linear_warmup",
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
-                "loss_fn": "per_sample_mse",
+                "loss_fn": "kl_divergence",
                 "event_loss_weights": event_loss_weights.tolist(),
                 "tail_weight_scale": tail_weight_scale,
                 "model_name": model.__class__.__name__,
@@ -416,13 +419,8 @@ def main(fabric: Fabric):
                     row[f"{event}_GT"] = batch["labels"][idx, i].item()
                 all_train_prediction_data.append(row)
 
-            # Asymmetric Huber: penalises underprediction more than overprediction.
-            # Tail-aware per-sample weighting + per-task reweighting.
-            target_weights = 1.0 + tail_weight_scale * batch["labels"]
-            total_loss_tensor = sum(
-                event_loss_weights[i] * (asymmetric_huber(outputs[:, i], batch["labels"][:, i]) * target_weights[:, i]).mean()
-                for i in range(len(event_names))
-            )
+            # KL divergence over the full 4-event distribution (outputs and labels both sum to 1).
+            total_loss_tensor = criterion(outputs, batch["labels"])
 
             loss_to_backprop = total_loss_tensor / grad_accum_steps
             

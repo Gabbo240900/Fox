@@ -119,28 +119,17 @@ class FlashMSAEncoderLayer(nn.Module):
         k = k.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
 
-        q_fp32 = q.float()  # (B, H, N, Hd)
-        k_fp32 = k.float()  # (B, H, N, Hd)
-        v_fp32 = v.float()  # (B, H, N, Hd)
-
-        # scores: (B, H, N, N)
-        scores = torch.matmul(q_fp32, k_fp32.transpose(-2, -1))
-        scores = scores * (self.head_dim ** -0.5)
-
+        # Build additive attention bias for SDPA (flash-attention compatible, O(N) memory)
+        attn_bias = None
         if key_padding_mask is not None:
-            # key_padding_mask: (B, N) True = ignore key
-            km = key_padding_mask[:, None, None, :]  # (B,1,1,N)
-            # if a row has all keys masked, unmask CLS key (pos 0)
+            attn_bias = torch.zeros(B, 1, 1, N, device=x.device, dtype=q.dtype)
+            attn_bias.masked_fill_(key_padding_mask[:, None, None, :], float('-inf'))
+            # If a row has all keys masked, unmask CLS (pos 0) to avoid NaN
             all_masked = key_padding_mask.all(dim=1)
             if all_masked.any():
-                km = km.clone()
-                km[all_masked, :, :, 0] = False
-            scores = scores.masked_fill(km, -1e9)
+                attn_bias[all_masked, :, :, 0] = 0.0
 
-        attn = torch.softmax(scores, dim=-1)
-        out = torch.matmul(attn, v_fp32)  # (B, H, N, Hd)
-
-        out = out.to(dtype=q.dtype)
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias, dropout_p=0.0)
         out = out.transpose(1, 2).contiguous().view(B, N, D)
 
         x = x + self.proj(out)
@@ -343,7 +332,8 @@ class Cophyloformer(nn.Module):
         global_cross, _ = self.cross_attention(
             host_cls.unsqueeze(1),       # (B,1,D) queries
             parasite_cls.unsqueeze(1),   # (B,1,D) keys
-            parasite_cls.unsqueeze(1)    # (B,1,D) values
+            parasite_cls.unsqueeze(1),   # (B,1,D) values
+            need_weights=False,
         )
         global_cross = global_cross.squeeze(1)  # (B,D)
 
@@ -398,12 +388,12 @@ class Cophyloformer(nn.Module):
 
         for i in range(self.num_cross_layers):
             # Host attends to parasite
-            h_attn, _ = self.cross_attn_h2p[i](cross_host, cross_para, cross_para, key_padding_mask=kv_pad_mask)
+            h_attn, _ = self.cross_attn_h2p[i](cross_host, cross_para, cross_para, key_padding_mask=kv_pad_mask, need_weights=False)
             cross_host = cross_host + h_attn
             cross_host = cross_host + self.cross_ffns_h[i](self.cross_norms_h[i](cross_host))
 
             # Parasite attends to updated host
-            p_attn, _ = self.cross_attn_p2h[i](cross_para, cross_host, cross_host, key_padding_mask=kv_pad_mask)
+            p_attn, _ = self.cross_attn_p2h[i](cross_para, cross_host, cross_host, key_padding_mask=kv_pad_mask, need_weights=False)
             cross_para = cross_para + p_attn
             cross_para = cross_para + self.cross_ffns_p[i](self.cross_norms_p[i](cross_para))
 

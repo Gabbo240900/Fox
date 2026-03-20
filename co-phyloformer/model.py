@@ -4,6 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 
+# try increasing cls 
+# try checking only host switch loss withput cosp 
 
 
 class AxialMSABlockLite(nn.Module):

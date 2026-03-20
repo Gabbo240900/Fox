@@ -140,29 +140,17 @@ def load_checkpoint(model, optimizer, checkpoint_path, map_location=None):
     batch_idx = checkpoint.get('batch_idx', None)
     return epoch, val_loss, batch_idx
 
-# Cap the number of leaves per sample to bound (B × N × S) tensor sizes.
-# With 1M-dataset trees potentially having hundreds of leaves, one outlier
-# sample pads the entire batch to that N, causing OOM in the axial FFN.
-MAX_LEAVES = 128
-
 def collate_fn(batch):
     """Pads MSA sequences dynamically to match batch size."""
     # After dataset pre-filtering, no element should be None.
     host_msas = [sample["host_msa"] for sample in batch]
     parasite_msas = [sample["parasite_msa"] for sample in batch]
     labels = torch.stack([sample["labels"] for sample in batch])
-    mappings = [sample["mappings"] for sample in batch]
+    mappings = [sample["mappings"] for sample in batch]  
+    
     sim_time = torch.stack([sample["sim_time"] for sample in batch])
 
-    # Truncate to MAX_LEAVES to prevent a single large tree from inflating B×N for the whole batch.
-    # Filter mappings so indices still point to valid (kept) leaves.
-    host_msas = [m[:MAX_LEAVES] for m in host_msas]
-    parasite_msas = [m[:MAX_LEAVES] for m in parasite_msas]
-    mappings = [
-        [(h, p) for h, p in m if h < MAX_LEAVES and p < MAX_LEAVES]
-        for m in mappings
-    ]
-
+    #  Fix: Ensure consistent padding for batch processing 
     max_host_len = max(m.shape[0] for m in host_msas)
     max_parasite_len = max(m.shape[0] for m in parasite_msas)
 
@@ -171,13 +159,13 @@ def collate_fn(batch):
 
     host_msas = torch.stack(host_msas)
     parasite_msas = torch.stack(parasite_msas)
-
+    
     return {
         "host_msa": host_msas,
         "parasite_msa": parasite_msas,
         "labels": labels,
-        "mappings": mappings,
-        "sim_time": sim_time,
+        "mappings": mappings,  
+        "sim_time": sim_time,  
     }
 
 
@@ -298,7 +286,7 @@ def main(fabric: Fabric):
     event_loss_weights = torch.tensor([1.0, 1.0, 1.0, 1.0], device=device)
     tail_weight_scale = 4.0
 
-    model = Cophyloformer(seq_dim=128, gradient_checkpointing=True)
+    model = Cophyloformer(gradient_checkpointing=True)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)
 

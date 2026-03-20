@@ -180,41 +180,36 @@ def encode_sequence(sequence, max_len=500):
     return torch.tensor(encoded, dtype=torch.long)
 
 def main(fabric: Fabric):
-    # Load Data
+    def log(msg):
+        """Print only from rank 0 to avoid duplicate messages across GPUs."""
+        if fabric.is_global_zero:
+            print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
     preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
-    # Build file list once, then create train/val datasets with different masking policies.
+
+    log("Reading manifest …")
     dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0)
-    # Train/Validation Split
+    log(f"Manifest loaded — {len(dataset):,} samples found.")
+
+    log("Splitting train / val …")
     indices = list(range(len(dataset)))
     train_indices, val_indices = train_test_split(
         indices, test_size=0.2, random_state=42, shuffle=True
     )
-    train_dataset = LazyCophyloformerDataset(
-        preencoded_dir,
-        mask_prob=0.1,
-        pt_files=dataset.pt_files
-    )
-    val_dataset = LazyCophyloformerDataset(
-        preencoded_dir,
-        mask_prob=0.0,
-        pt_files=dataset.pt_files
-    )
-    train_subset = torch.utils.data.Subset(train_dataset, train_indices)
-    val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
+    log(f"Split done — {len(train_indices):,} train  |  {len(val_indices):,} val.")
+
+    train_dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.1, pt_files=dataset.pt_files)
+    val_dataset   = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0,  pt_files=dataset.pt_files)
+    train_subset  = torch.utils.data.Subset(train_dataset, train_indices)
+    val_subset    = torch.utils.data.Subset(val_dataset,   val_indices)
+
     device = fabric.device
     epochs = 5
-
     batch_size = 16
-
-    # -----------------------------
-    # Gradient accumulation
-    # -----------------------------
     grad_accum_steps = 4
 
-    # -----------------------------
-    # DDP-safe sampling
-    # -----------------------------
+    log("Building data loaders …")
     train_sampler = DistributedSampler(
         train_subset,
         num_replicas=fabric.world_size,
@@ -222,27 +217,23 @@ def main(fabric: Fabric):
         shuffle=True,
         seed=42,
     )
-
     val_sampler = DistributedSampler(
         val_subset,
         num_replicas=fabric.world_size,
         rank=fabric.global_rank,
         shuffle=False,
     )
-
     train_loader = DataLoader(
         train_subset,
         batch_size=batch_size,
         sampler=train_sampler,
-        shuffle=False,  # IMPORTANT: do not use shuffle with a sampler
+        shuffle=False,
         collate_fn=collate_fn,
         num_workers=8,
         persistent_workers=True,
         prefetch_factor=4,
         pin_memory=False,
     )
-
-    # Create validation loader (also sharded for balanced work across ranks)
     val_loader = DataLoader(
         val_subset,
         batch_size=batch_size,
@@ -254,8 +245,8 @@ def main(fabric: Fabric):
         prefetch_factor=2,
         pin_memory=False,
     )
-
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
+    log(f"Data loaders ready — {len(train_loader):,} train batches / epoch.")
 
     lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
@@ -378,6 +369,7 @@ def main(fabric: Fabric):
     val_predictions_data = []
     best_step_predictions = None
 
+    log("All setup complete — starting training.")
     # Training loop over all batches per epoch (no micro-epochs)
     for epoch in range(start_epoch, epochs):
         # Ensure each epoch uses a different (but synchronized) shuffle order across ranks

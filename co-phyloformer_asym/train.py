@@ -27,9 +27,9 @@ import math
 # Log host switch 
 #try new overfitting example again 
 
-torch.backends.cuda.enable_flash_sdp(True)
-torch.backends.cuda.enable_mem_efficient_sdp(True)
-torch.backends.cuda.enable_math_sdp(True)  # fallback for ops not supported by flash/mem-efficient
+torch.backends.cuda.enable_flash_sdp(False)
+torch.backends.cuda.enable_mem_efficient_sdp(False)
+torch.backends.cuda.enable_math_sdp(True)
 torch.set_float32_matmul_precision('high')
 
 seed_everything(42)
@@ -286,7 +286,7 @@ def main(fabric: Fabric):
     event_loss_weights = torch.tensor([1.0, 1.0, 1.0, 1.0], device=device)
     tail_weight_scale = 4.0
 
-    model = Cophyloformer(gradient_checkpointing=True)
+    model = Cophyloformer()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)
 

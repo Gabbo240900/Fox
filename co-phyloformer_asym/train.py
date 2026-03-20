@@ -46,17 +46,19 @@ class LazyCophyloformerDataset(Dataset):
     def __init__(self, preencoded_dir, mask_prob=0.1, pt_files=None):
         self.mask_prob = float(mask_prob)
         if pt_files is None:
-            # os.scandir is much faster than glob on large directories.
-            # Skip files < 1 KB as a cheap proxy for empty/corrupt files.
-            # Full torch.load validation is skipped here — filter_data.py
-            # should have already cleaned the dataset. Any remaining corrupt
-            # files are caught and skipped gracefully in __getitem__.
-            entries = [
-                e.path
-                for e in os.scandir(preencoded_dir)
-                if e.name.endswith(".pt") and e.stat().st_size > 1024
-            ]
-            self.pt_files = sorted(entries)
+            # Read manifest.txt written by filter_data.py — instant on Lustre.
+            # On Lustre, scanning a directory with 1M files via os.scandir/glob
+            # takes many minutes; reading a pre-built text file takes < 1 second.
+            manifest = os.path.join(preencoded_dir, "manifest.txt")
+            if not os.path.exists(manifest):
+                raise FileNotFoundError(
+                    f"manifest.txt not found in {preencoded_dir}.\n"
+                    f"Generate it by running filter_data.py on that directory:\n"
+                    f"  python filter_data.py {preencoded_dir}\n"
+                    f"(dry-run is fine — it always writes the manifest)"
+                )
+            with open(manifest) as f:
+                self.pt_files = [l.strip() for l in f if l.strip()]
         else:
             self.pt_files = list(pt_files)
         self.preencoded_dir = preencoded_dir

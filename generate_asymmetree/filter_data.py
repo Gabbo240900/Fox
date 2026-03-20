@@ -241,6 +241,16 @@ def main():
     kept = len(rows) - len(flagged)
     print(f"Total: {len(rows):,}  │  Flagged: {len(flagged):,}  │  Kept: {kept:,}\n")
 
+    # ── always write manifest of kept files ──────────────────────────────
+    # Training reads this file instead of scanning the directory, which is
+    # critical on Lustre where directory listings of 1M files take minutes.
+    flagged_paths = {r["path"] for r, _ in flagged}
+    kept_paths = sorted(r["path"] for r in rows if r["path"] not in flagged_paths)
+    manifest_path = os.path.join(args.root, "manifest.txt")
+    with open(manifest_path, "w") as f:
+        f.write("\n".join(kept_paths))
+    print(f"Manifest of {len(kept_paths):,} kept files → {manifest_path}\n")
+
     if not flagged:
         print("✅ No files match the filter criteria — nothing to remove.")
         return

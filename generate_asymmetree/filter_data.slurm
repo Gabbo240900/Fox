@@ -18,5 +18,5 @@ module load miniforge/24.9.0
 conda activate cophylo
 
 python filter_data.py /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded --min_taxa 5 \
-  --max_taxa 128 --delete
+  --max_taxa 128
 

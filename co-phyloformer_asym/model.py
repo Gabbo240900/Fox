@@ -8,7 +8,7 @@ from typing import Optional
 
 class AxialMSABlockLite(nn.Module):
 
-    def __init__(self, hidden_dim: int, num_heads: int, ff_mult: int = 4, dropout: float = 0.0, leaf_attn_max_leaves: int = 256):
+    def __init__(self, hidden_dim: int, num_heads: int, ff_mult: int = 4, dropout: float = 0.0, leaf_attn_max_leaves: int = 128):
         super().__init__()
         self.leaf_attn_max_leaves = int(leaf_attn_max_leaves)
 
@@ -152,11 +152,11 @@ class MSAEncoder(nn.Module):
     def __init__(
         self,
         hidden_dim=1024,
-        seq_dim=256,
+        seq_dim=128,
         num_layers=8,
         num_heads=8,
         axial_layers=1,
-        leaf_attn_max_leaves=256,
+        leaf_attn_max_leaves=128,
         gradient_checkpointing: bool = False,
     ):
         super(MSAEncoder, self).__init__()
@@ -257,7 +257,7 @@ class Cophyloformer(nn.Module):
     def __init__(
         self,
         hidden_dim=1024,
-        seq_dim=256,
+        seq_dim=128,
         num_layers=8,
         num_heads=8,
         gradient_checkpointing: bool = False,

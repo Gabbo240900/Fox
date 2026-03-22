@@ -205,8 +205,8 @@ def main(fabric: Fabric):
     val_subset    = torch.utils.data.Subset(val_dataset,   val_indices)
 
     device = fabric.device
-    epochs = 20
-    batch_size = 16
+    epochs = 15
+    batch_size = 32
     grad_accum_steps = 4
 
     log("Building data loaders …")

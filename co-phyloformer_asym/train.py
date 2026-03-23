@@ -249,31 +249,16 @@ def main(fabric: Fabric):
     log(f"Data loaders ready — {len(train_loader):,} train batches / epoch.")
 
     lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
-    wd = 0
+    wd = 1e-4
 
-    # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.
-    huber_delta = 1.0  # covers the full [0,1] label range quadratically
-    under_penalty = 4.0
+    def soft_cross_entropy(pred, target):
+        """KL divergence loss for softmax outputs with soft targets.
+        pred: (B, 4) softmax probabilities; target: (B, 4) event frequencies.
+        Labels are normalized to sum to 1 in case they don't exactly."""
+        target_norm = target / (target.sum(dim=-1, keepdim=True) + 1e-8)
+        return -(target_norm * torch.log(pred + 1e-8)).sum(dim=-1).mean()
 
-    def asymmetric_huber(pred, target):
-        err = target - pred  # positive = underpredicting, negative = overpredicting
-        abs_err = err.abs()
-        loss = torch.where(
-            abs_err < huber_delta,
-            0.5 * abs_err ** 2,
-            huber_delta * (abs_err - 0.5 * huber_delta),
-        )
-        weight = torch.where(err > 0,
-                             torch.full_like(err, under_penalty),
-                             torch.ones_like(err))
-        return loss * weight
-
-    criterion = asymmetric_huber  # used by validation calls
-    # Heavily upweight Loss and Duplication: their labels are small so their raw
-    # Huber values are tiny — without boosting, Speciation/HGT dominate the gradient.
-    # Restore to [1.0, 2.0, 1.0, 1.0] for production on larger datasets.
-    event_loss_weights = torch.tensor([1.0, 3.0, 3.0, 3.0], device=device)
-    tail_weight_scale = 4.0
+    criterion = soft_cross_entropy
 
     model = Cophyloformer()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
@@ -338,9 +323,7 @@ def main(fabric: Fabric):
                 "scheduler": "linear_warmup",
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
-                "huber_delta": huber_delta,
-                "event_loss_weights": event_loss_weights.tolist(),
-                "tail_weight_scale": tail_weight_scale,
+                "loss": "soft_cross_entropy",
                 "model_name": model.__class__.__name__,
                 "dataset_size": len(dataset),  
                 **model_config                 
@@ -419,13 +402,7 @@ def main(fabric: Fabric):
                     row[f"{event}_GT"] = batch["labels"][idx, i].item()
                 all_train_prediction_data.append(row)
 
-            # Asymmetric Huber: penalises underprediction more than overprediction.
-            # Tail-aware per-sample weighting + per-task reweighting.
-            target_weights = 1.0 + tail_weight_scale * batch["labels"]
-            total_loss_tensor = sum(
-                event_loss_weights[i] * (asymmetric_huber(outputs[:, i], batch["labels"][:, i]) * target_weights[:, i]).mean()
-                for i in range(len(event_names))
-            )
+            total_loss_tensor = criterion(outputs, batch["labels"])
 
             loss_to_backprop = total_loss_tensor / grad_accum_steps
             
@@ -450,8 +427,6 @@ def main(fabric: Fabric):
                     criterion,
                     event_names,
                     device,
-                    event_loss_weights=event_loss_weights,
-                    tail_weight_scale=tail_weight_scale,
                 )
                 if fabric.is_global_zero:
                     wandb.log({
@@ -608,8 +583,6 @@ def main(fabric: Fabric):
             criterion,
             event_names,
             device,
-            event_loss_weights=event_loss_weights,
-            tail_weight_scale=tail_weight_scale,
         )
         val_loss = val_results["val_loss"]
         val_mae = val_results["val_mae"]

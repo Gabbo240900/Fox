@@ -211,7 +211,7 @@ def main(fabric: Fabric):
 
     device = fabric.device
     epochs = 15
-    batch_size = 32
+    batch_size = 16
     grad_accum_steps = 4
 
     log("Building data loaders …")
@@ -321,14 +321,22 @@ def main(fabric: Fabric):
 
         # Resume the existing W&B run if we loaded a checkpoint that has a run ID.
         # WANDB_RUN_ID env var can override (useful if the checkpoint pre-dates run ID saving).
+        # In offline mode W&B ignores `resume` entirely (and warns), so we only pass it
+        # in online mode. The `id` is always passed when resuming so that offline runs
+        # are stored under the same run ID and merge correctly when synced with `wandb sync`.
         wandb_resume_id = os.environ.get("WANDB_RUN_ID", None) or loaded_wandb_run_id
-        run = wandb.init(
+        wandb_init_kwargs = dict(
             entity=entity,
             project=project,
             name=name_experiment,
-            id=wandb_resume_id,
-            resume="must" if wandb_resume_id else "allow",
             job_type="training",
+        )
+        if wandb_resume_id:
+            wandb_init_kwargs["id"] = wandb_resume_id
+            if mode != "offline":
+                wandb_init_kwargs["resume"] = "must"
+        run = wandb.init(
+            **wandb_init_kwargs,
             config={
                 "mode": mode,
                 "epochs": epochs,

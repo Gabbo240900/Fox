@@ -114,21 +114,24 @@ class LazyCophyloformerDataset(Dataset):
             "labels": labels,
             "sim_time": sim_time  
         }
-def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir, filename, batch_idx=None):
-    """Save model and optimizer state."""
+def save_checkpoint(model, optimizer, scheduler, epoch, val_loss, checkpoint_dir, filename, batch_idx=None, wandb_run_id=None):
+    """Save model, optimizer, and scheduler state."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint = {
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
         'epoch': epoch,
         'val_loss': val_loss,
     }
     if batch_idx is not None:
         checkpoint['batch_idx'] = batch_idx
+    if wandb_run_id is not None:
+        checkpoint['wandb_run_id'] = wandb_run_id
     torch.save(checkpoint, os.path.join(checkpoint_dir, filename))
 
 def load_checkpoint(model, optimizer, checkpoint_path, map_location=None):
-    """Load model and optimizer state from checkpoint."""
+    """Load model and optimizer state from checkpoint. Returns scheduler state dict and wandb run ID separately so they can be restored after their objects are created."""
     checkpoint = torch.load(checkpoint_path, map_location=map_location)
     model.load_state_dict(checkpoint['model_state_dict'])
     if optimizer is not None and 'optimizer_state_dict' in checkpoint:
@@ -136,7 +139,9 @@ def load_checkpoint(model, optimizer, checkpoint_path, map_location=None):
     epoch = checkpoint.get('epoch', 0)
     val_loss = checkpoint.get('val_loss', float('inf'))
     batch_idx = checkpoint.get('batch_idx', None)
-    return epoch, val_loss, batch_idx
+    scheduler_state = checkpoint.get('scheduler_state_dict', None)
+    wandb_run_id = checkpoint.get('wandb_run_id', None)
+    return epoch, val_loss, batch_idx, scheduler_state, wandb_run_id
 
 def collate_fn(batch):
     """Pads MSA sequences dynamically to match batch size."""
@@ -270,11 +275,14 @@ def main(fabric: Fabric):
     start_epoch = 0
     start_batch = 0
     best_val_loss = float('inf')
+    loaded_scheduler_state = None
+    loaded_wandb_run_id = None
     if resume_ckpt_path is not None and os.path.exists(resume_ckpt_path):
         if fabric.is_global_zero:
             print(f"[Checkpoint] Loading checkpoint from {resume_ckpt_path}")
-        loaded_epoch, loaded_val_loss, loaded_batch_idx = load_checkpoint(model, optimizer, resume_ckpt_path, map_location=fabric.device)
-        # If batch_idx is present, resume from that batch in the epoch
+        loaded_epoch, loaded_val_loss, loaded_batch_idx, loaded_scheduler_state, loaded_wandb_run_id = load_checkpoint(
+            model, optimizer, resume_ckpt_path, map_location=fabric.device
+        )
         start_epoch = loaded_epoch
         start_batch = (loaded_batch_idx + 1) if loaded_batch_idx is not None else 0
         best_val_loss = loaded_val_loss
@@ -293,6 +301,10 @@ def main(fabric: Fabric):
         num_warmup_steps=warmup_steps,
         num_training_steps=total_steps,
     )
+    if loaded_scheduler_state is not None:
+        lr_scheduler.load_state_dict(loaded_scheduler_state)
+        if fabric.is_global_zero:
+            print(f"[Checkpoint] Scheduler state restored (last_epoch={lr_scheduler.last_epoch})")
 
     entity = os.environ.get("WANDB_ENTITY", "cophylo_team")
     project = os.environ.get("WANDB_PROJECT", "CoPhyloformer")
@@ -307,11 +319,15 @@ def main(fabric: Fabric):
             if hasattr(model, attr):
                 model_config[attr] = getattr(model, attr)
 
-        # Initialize Weights & Biases
+        # Resume the existing W&B run if we loaded a checkpoint that has a run ID.
+        # WANDB_RUN_ID env var can override (useful if the checkpoint pre-dates run ID saving).
+        wandb_resume_id = os.environ.get("WANDB_RUN_ID", None) or loaded_wandb_run_id
         run = wandb.init(
             entity=entity,
             project=project,
             name=name_experiment,
+            id=wandb_resume_id,
+            resume="must" if wandb_resume_id else "allow",
             job_type="training",
             config={
                 "mode": mode,
@@ -443,11 +459,13 @@ def main(fabric: Fabric):
                     save_checkpoint(
                         model,
                         optimizer,
+                        lr_scheduler,
                         epoch,
                         val_results["val_loss"],
                         checkpoint_dir,
                         ckpt_name,
-                        batch_idx=batch_idx
+                        batch_idx=batch_idx,
+                        wandb_run_id=run.id if run else None,
                     )
                     print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
                     # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
@@ -458,11 +476,13 @@ def main(fabric: Fabric):
                         save_checkpoint(
                             model,
                             optimizer,
+                            lr_scheduler,
                             epoch,
                             best_val_loss,
                             checkpoint_dir,
                             ckpt_name,
-                            batch_idx=batch_idx
+                            batch_idx=batch_idx,
+                            wandb_run_id=run.id if run else None,
                         )
                         print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
 

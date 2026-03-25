@@ -190,7 +190,7 @@ def main(fabric: Fabric):
         if fabric.is_global_zero:
             print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
+    preencoded_dir = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
 
     log("Reading manifest …")

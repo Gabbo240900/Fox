@@ -152,7 +152,7 @@ class MSAEncoder(nn.Module):
     def __init__(
         self,
         hidden_dim=1024,
-        seq_dim=128,
+        seq_dim=256,
         num_layers=8,
         num_heads=8,
         axial_layers=1,
@@ -257,7 +257,7 @@ class Cophyloformer(nn.Module):
     def __init__(
         self,
         hidden_dim=1024,
-        seq_dim=128,
+        seq_dim=256,
         num_layers=8,
         num_heads=8,
         gradient_checkpointing: bool = False,

@@ -116,29 +116,52 @@ class LazyCophyloformerDataset(Dataset):
             "labels": labels,
             "sim_time": sim_time  
         }
-def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir, filename, batch_idx=None):
-    """Save model and optimizer state."""
+def save_checkpoint(fabric, model, optimizer, lr_scheduler, epoch, val_loss, checkpoint_dir, filename, batch_idx=None, wandb_run_id=None):
+    """Save model, optimizer, and scheduler via Fabric (DDP-safe, rank-0 only)."""
     os.makedirs(checkpoint_dir, exist_ok=True)
-    checkpoint = {
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'epoch': epoch,
-        'val_loss': val_loss,
+    state = {
+        "model": model,
+        "optimizer": optimizer,
+        "lr_scheduler": lr_scheduler.state_dict(),
+        "epoch": epoch,
+        "val_loss": val_loss,
     }
     if batch_idx is not None:
-        checkpoint['batch_idx'] = batch_idx
-    torch.save(checkpoint, os.path.join(checkpoint_dir, filename))
+        state["batch_idx"] = batch_idx
+    if wandb_run_id is not None:
+        state["wandb_run_id"] = wandb_run_id
+    fabric.save(os.path.join(checkpoint_dir, filename), state)
 
-def load_checkpoint(model, optimizer, checkpoint_path, map_location=None):
-    """Load model and optimizer state from checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location=map_location)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    if optimizer is not None and 'optimizer_state_dict' in checkpoint:
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    epoch = checkpoint.get('epoch', 0)
-    val_loss = checkpoint.get('val_loss', float('inf'))
-    batch_idx = checkpoint.get('batch_idx', None)
-    return epoch, val_loss, batch_idx
+
+def load_checkpoint(fabric, model, optimizer, lr_scheduler, checkpoint_path):
+    """Load checkpoint, handling both legacy raw-state-dict and Fabric-native formats."""
+    probe = torch.load(checkpoint_path, map_location=fabric.device, weights_only=False)
+
+    if "model_state_dict" in probe:
+        # Legacy format — strip optional DDP 'module.' prefix and load directly
+        sd = {(k[7:] if k.startswith("module.") else k): v
+              for k, v in probe["model_state_dict"].items()}
+        getattr(model, "module", model).load_state_dict(sd)
+        if optimizer is not None and "optimizer_state_dict" in probe:
+            optimizer.load_state_dict(probe["optimizer_state_dict"])
+        if lr_scheduler is not None and "lr_scheduler" in probe:
+            lr_scheduler.load_state_dict(probe["lr_scheduler"])
+        meta = probe
+    else:
+        # Fabric-native format — let Fabric handle DDP-aware model/optimizer loading
+        state = {"model": model, "optimizer": optimizer}
+        meta = fabric.load(checkpoint_path, state)
+        if lr_scheduler is not None and "lr_scheduler" in meta:
+            lr_scheduler.load_state_dict(meta["lr_scheduler"])
+
+    return (
+        meta.get("epoch", 0),
+        meta.get("val_loss", float("inf")),
+        meta.get("batch_idx", None),
+        meta.get("wandb_run_id", None),
+    )
+
+
 
 def collate_fn(batch):
     """Pads MSA sequences dynamically to match batch size."""
@@ -290,26 +313,7 @@ def main(fabric: Fabric):
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)
 
-    # Resume from checkpoint logic
-    checkpoint_dir = "checkpoints"
-    resume_ckpt_path = os.environ.get("RESUME_CKPT", None)
-    start_epoch = 0
-    start_batch = 0
-    best_val_loss = float('inf')
-    if resume_ckpt_path is not None and os.path.exists(resume_ckpt_path):
-        if fabric.is_global_zero:
-            print(f"[Checkpoint] Loading checkpoint from {resume_ckpt_path}")
-        loaded_epoch, loaded_val_loss, loaded_batch_idx = load_checkpoint(model, optimizer, resume_ckpt_path, map_location=fabric.device)
-        # If batch_idx is present, resume from that batch in the epoch
-        start_epoch = loaded_epoch
-        start_batch = (loaded_batch_idx + 1) if loaded_batch_idx is not None else 0
-        best_val_loss = loaded_val_loss
-        if fabric.is_global_zero:
-            print(f"[Checkpoint] Resumed from epoch {loaded_epoch}, best_val_loss {loaded_val_loss}, batch_idx {loaded_batch_idx}")
-
-
-
-    # Scheduler should count *optimizer steps* (not micro-batches)
+    # Scheduler must be created before checkpoint loading so its state can be restored
     steps_per_epoch = math.ceil(len(train_loader) / grad_accum_steps)
     total_steps = epochs * steps_per_epoch
     warmup_steps = int(0.10 * total_steps)
@@ -320,12 +324,33 @@ def main(fabric: Fabric):
         num_training_steps=total_steps,
     )
 
+    # Resume from checkpoint logic
+    checkpoint_dir = "checkpoints"
+    resume_ckpt_path = os.environ.get("RESUME_CKPT", None)
+    start_epoch = 0
+    start_batch = 0
+    best_val_loss = float('inf')
+    wandb_run_id = None
+
+    if resume_ckpt_path is not None and os.path.exists(resume_ckpt_path):
+        if fabric.is_global_zero:
+            print(f"[Checkpoint] Loading checkpoint from {resume_ckpt_path}")
+        loaded_epoch, loaded_val_loss, loaded_batch_idx, loaded_run_id = load_checkpoint(
+            fabric, model, optimizer, lr_scheduler, resume_ckpt_path
+        )
+        start_epoch = loaded_epoch
+        start_batch = (loaded_batch_idx + 1) if loaded_batch_idx is not None else 0
+        best_val_loss = loaded_val_loss
+        wandb_run_id = loaded_run_id
+        if fabric.is_global_zero:
+            print(f"[Checkpoint] Resumed from epoch {loaded_epoch}, best_val_loss {loaded_val_loss}, batch_idx {loaded_batch_idx}")
+
     entity = os.environ.get("WANDB_ENTITY", "cophylo_team")
     project = os.environ.get("WANDB_PROJECT", "CoPhyloformer")
     name_experiment = os.environ.get("WANDB_NAME", "1e-3NoWeightDecay")
-    mode = os.environ.get("WANDB_MODE", "online")  # "online", "offline", or "disabled"
 
     run = None
+    run_id = None
     if fabric.global_rank == 0:
         # Dynamically extract model hyperparameters
         model_config = {}
@@ -333,14 +358,13 @@ def main(fabric: Fabric):
             if hasattr(model, attr):
                 model_config[attr] = getattr(model, attr)
 
-        # Initialize Weights & Biases
-        run = wandb.init(
+        wandb_init_kwargs = dict(
             entity=entity,
             project=project,
             name=name_experiment,
             job_type="training",
+            mode="offline",
             config={
-                "mode": mode,
                 "epochs": epochs,
                 "batch_size": batch_size,
                 "learning_rate": lr,
@@ -353,10 +377,19 @@ def main(fabric: Fabric):
                 "event_loss_weights": event_loss_weights.tolist(),
                 "tail_weight_scale": tail_weight_scale,
                 "model_name": model.__class__.__name__,
-                "dataset_size": len(dataset),  
-                **model_config                 
+                "dataset_size": len(dataset),
+                **model_config
             },
         )
+        if wandb_run_id is not None:
+            # Resume the existing offline run: wandb writes a new local offline dir
+            # with the same ID; `wandb sync` merges them on the server afterwards.
+            wandb_init_kwargs["resume"] = "allow"
+            wandb_init_kwargs["id"] = wandb_run_id
+
+        # Initialize Weights & Biases
+        run = wandb.init(**wandb_init_kwargs)
+        run_id = run.id
 
         # Log total learnable parameters
         num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -476,13 +509,16 @@ def main(fabric: Fabric):
                     })
                     ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
                     save_checkpoint(
+                        fabric,
                         model,
                         optimizer,
+                        lr_scheduler,
                         epoch,
                         val_results["val_loss"],
                         checkpoint_dir,
                         ckpt_name,
-                        batch_idx=batch_idx
+                        batch_idx=batch_idx,
+                        wandb_run_id=run_id,
                     )
                     print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
                     # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
@@ -491,13 +527,16 @@ def main(fabric: Fabric):
                         val_predictions_data = val_results
                         ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
                         save_checkpoint(
+                            fabric,
                             model,
                             optimizer,
+                            lr_scheduler,
                             epoch,
                             best_val_loss,
                             checkpoint_dir,
                             ckpt_name,
-                            batch_idx=batch_idx
+                            batch_idx=batch_idx,
+                            wandb_run_id=run_id,
                         )
                         print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
 

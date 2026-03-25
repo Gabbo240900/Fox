@@ -436,7 +436,7 @@ def main(fabric: Fabric):
             is_accum_step = ((batch_idx + 1) % grad_accum_steps) == 0
             is_last_batch = (batch_idx + 1) == len(train_loader)
             if is_accum_step or is_last_batch:
-                fabric.clip_gradients(model, optimizer, max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0, error_if_nonfinite=False)
                 optimizer.step()
                 lr_scheduler.step()
 

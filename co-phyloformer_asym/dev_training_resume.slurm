@@ -1,16 +1,16 @@
 #!/bin/bash
 
-#SBATCH --job-name=dev_training_resume
+#SBATCH --job-name=20H_resume
 #SBATCH --account=vcu@h100
-#SBATCH --qos=qos_gpu_h100-dev
-#SBATCH --output=error_files/dev_training%j.out
-#SBATCH --error=error_files/dev_training%j.err
+#SBATCH --qos=qos_gpu_h100-t3
+#SBATCH --output=error_files/resume_training%j.out
+#SBATCH --error=error_files/resume_training%j.err
 #SBATCH --constraint=h100
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=24
-#SBATCH --time=2:00:00
+#SBATCH --time=20:00:00
 
 
 
@@ -56,7 +56,7 @@ set -x
 # W&B settings — keep identical to the original run
 export WANDB_ENTITY=cophylo_team
 export WANDB_PROJECT=CoPhyloformer
-export WANDB_NAME=Dev_training_overfitting_asym
+export WANDB_NAME=20H_asym_test
 export WANDB_MODE=offline
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300
@@ -64,7 +64,7 @@ export WANDB__SERVICE_WAIT=300
 # ── RESUME: only line you need to change ────────────────────────────────────
 # Replace with the actual checkpoint you want to resume from.
 # Run ID is read automatically from the checkpoint — no WANDB_RUN_ID needed.
-export RESUME_CKPT="checkpoints/best_overall_val_epoch3_step12000.pth"
+export RESUME_CKPT="checkpoints/val_checkpoint_epoch15_step2439.pth"
 # ────────────────────────────────────────────────────────────────────────────
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"

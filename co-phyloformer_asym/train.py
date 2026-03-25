@@ -211,7 +211,7 @@ def main(fabric: Fabric):
 
     device = fabric.device
     epochs = 500
-    batch_size = 16
+    batch_size = 32
     grad_accum_steps = 4
 
     log("Building data loaders …")
@@ -256,31 +256,37 @@ def main(fabric: Fabric):
     lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
 
-    # # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.
-    # huber_delta = 1.0  # covers the full [0,1] label range quadratically
-    # under_penalty = 4.0
+    # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.
+    huber_delta = 1.0  # covers the full [0,1] label range quadratically
+    # Raised from 2.5 → 4.0: HGT was hitting a ceiling at ~0.2, meaning the model
+    # preferred safe low predictions over risky high ones.  Steeper asymmetry forces
+    # it to reach for higher values.
+    under_penalty = 4.0
 
-    # def asymmetric_huber(pred, target):
-    #     err = target - pred  # positive = underpredicting, negative = overpredicting
-    #     abs_err = err.abs()
-    #     loss = torch.where(
-    #         abs_err < huber_delta,
-    #         0.5 * abs_err ** 2,
-    #         huber_delta * (abs_err - 0.5 * huber_delta),
-    #     )
-    #     weight = torch.where(err > 0,
-    #                          torch.full_like(err, under_penalty),
-    #                          torch.ones_like(err))
-    #     return loss * weight
+    def asymmetric_huber(pred, target):
+        err = target - pred  # positive = underpredicting, negative = overpredicting
+        abs_err = err.abs()
+        loss = torch.where(
+            abs_err < huber_delta,
+            0.5 * abs_err ** 2,
+            huber_delta * (abs_err - 0.5 * huber_delta),
+        )
+        weight = torch.where(err > 0,
+                             torch.full_like(err, under_penalty),
+                             torch.ones_like(err))
+        return loss * weight
 
-    # criterion = asymmetric_huber  # used by validation calls
-    # # Heavily upweight Loss and Duplication: their labels are small so their raw
-    # # Huber values are tiny — without boosting, Speciation/HGT dominate the gradient.
-    # # Restore to [1.0, 2.0, 1.0, 1.0] for production on larger datasets.
-    # event_loss_weights = torch.tensor([1.0, 3.0, 3.0, 3.0], device=device)
-    # tail_weight_scale = 4.0
-    
-    criterion = torch.L1Loss(reduction="none")  # per-sample loss for dynamic weighting
+    criterion = asymmetric_huber  # used by validation calls
+    # Upweight HGT / Loss / Duplication: Speciation already learned well in 5 epochs.
+    # The other three need 3× more gradient signal to escape their mean-prediction basins.
+    # Reset to [1.0, 1.0, 1.0, 1.0] once all four events align with the diagonal.
+    event_loss_weights = torch.tensor([1.0, 3.0, 3.0, 3.0], device=device)
+    tail_weight_scale = 4.0
+    # Soft sum-to-1 regularisation: labels always sum to 1 (frequency distribution),
+    # so we gently encourage outputs to do the same.  lambda_sum=0.05 is intentionally
+    # small — enough to avoid >1 sums without creating the gradient competition that
+    # softmax / a large lambda caused.
+    lambda_sum = 0.05
 
     model = Cophyloformer()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
@@ -364,6 +370,11 @@ def main(fabric: Fabric):
                 "scheduler": "linear_warmup",
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
+                "huber_delta": huber_delta,
+                "under_penalty": under_penalty,
+                "event_loss_weights": event_loss_weights.tolist(),
+                "tail_weight_scale": tail_weight_scale,
+                "lambda_sum": lambda_sum,
                 "model_name": model.__class__.__name__,
                 "dataset_size": len(dataset),  
                 **model_config                 
@@ -441,12 +452,18 @@ def main(fabric: Fabric):
                     row[f"{event}_GT"] = batch["labels"][idx, i].item()
                 all_train_prediction_data.append(row)
 
-            # sum loss for each event without weight 
-            total_loss_tensor = sum(
-                (criterion(outputs[:, i], batch["labels"][:, i])).mean()
+            # Asymmetric Huber: penalises underprediction more than overprediction.
+            # Tail-aware per-sample weighting + per-task reweighting.
+            target_weights = 1.0 + tail_weight_scale * batch["labels"]
+            task_loss = sum(
+                event_loss_weights[i] * (asymmetric_huber(outputs[:, i], batch["labels"][:, i]) * target_weights[:, i]).mean()
                 for i in range(len(event_names))
             )
-            
+            # Soft sum-to-1 penalty: labels are a frequency distribution that sums to 1.
+            # A small coefficient keeps this as a nudge, not a dominant constraint.
+            sum_penalty = (outputs.sum(dim=-1) - 1.0).pow(2).mean()
+            total_loss_tensor = task_loss + lambda_sum * sum_penalty
+
             loss_to_backprop = total_loss_tensor / grad_accum_steps
             
             fabric.backward(loss_to_backprop)
@@ -469,8 +486,9 @@ def main(fabric: Fabric):
                     val_loader,
                     criterion,
                     event_names,
-                    device
-
+                    device,
+                    event_loss_weights=event_loss_weights,
+                    tail_weight_scale=tail_weight_scale,
                 )
                 if fabric.is_global_zero:
                     wandb.log({
@@ -631,6 +649,8 @@ def main(fabric: Fabric):
             criterion,
             event_names,
             device,
+            event_loss_weights=event_loss_weights,
+            tail_weight_scale=tail_weight_scale,
         )
         val_loss = val_results["val_loss"]
         val_mae = val_results["val_mae"]

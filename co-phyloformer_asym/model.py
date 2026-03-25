@@ -152,10 +152,10 @@ class MSAEncoder(nn.Module):
     def __init__(
         self,
         hidden_dim=1024,
-        seq_dim=256,
+        seq_dim=128,
         num_layers=8,
         num_heads=8,
-        axial_layers=3,
+        axial_layers=1,
         leaf_attn_max_leaves=128,
         gradient_checkpointing: bool = False,
     ):
@@ -257,7 +257,7 @@ class Cophyloformer(nn.Module):
     def __init__(
         self,
         hidden_dim=1024,
-        seq_dim=256,
+        seq_dim=128,
         num_layers=8,
         num_heads=8,
         gradient_checkpointing: bool = False,
@@ -281,7 +281,7 @@ class Cophyloformer(nn.Module):
 
         self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
 
-        self.num_cross_layers = 4
+        self.num_cross_layers = 2
         # Bidirectional cross-attention: host→parasite and parasite→host
         self.cross_attn_h2p = nn.ModuleList([
             nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)

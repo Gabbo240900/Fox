@@ -46,19 +46,20 @@ class LazyCophyloformerDataset(Dataset):
     def __init__(self, preencoded_dir, mask_prob=0.1, pt_files=None):
         self.mask_prob = float(mask_prob)
         if pt_files is None:
-            # Read manifest.txt written by filter_data.py — instant on Lustre.
-            # On Lustre, scanning a directory with 1M files via os.scandir/glob
-            # takes many minutes; reading a pre-built text file takes < 1 second.
-            manifest = os.path.join(preencoded_dir, "manifest.txt")
-            if not os.path.exists(manifest):
-                raise FileNotFoundError(
-                    f"manifest.txt not found in {preencoded_dir}.\n"
-                    f"Generate it by running filter_data.py on that directory:\n"
-                    f"  python filter_data.py {preencoded_dir}\n"
-                    f"(dry-run is fine — it always writes the manifest)"
-                )
-            with open(manifest) as f:
-                self.pt_files = [l.strip() for l in f if l.strip()]
+            all_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
+            valid_files = []
+            for pt_path in all_files:
+                try:
+                    sample = torch.load(pt_path, map_location="cpu", weights_only=False)
+                    if len(sample.get("host_msas", {})) == 0:
+                        continue
+                    if len(sample.get("parasite_msas", {})) == 0:
+                        continue
+                    valid_files.append(pt_path)
+                except Exception:
+                    # Corrupt/unreadable file -> skip deterministically
+                    continue
+            self.pt_files = valid_files
         else:
             self.pt_files = list(pt_files)
         self.preencoded_dir = preencoded_dir
@@ -80,8 +81,9 @@ class LazyCophyloformerDataset(Dataset):
             masked[random_mask] = mask_token
             return masked
 
+        # Should never happen thanks to pre-filtering in __init__
         if len(sample.get("host_msas", {})) == 0 or len(sample.get("parasite_msas", {})) == 0:
-            raise ValueError(f"Empty MSAs: {pt_path}")
+            raise ValueError(f"Invalid sample with empty MSAs: {pt_path}")
 
         host_list = list(sample["host_msas"].keys())
         parasite_list = list(sample["parasite_msas"].keys())
@@ -114,24 +116,21 @@ class LazyCophyloformerDataset(Dataset):
             "labels": labels,
             "sim_time": sim_time  
         }
-def save_checkpoint(model, optimizer, scheduler, epoch, val_loss, checkpoint_dir, filename, batch_idx=None, wandb_run_id=None):
-    """Save model, optimizer, and scheduler state."""
+def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir, filename, batch_idx=None):
+    """Save model and optimizer state."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint = {
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(),
         'epoch': epoch,
         'val_loss': val_loss,
     }
     if batch_idx is not None:
         checkpoint['batch_idx'] = batch_idx
-    if wandb_run_id is not None:
-        checkpoint['wandb_run_id'] = wandb_run_id
     torch.save(checkpoint, os.path.join(checkpoint_dir, filename))
 
 def load_checkpoint(model, optimizer, checkpoint_path, map_location=None):
-    """Load model and optimizer state from checkpoint. Returns scheduler state dict and wandb run ID separately so they can be restored after their objects are created."""
+    """Load model and optimizer state from checkpoint."""
     checkpoint = torch.load(checkpoint_path, map_location=map_location)
     model.load_state_dict(checkpoint['model_state_dict'])
     if optimizer is not None and 'optimizer_state_dict' in checkpoint:
@@ -139,9 +138,7 @@ def load_checkpoint(model, optimizer, checkpoint_path, map_location=None):
     epoch = checkpoint.get('epoch', 0)
     val_loss = checkpoint.get('val_loss', float('inf'))
     batch_idx = checkpoint.get('batch_idx', None)
-    scheduler_state = checkpoint.get('scheduler_state_dict', None)
-    wandb_run_id = checkpoint.get('wandb_run_id', None)
-    return epoch, val_loss, batch_idx, scheduler_state, wandb_run_id
+    return epoch, val_loss, batch_idx
 
 def collate_fn(batch):
     """Pads MSA sequences dynamically to match batch size."""
@@ -185,36 +182,41 @@ def encode_sequence(sequence, max_len=500):
     return torch.tensor(encoded, dtype=torch.long)
 
 def main(fabric: Fabric):
-    def log(msg):
-        """Print only from rank 0 to avoid duplicate messages across GPUs."""
-        if fabric.is_global_zero:
-            print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
-
+    # Load Data
     preencoded_dir = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
-
-    log("Reading manifest …")
+    # Build file list once, then create train/val datasets with different masking policies.
     dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0)
-    log(f"Manifest loaded — {len(dataset):,} samples found.")
-
-    log("Splitting train / val …")
+    # Train/Validation Split
     indices = list(range(len(dataset)))
     train_indices, val_indices = train_test_split(
         indices, test_size=0.2, random_state=42, shuffle=True
     )
-    log(f"Split done — {len(train_indices):,} train  |  {len(val_indices):,} val.")
-
-    train_dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.1, pt_files=dataset.pt_files)
-    val_dataset   = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0,  pt_files=dataset.pt_files)
-    train_subset  = torch.utils.data.Subset(train_dataset, train_indices)
-    val_subset    = torch.utils.data.Subset(val_dataset,   val_indices)
-
+    train_dataset = LazyCophyloformerDataset(
+        preencoded_dir,
+        mask_prob=0.1,
+        pt_files=dataset.pt_files
+    )
+    val_dataset = LazyCophyloformerDataset(
+        preencoded_dir,
+        mask_prob=0.0,
+        pt_files=dataset.pt_files
+    )
+    train_subset = torch.utils.data.Subset(train_dataset, train_indices)
+    val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
     device = fabric.device
     epochs = 500
-    batch_size = 32
+
+    batch_size = 4
+
+    # -----------------------------
+    # Gradient accumulation
+    # -----------------------------
     grad_accum_steps = 4
 
-    log("Building data loaders …")
+    # -----------------------------
+    # DDP-safe sampling
+    # -----------------------------
     train_sampler = DistributedSampler(
         train_subset,
         num_replicas=fabric.world_size,
@@ -222,23 +224,27 @@ def main(fabric: Fabric):
         shuffle=True,
         seed=42,
     )
+
     val_sampler = DistributedSampler(
         val_subset,
         num_replicas=fabric.world_size,
         rank=fabric.global_rank,
         shuffle=False,
     )
+
     train_loader = DataLoader(
         train_subset,
         batch_size=batch_size,
         sampler=train_sampler,
-        shuffle=False,
+        shuffle=False,  # IMPORTANT: do not use shuffle with a sampler
         collate_fn=collate_fn,
         num_workers=8,
         persistent_workers=True,
         prefetch_factor=4,
         pin_memory=False,
     )
+
+    # Create validation loader (also sharded for balanced work across ranks)
     val_loader = DataLoader(
         val_subset,
         batch_size=batch_size,
@@ -250,18 +256,15 @@ def main(fabric: Fabric):
         prefetch_factor=2,
         pin_memory=False,
     )
+
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
-    log(f"Data loaders ready — {len(train_loader):,} train batches / epoch.")
 
     lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
     wd = 0
 
     # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.
     huber_delta = 1.0  # covers the full [0,1] label range quadratically
-    # Raised from 2.5 → 4.0: HGT was hitting a ceiling at ~0.2, meaning the model
-    # preferred safe low predictions over risky high ones.  Steeper asymmetry forces
-    # it to reach for higher values.
-    under_penalty = 4.0
+    under_penalty = 2.5
 
     def asymmetric_huber(pred, target):
         err = target - pred  # positive = underpredicting, negative = overpredicting
@@ -277,16 +280,11 @@ def main(fabric: Fabric):
         return loss * weight
 
     criterion = asymmetric_huber  # used by validation calls
-    # Upweight HGT / Loss / Duplication: Speciation already learned well in 5 epochs.
-    # The other three need 3× more gradient signal to escape their mean-prediction basins.
-    # Reset to [1.0, 1.0, 1.0, 1.0] once all four events align with the diagonal.
-    event_loss_weights = torch.tensor([1.0, 3.0, 3.0, 3.0], device=device)
+    # Heavily upweight Loss and Duplication: their labels are small so their raw
+    # Huber values are tiny — without boosting, Speciation/HGT dominate the gradient.
+    # Restore to [1.0, 2.0, 1.0, 1.0] for production on larger datasets.
+    event_loss_weights = torch.tensor([1.0, 1.0, 1.0, 1.0], device=device)
     tail_weight_scale = 4.0
-    # Soft sum-to-1 regularisation: labels always sum to 1 (frequency distribution),
-    # so we gently encourage outputs to do the same.  lambda_sum=0.05 is intentionally
-    # small — enough to avoid >1 sums without creating the gradient competition that
-    # softmax / a large lambda caused.
-    lambda_sum = 0.05
 
     model = Cophyloformer()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
@@ -298,14 +296,11 @@ def main(fabric: Fabric):
     start_epoch = 0
     start_batch = 0
     best_val_loss = float('inf')
-    loaded_scheduler_state = None
-    loaded_wandb_run_id = None
     if resume_ckpt_path is not None and os.path.exists(resume_ckpt_path):
         if fabric.is_global_zero:
             print(f"[Checkpoint] Loading checkpoint from {resume_ckpt_path}")
-        loaded_epoch, loaded_val_loss, loaded_batch_idx, loaded_scheduler_state, loaded_wandb_run_id = load_checkpoint(
-            model, optimizer, resume_ckpt_path, map_location=fabric.device
-        )
+        loaded_epoch, loaded_val_loss, loaded_batch_idx = load_checkpoint(model, optimizer, resume_ckpt_path, map_location=fabric.device)
+        # If batch_idx is present, resume from that batch in the epoch
         start_epoch = loaded_epoch
         start_batch = (loaded_batch_idx + 1) if loaded_batch_idx is not None else 0
         best_val_loss = loaded_val_loss
@@ -324,10 +319,6 @@ def main(fabric: Fabric):
         num_warmup_steps=warmup_steps,
         num_training_steps=total_steps,
     )
-    if loaded_scheduler_state is not None:
-        lr_scheduler.load_state_dict(loaded_scheduler_state)
-        if fabric.is_global_zero:
-            print(f"[Checkpoint] Scheduler state restored (last_epoch={lr_scheduler.last_epoch})")
 
     entity = os.environ.get("WANDB_ENTITY", "cophylo_team")
     project = os.environ.get("WANDB_PROJECT", "CoPhyloformer")
@@ -342,24 +333,12 @@ def main(fabric: Fabric):
             if hasattr(model, attr):
                 model_config[attr] = getattr(model, attr)
 
-        # Resume the existing W&B run if we loaded a checkpoint that has a run ID.
-        # WANDB_RUN_ID env var can override (useful if the checkpoint pre-dates run ID saving).
-        # In offline mode W&B ignores `resume` entirely (and warns), so we only pass it
-        # in online mode. The `id` is always passed when resuming so that offline runs
-        # are stored under the same run ID and merge correctly when synced with `wandb sync`.
-        wandb_resume_id = os.environ.get("WANDB_RUN_ID", None) or loaded_wandb_run_id
-        wandb_init_kwargs = dict(
+        # Initialize Weights & Biases
+        run = wandb.init(
             entity=entity,
             project=project,
             name=name_experiment,
             job_type="training",
-        )
-        if wandb_resume_id:
-            wandb_init_kwargs["id"] = wandb_resume_id
-            if mode != "offline":
-                wandb_init_kwargs["resume"] = "must"
-        run = wandb.init(
-            **wandb_init_kwargs,
             config={
                 "mode": mode,
                 "epochs": epochs,
@@ -371,10 +350,8 @@ def main(fabric: Fabric):
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
                 "huber_delta": huber_delta,
-                "under_penalty": under_penalty,
                 "event_loss_weights": event_loss_weights.tolist(),
                 "tail_weight_scale": tail_weight_scale,
-                "lambda_sum": lambda_sum,
                 "model_name": model.__class__.__name__,
                 "dataset_size": len(dataset),  
                 **model_config                 
@@ -403,12 +380,12 @@ def main(fabric: Fabric):
     val_predictions_data = []
     best_step_predictions = None
 
-    log("All setup complete — starting training.")
     # Training loop over all batches per epoch (no micro-epochs)
     for epoch in range(start_epoch, epochs):
         # Ensure each epoch uses a different (but synchronized) shuffle order across ranks
         train_sampler.set_epoch(epoch)
-        val_checkpoints = {int(p * len(train_loader)) for p in [0.10, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]}
+        effective_steps_per_epoch = len(train_loader) // grad_accum_steps
+        val_checkpoints = {int(p * effective_steps_per_epoch) for p in [0.10, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]}
         num_events = len(event_names)
         sum_abs_err = torch.zeros(num_events, device=device)
         sum_sq_err  = torch.zeros(num_events, device=device)
@@ -455,14 +432,10 @@ def main(fabric: Fabric):
             # Asymmetric Huber: penalises underprediction more than overprediction.
             # Tail-aware per-sample weighting + per-task reweighting.
             target_weights = 1.0 + tail_weight_scale * batch["labels"]
-            task_loss = sum(
+            total_loss_tensor = sum(
                 event_loss_weights[i] * (asymmetric_huber(outputs[:, i], batch["labels"][:, i]) * target_weights[:, i]).mean()
                 for i in range(len(event_names))
             )
-            # Soft sum-to-1 penalty: labels are a frequency distribution that sums to 1.
-            # A small coefficient keeps this as a nudge, not a dominant constraint.
-            sum_penalty = (outputs.sum(dim=-1) - 1.0).pow(2).mean()
-            total_loss_tensor = task_loss + lambda_sum * sum_penalty
 
             loss_to_backprop = total_loss_tensor / grad_accum_steps
             
@@ -505,13 +478,11 @@ def main(fabric: Fabric):
                     save_checkpoint(
                         model,
                         optimizer,
-                        lr_scheduler,
                         epoch,
                         val_results["val_loss"],
                         checkpoint_dir,
                         ckpt_name,
-                        batch_idx=batch_idx,
-                        wandb_run_id=run.id if run else None,
+                        batch_idx=batch_idx
                     )
                     print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
                     # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
@@ -522,13 +493,11 @@ def main(fabric: Fabric):
                         save_checkpoint(
                             model,
                             optimizer,
-                            lr_scheduler,
                             epoch,
                             best_val_loss,
                             checkpoint_dir,
                             ckpt_name,
-                            batch_idx=batch_idx,
-                            wandb_run_id=run.id if run else None,
+                            batch_idx=batch_idx
                         )
                         print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
 
@@ -786,7 +755,7 @@ if __name__ == "__main__":
         devices="auto",
         precision="bf16-mixed",
         strategy=DDPStrategy(
-            find_unused_parameters=False,
+            find_unused_parameters=True,
         )
     )
     fabric.launch(main)

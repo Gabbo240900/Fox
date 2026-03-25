@@ -7,6 +7,8 @@ def run_full_validation(
     criterion,
     event_names,
     device,
+    event_loss_weights=None,
+    tail_weight_scale=1.0,
 ):
     model.eval()
     val_loss = 0.0
@@ -17,6 +19,10 @@ def run_full_validation(
     val_sum_smape = torch.zeros(len(event_names), device=device)
     running_min_nonzero = torch.full((len(event_names),), float('inf'), device=device)
     val_sample_count = 0
+    if event_loss_weights is None:
+        event_loss_weights = torch.ones(len(event_names), device=device)
+    else:
+        event_loss_weights = event_loss_weights.to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
         for batch in val_loader:
@@ -34,7 +40,11 @@ def run_full_validation(
                 batch['sim_time']  
             )
 
-            loss = criterion(outputs, batch["labels"])
+            target_weights = 1.0 + tail_weight_scale * batch["labels"]
+            loss = sum(
+                event_loss_weights[i] * (criterion(outputs[:, i], batch["labels"][:, i]) * target_weights[:, i]).mean()
+                for i in range(len(event_names))
+            )
 
             preds = outputs
             labels = batch["labels"]

@@ -190,7 +190,7 @@ def main(fabric: Fabric):
         if fabric.is_global_zero:
             print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded/"
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
 
     log("Reading manifest …")
@@ -210,7 +210,7 @@ def main(fabric: Fabric):
     val_subset    = torch.utils.data.Subset(val_dataset,   val_indices)
 
     device = fabric.device
-    epochs = 15
+    epochs = 500
     batch_size = 16
     grad_accum_steps = 4
 
@@ -254,16 +254,33 @@ def main(fabric: Fabric):
     log(f"Data loaders ready — {len(train_loader):,} train batches / epoch.")
 
     lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
-    wd = 1e-4
+    wd = 0
 
-    def soft_cross_entropy(pred, target):
-        """KL divergence loss for softmax outputs with soft targets.
-        pred: (B, 4) softmax probabilities; target: (B, 4) event frequencies.
-        Labels are normalized to sum to 1 in case they don't exactly."""
-        target_norm = target / (target.sum(dim=-1, keepdim=True) + 1e-8)
-        return -(target_norm * torch.log(pred + 1e-8)).sum(dim=-1).mean()
+    # # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.
+    # huber_delta = 1.0  # covers the full [0,1] label range quadratically
+    # under_penalty = 4.0
 
-    criterion = soft_cross_entropy
+    # def asymmetric_huber(pred, target):
+    #     err = target - pred  # positive = underpredicting, negative = overpredicting
+    #     abs_err = err.abs()
+    #     loss = torch.where(
+    #         abs_err < huber_delta,
+    #         0.5 * abs_err ** 2,
+    #         huber_delta * (abs_err - 0.5 * huber_delta),
+    #     )
+    #     weight = torch.where(err > 0,
+    #                          torch.full_like(err, under_penalty),
+    #                          torch.ones_like(err))
+    #     return loss * weight
+
+    # criterion = asymmetric_huber  # used by validation calls
+    # # Heavily upweight Loss and Duplication: their labels are small so their raw
+    # # Huber values are tiny — without boosting, Speciation/HGT dominate the gradient.
+    # # Restore to [1.0, 2.0, 1.0, 1.0] for production on larger datasets.
+    # event_loss_weights = torch.tensor([1.0, 3.0, 3.0, 3.0], device=device)
+    # tail_weight_scale = 4.0
+    
+    criterion = torch.L1Loss(reduction="none")  # per-sample loss for dynamic weighting
 
     model = Cophyloformer()
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
@@ -347,7 +364,6 @@ def main(fabric: Fabric):
                 "scheduler": "linear_warmup",
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
-                "loss": "soft_cross_entropy",
                 "model_name": model.__class__.__name__,
                 "dataset_size": len(dataset),  
                 **model_config                 
@@ -381,8 +397,7 @@ def main(fabric: Fabric):
     for epoch in range(start_epoch, epochs):
         # Ensure each epoch uses a different (but synchronized) shuffle order across ranks
         train_sampler.set_epoch(epoch)
-        effective_steps_per_epoch = len(train_loader) // grad_accum_steps
-        val_checkpoints = {int(p * effective_steps_per_epoch) for p in [0.10, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]}
+        val_checkpoints = {int(p * len(train_loader)) for p in [0.10, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]}
         num_events = len(event_names)
         sum_abs_err = torch.zeros(num_events, device=device)
         sum_sq_err  = torch.zeros(num_events, device=device)
@@ -426,8 +441,12 @@ def main(fabric: Fabric):
                     row[f"{event}_GT"] = batch["labels"][idx, i].item()
                 all_train_prediction_data.append(row)
 
-            total_loss_tensor = criterion(outputs, batch["labels"])
-
+            # sum loss for each event without weight 
+            total_loss_tensor = sum(
+                (criterion(outputs[:, i], batch["labels"][:, i])).mean()
+                for i in range(len(event_names))
+            )
+            
             loss_to_backprop = total_loss_tensor / grad_accum_steps
             
             fabric.backward(loss_to_backprop)
@@ -436,7 +455,7 @@ def main(fabric: Fabric):
             is_accum_step = ((batch_idx + 1) % grad_accum_steps) == 0
             is_last_batch = (batch_idx + 1) == len(train_loader)
             if is_accum_step or is_last_batch:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0, error_if_nonfinite=False)
+                fabric.clip_gradients(model, optimizer, max_norm=1.0)
                 optimizer.step()
                 lr_scheduler.step()
 
@@ -450,7 +469,8 @@ def main(fabric: Fabric):
                     val_loader,
                     criterion,
                     event_names,
-                    device,
+                    device
+
                 )
                 if fabric.is_global_zero:
                     wandb.log({

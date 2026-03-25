@@ -152,7 +152,7 @@ class MSAEncoder(nn.Module):
     def __init__(
         self,
         hidden_dim=1024,
-        seq_dim=128,
+        seq_dim=256,
         num_layers=8,
         num_heads=8,
         axial_layers=3,
@@ -257,7 +257,7 @@ class Cophyloformer(nn.Module):
     def __init__(
         self,
         hidden_dim=1024,
-        seq_dim=128,
+        seq_dim=256,
         num_layers=8,
         num_heads=8,
         gradient_checkpointing: bool = False,
@@ -334,6 +334,7 @@ class Cophyloformer(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_dim, 4),
         )
+
     def forward(self, host_msa, parasite_msa, mappings, sim_time):
         # Encode host and parasite MSAs
         host_emb, host_cls = self.host_encoder(host_msa)          # (B, N+1, D), (B, D)
@@ -434,4 +435,4 @@ class Cophyloformer(nn.Module):
         # are not suppressed by Speciation. Switch back to softmax for production
         # once the model overfits all 4 events reliably.
         logits = self.event_head(attended_pairs)          # (B, 4)
-        return torch.softmax(logits, dim=-1)              # (B, 4) — sums to 1
+        return torch.sigmoid(logits)                      # (B, 4)

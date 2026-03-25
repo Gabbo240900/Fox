@@ -116,8 +116,8 @@ class LazyCophyloformerDataset(Dataset):
             "labels": labels,
             "sim_time": sim_time  
         }
-def save_checkpoint(fabric, model, optimizer, lr_scheduler, epoch, val_loss, checkpoint_dir, filename, batch_idx=None, wandb_run_id=None):
-    """Save model, optimizer, and scheduler via Fabric (DDP-safe, rank-0 only)."""
+def save_checkpoint(fabric, model, optimizer, lr_scheduler, epoch, val_loss, checkpoint_dir, filename, batch_idx=None, wandb_run_id=None, history=None):
+    """Save model, optimizer, scheduler, and optional metric history via Fabric (DDP-safe, rank-0 only)."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     state = {
         "model": model,
@@ -130,6 +130,8 @@ def save_checkpoint(fabric, model, optimizer, lr_scheduler, epoch, val_loss, che
         state["batch_idx"] = batch_idx
     if wandb_run_id is not None:
         state["wandb_run_id"] = wandb_run_id
+    if history is not None:
+        state["history"] = history
     fabric.save(os.path.join(checkpoint_dir, filename), state)
 
 
@@ -159,6 +161,7 @@ def load_checkpoint(fabric, model, optimizer, lr_scheduler, checkpoint_path):
         meta.get("val_loss", float("inf")),
         meta.get("batch_idx", None),
         meta.get("wandb_run_id", None),
+        meta.get("history", None),
     )
 
 
@@ -332,16 +335,42 @@ def main(fabric: Fabric):
     best_val_loss = float('inf')
     wandb_run_id = None
 
+    # History lists — initialised empty; overwritten from checkpoint on resume so
+    # end-of-training plots always cover the full run, not just the resumed portion.
+    epoch_losses = []
+    mae_history = []
+    mse_history = []
+    mre_history = []
+    smape_history = []
+    val_mae_history = []
+    val_mse_history = []
+    val_mre_history = []
+    val_smape_history = []
+    val_loss_history = []
+
     if resume_ckpt_path is not None and os.path.exists(resume_ckpt_path):
         if fabric.is_global_zero:
             print(f"[Checkpoint] Loading checkpoint from {resume_ckpt_path}")
-        loaded_epoch, loaded_val_loss, loaded_batch_idx, loaded_run_id = load_checkpoint(
+        loaded_epoch, loaded_val_loss, loaded_batch_idx, loaded_run_id, loaded_history = load_checkpoint(
             fabric, model, optimizer, lr_scheduler, resume_ckpt_path
         )
         start_epoch = loaded_epoch
         start_batch = (loaded_batch_idx + 1) if loaded_batch_idx is not None else 0
         best_val_loss = loaded_val_loss
         wandb_run_id = loaded_run_id
+        if loaded_history is not None:
+            epoch_losses      = loaded_history.get("epoch_losses",      [])
+            mae_history       = loaded_history.get("mae_history",       [])
+            mse_history       = loaded_history.get("mse_history",       [])
+            mre_history       = loaded_history.get("mre_history",       [])
+            smape_history     = loaded_history.get("smape_history",     [])
+            val_mae_history   = loaded_history.get("val_mae_history",   [])
+            val_mse_history   = loaded_history.get("val_mse_history",   [])
+            val_mre_history   = loaded_history.get("val_mre_history",   [])
+            val_smape_history = loaded_history.get("val_smape_history", [])
+            val_loss_history  = loaded_history.get("val_loss_history",  [])
+            if fabric.is_global_zero:
+                print(f"[Checkpoint] Restored metric history ({len(epoch_losses)} epochs)")
         if fabric.is_global_zero:
             print(f"[Checkpoint] Resumed from epoch {loaded_epoch}, best_val_loss {loaded_val_loss}, batch_idx {loaded_batch_idx}")
 
@@ -399,26 +428,13 @@ def main(fabric: Fabric):
         wandb.watch(getattr(model, "module", model), log="all", log_freq=100)
 
 
-    epoch_losses = []
-    mae_history = []
-    mse_history = []
-    mre_history = []
-    smape_history = []
-    val_mae_history = []
-    val_mse_history = []
-    val_mre_history = []
-    val_smape_history = []
-    val_loss_history = []
-
-    val_predictions_data = []
-    best_step_predictions = None
-
     # Training loop over all batches per epoch (no micro-epochs)
     for epoch in range(start_epoch, epochs):
         # Ensure each epoch uses a different (but synchronized) shuffle order across ranks
         train_sampler.set_epoch(epoch)
-        effective_steps_per_epoch = len(train_loader) // grad_accum_steps
-        val_checkpoints = {int(p * effective_steps_per_epoch) for p in [0.10, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]}
+        effective_steps_per_epoch = len(train_loader)
+        # Trigger validation + checkpoint at every 10 % of optimizer steps (10 %, 20 %, … 90 %)
+        val_checkpoints = {int(pct / 10 * effective_steps_per_epoch) for pct in range(1, 10)}
         num_events = len(event_names)
         sum_abs_err = torch.zeros(num_events, device=device)
         sum_sq_err  = torch.zeros(num_events, device=device)
@@ -507,6 +523,19 @@ def main(fabric: Fabric):
                         **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
                         **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))}
                     })
+                    # History at mid-epoch contains all fully completed epochs so far
+                    _mid_history = {
+                        "epoch_losses":      epoch_losses,
+                        "mae_history":       mae_history,
+                        "mse_history":       mse_history,
+                        "mre_history":       mre_history,
+                        "smape_history":     smape_history,
+                        "val_mae_history":   val_mae_history,
+                        "val_mse_history":   val_mse_history,
+                        "val_mre_history":   val_mre_history,
+                        "val_smape_history": val_smape_history,
+                        "val_loss_history":  val_loss_history,
+                    }
                     ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
                     save_checkpoint(
                         fabric,
@@ -519,12 +548,12 @@ def main(fabric: Fabric):
                         ckpt_name,
                         batch_idx=batch_idx,
                         wandb_run_id=run_id,
+                        history=_mid_history,
                     )
                     print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
                     # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
                     if val_results["val_loss"] < best_val_loss:
                         best_val_loss = val_results["val_loss"]
-                        val_predictions_data = val_results
                         ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
                         save_checkpoint(
                             fabric,
@@ -537,6 +566,7 @@ def main(fabric: Fabric):
                             ckpt_name,
                             batch_idx=batch_idx,
                             wandb_run_id=run_id,
+                            history=_mid_history,
                         )
                         print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
 
@@ -688,6 +718,53 @@ def main(fabric: Fabric):
                 "epoch": epoch + 1,
             })
 
+        # Save end-of-epoch checkpoint (allows clean resume from the start of the next epoch)
+        if fabric.is_global_zero:
+            _history = {
+                "epoch_losses":      epoch_losses,
+                "mae_history":       mae_history,
+                "mse_history":       mse_history,
+                "mre_history":       mre_history,
+                "smape_history":     smape_history,
+                "val_mae_history":   val_mae_history,
+                "val_mse_history":   val_mse_history,
+                "val_mre_history":   val_mre_history,
+                "val_smape_history": val_smape_history,
+                "val_loss_history":  val_loss_history,
+            }
+            save_checkpoint(
+                fabric,
+                model,
+                optimizer,
+                lr_scheduler,
+                epoch + 1,  # store next epoch so resume skips straight to it
+                val_loss,
+                checkpoint_dir,
+                f"epoch_{epoch+1}_end.pth",
+                batch_idx=None,
+                wandb_run_id=run_id,
+                history=_history,
+            )
+            print(f"[Checkpoint] Saved end-of-epoch checkpoint: epoch_{epoch+1}_end.pth")
+
+            # Also update best checkpoint if end-of-epoch val is the best so far
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                save_checkpoint(
+                    fabric,
+                    model,
+                    optimizer,
+                    lr_scheduler,
+                    epoch + 1,
+                    best_val_loss,
+                    checkpoint_dir,
+                    f"best_overall_val_epoch{epoch+1}_end.pth",
+                    batch_idx=None,
+                    wandb_run_id=run_id,
+                    history=_history,
+                )
+                print(f"[Checkpoint] New BEST validation loss at end of epoch {epoch+1}: {best_val_loss:.6f}")
+
         model.train()
 
     if fabric.is_global_zero:
@@ -755,11 +832,8 @@ def main(fabric: Fabric):
 
         print(f"Final predictions saved to {output_path}")
 
-
         # --- Combined Train + Val Scatter Plots (Pred vs GT) ---
-        val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
-
-
+        # val_preds_tensor / val_labels_tensor already computed above — reuse them
         plot_images = {"plots/loss_curve": wandb.Image("combined_loss.png")}
         for j, event in enumerate(event_names):
             fname = f"combined_label_vs_pred_{event.lower()}.png"

@@ -64,7 +64,7 @@ export WANDB__SERVICE_WAIT=300
 # ── RESUME: only line you need to change ────────────────────────────────────
 # Replace with the actual checkpoint you want to resume from.
 # Run ID is read automatically from the checkpoint — no WANDB_RUN_ID needed.
-export RESUME_CKPT="checkpoints/val_checkpoint_epoch15_step2439.pth"
+export RESUME_CKPT="checkpoints/val_checkpoint_epoch1_step21687.pth"
 # ────────────────────────────────────────────────────────────────────────────
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"

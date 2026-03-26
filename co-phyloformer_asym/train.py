@@ -544,6 +544,9 @@ def main(fabric: Fabric):
                         wandb_run_id=run_id,
                         history=_mid_history,
                     )
+                    pct_done = int(round(current_step / effective_steps_per_epoch * 100))
+                    mae_str = " | ".join(f"{event_names[i]}: {val_results['val_mae'][i]:.4f}" for i in range(len(event_names)))
+                    print(f"[Val {pct_done:3d}%] epoch {epoch+1} step {current_step}/{effective_steps_per_epoch} | val_loss: {val_results['val_loss']:.6f} | MAE: {mae_str}")
                     print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
                     # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
                     if val_results["val_loss"] < best_val_loss:

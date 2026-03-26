@@ -23,9 +23,7 @@ from validation import run_full_validation, compute_val_predictions
 import glob
 import math
 
-# BEST CONFIGURATION SO FAR FOR SMALL DATASETS
-# Log host switch 
-#try new overfitting example again 
+# CONFIGURATION FOR 1M DATASET (generalization run)
 
 torch.backends.cuda.enable_flash_sdp(False)
 torch.backends.cuda.enable_mem_efficient_sdp(False)
@@ -220,7 +218,7 @@ def main(fabric: Fabric):
     )
     train_dataset = LazyCophyloformerDataset(
         preencoded_dir,
-        mask_prob=0.1,
+        mask_prob=0.15,
         pt_files=dataset.pt_files
     )
     val_dataset = LazyCophyloformerDataset(
@@ -231,14 +229,14 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(train_dataset, train_indices)
     val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
     device = fabric.device
-    epochs = 100
+    epochs = 20
 
-    batch_size = 4
+    batch_size = 8
 
     # -----------------------------
     # Gradient accumulation
     # -----------------------------
-    grad_accum_steps = 4
+    grad_accum_steps = 8
 
     # -----------------------------
     # DDP-safe sampling
@@ -285,8 +283,8 @@ def main(fabric: Fabric):
 
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 1e-4 # lower learning rate (5e-5, or 1e-5).
-    wd = 0
+    lr = 3e-4
+    wd = 0.01
 
     # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.
     huber_delta = 1.0  # covers the full [0,1] label range quadratically
@@ -306,20 +304,17 @@ def main(fabric: Fabric):
         return loss * weight
 
     criterion = asymmetric_huber  # used by validation calls
-    # Heavily upweight Loss and Duplication: their labels are small so their raw
-    # Huber values are tiny — without boosting, Speciation/HGT dominate the gradient.
-    # Restore to [1.0, 2.0, 1.0, 1.0] for production on larger datasets.
-    event_loss_weights = torch.tensor([1.0, 1.0, 1.0, 1.0], device=device)
-    tail_weight_scale = 4.0
+    event_loss_weights = torch.tensor([1.0, 2.0, 1.0, 1.0], device=device)
+    tail_weight_scale = 1.0
 
-    model = Cophyloformer()
+    model = Cophyloformer(gradient_checkpointing=True)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)
 
     # Scheduler must be created before checkpoint loading so its state can be restored
     steps_per_epoch = math.ceil(len(train_loader) / grad_accum_steps)
     total_steps = epochs * steps_per_epoch
-    warmup_steps = int(0.10 * total_steps)
+    warmup_steps = 2000
 
     lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer,

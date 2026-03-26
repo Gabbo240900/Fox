@@ -169,7 +169,7 @@ class MSAEncoder(nn.Module):
         # MSA-Transformer-style axial attention blocks BEFORE pooling (run at seq_dim)
         self.axial_layers = int(axial_layers)
         self.axial_blocks = nn.ModuleList([
-            AxialMSABlockLite(seq_dim, seq_heads, ff_mult=4, dropout=0.0, leaf_attn_max_leaves=leaf_attn_max_leaves)
+            AxialMSABlockLite(seq_dim, seq_heads, ff_mult=4, dropout=0.1, leaf_attn_max_leaves=leaf_attn_max_leaves)
             for _ in range(self.axial_layers)
         ])
 
@@ -279,16 +279,16 @@ class Cophyloformer(nn.Module):
             gradient_checkpointing=gradient_checkpointing,
         )
 
-        self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+        self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True, dropout=0.1)
 
         self.num_cross_layers = 2
         # Bidirectional cross-attention: host→parasite and parasite→host
         self.cross_attn_h2p = nn.ModuleList([
-            nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+            nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True, dropout=0.1)
             for _ in range(self.num_cross_layers)
         ])
         self.cross_attn_p2h = nn.ModuleList([
-            nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+            nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True, dropout=0.1)
             for _ in range(self.num_cross_layers)
         ])
         # Pre-norm + FFN for each direction

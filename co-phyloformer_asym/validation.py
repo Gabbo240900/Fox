@@ -1,5 +1,4 @@
 import torch
-# BEST CONFIGURATION SO FAR FOR SMALL DATASETS
 def run_full_validation(
     fabric,
     model,

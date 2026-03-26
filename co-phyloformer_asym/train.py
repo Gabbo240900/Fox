@@ -428,8 +428,15 @@ def main(fabric: Fabric):
         # Ensure each epoch uses a different (but synchronized) shuffle order across ranks
         train_sampler.set_epoch(epoch)
         effective_steps_per_epoch = len(train_loader)
-        # Trigger validation + checkpoint at every 10 % of optimizer steps (10 %, 20 %, … 90 %)
-        val_checkpoints = {int(pct / 10 * effective_steps_per_epoch) for pct in range(1, 10)}
+        # Number of optimizer (weight-update) steps this epoch
+        effective_opt_steps_per_epoch = math.ceil(effective_steps_per_epoch / grad_accum_steps)
+        # Trigger validation at every 10 % of *optimizer* steps (10 %, 20 %, … 100 %)
+        # Stored as the batch_idx+1 value at which the corresponding opt-step fires.
+        val_checkpoint_opt_steps = {
+            int(math.ceil(pct / 10 * effective_opt_steps_per_epoch))
+            for pct in range(1, 11)          # 1..10 → 10 % … 100 %
+        }
+        optimizer_step_count = 0
         num_events = len(event_names)
         sum_abs_err = torch.zeros(num_events, device=device)
         sum_sq_err  = torch.zeros(num_events, device=device)
@@ -491,9 +498,10 @@ def main(fabric: Fabric):
                 fabric.clip_gradients(model, optimizer, max_norm=1.0)
                 optimizer.step()
                 lr_scheduler.step()
+                optimizer_step_count += 1
 
             current_step = batch_idx + 1
-            if current_step in val_checkpoints:
+            if optimizer_step_count in val_checkpoint_opt_steps:
                 # IMPORTANT: run validation on ALL ranks so any all_reduce/barrier inside
                 # run_full_validation does not hang. Only rank0 logs/saves.
                 val_results = run_full_validation(
@@ -506,11 +514,24 @@ def main(fabric: Fabric):
                     event_loss_weights=event_loss_weights,
                     tail_weight_scale=tail_weight_scale,
                 )
+                # Consume this opt-step so it cannot fire again on the next batch
+                val_checkpoint_opt_steps.discard(optimizer_step_count)
                 if fabric.is_global_zero:
+                    global_opt_step = epoch * effective_opt_steps_per_epoch + optimizer_step_count
+                    pct_done = int(round(optimizer_step_count / effective_opt_steps_per_epoch * 100))
+                    mae_str = " | ".join(
+                        f"{event_names[i]}: {val_results['val_mae'][i]:.4f}"
+                        for i in range(len(event_names))
+                    )
+                    print(
+                        f"\n[Val {pct_done:3d}%] epoch {epoch+1}  "
+                        f"opt-step {optimizer_step_count}/{effective_opt_steps_per_epoch}  "
+                        f"val_loss: {val_results['val_loss']:.6f}  MAE → {mae_str}"
+                    )
                     wandb.log({
                         "train/loss_step": total_loss_tensor.item(),
                         "lr": optimizer.param_groups[0]['lr'],
-                        "step": epoch * (len(train_loader) // grad_accum_steps + (1 if (len(train_loader) % grad_accum_steps) else 0)) + (batch_idx // grad_accum_steps),
+                        "step": global_opt_step,
                         "val/loss_step": val_results["val_loss"],
                         **{f"val/MAE_step/{event_names[i]}": val_results["val_mae"][i] for i in range(len(event_names))},
                         **{f"val/MSE_step/{event_names[i]}": val_results["val_mse"][i] for i in range(len(event_names))},
@@ -544,9 +565,6 @@ def main(fabric: Fabric):
                         wandb_run_id=run_id,
                         history=_mid_history,
                     )
-                    pct_done = int(round(current_step / effective_steps_per_epoch * 100))
-                    mae_str = " | ".join(f"{event_names[i]}: {val_results['val_mae'][i]:.4f}" for i in range(len(event_names)))
-                    print(f"[Val {pct_done:3d}%] epoch {epoch+1} step {current_step}/{effective_steps_per_epoch} | val_loss: {val_results['val_loss']:.6f} | MAE: {mae_str}")
                     print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
                     # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
                     if val_results["val_loss"] < best_val_loss:

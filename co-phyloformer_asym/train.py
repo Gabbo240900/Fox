@@ -441,7 +441,6 @@ def main(fabric: Fabric):
         sum_rel_err = torch.zeros(num_events, device=device)
         sum_smape   = torch.zeros(num_events, device=device)
         sample_count = 0
-        running_min_nonzero = torch.full((num_events,), float('inf'), device=device)
         all_train_prediction_data = []
         if fabric.global_rank == 0:
             print(f"\nEpoch {epoch+1}/{epochs}")
@@ -581,15 +580,8 @@ def main(fabric: Fabric):
                 sq_err  = (preds - labels).pow(2)
                 labels_abs = labels.abs()
 
-                safe_labels = torch.where(labels_abs > 0, labels_abs, torch.full_like(labels_abs, float('inf')))
-                batch_min = torch.amin(safe_labels, dim=0)
-                running_min_nonzero = torch.minimum(running_min_nonzero, batch_min)
-
-                fallback_eps = torch.finfo(labels.dtype).eps
-                eps_vec = torch.where(torch.isfinite(running_min_nonzero), running_min_nonzero * 1e-2, torch.full_like(running_min_nonzero, fallback_eps))
-
-                rel_err = abs_err / (labels_abs + eps_vec)
-                smape   = 2 * abs_err / (preds.abs() + labels_abs + eps_vec)
+                rel_err = abs_err / (labels_abs + 1e-8)
+                smape   = 2 * abs_err / (preds.abs() + labels_abs + 1e-8)
 
                 current_step = batch_idx + 1
                 if current_step in val_checkpoints:

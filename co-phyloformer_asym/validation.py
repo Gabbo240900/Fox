@@ -17,7 +17,6 @@ def run_full_validation(
     val_sum_sq = torch.zeros(len(event_names), device=device)
     val_sum_rel = torch.zeros(len(event_names), device=device)
     val_sum_smape = torch.zeros(len(event_names), device=device)
-    running_min_nonzero = torch.full((len(event_names),), float('inf'), device=device)
     val_sample_count = 0
     if event_loss_weights is None:
         event_loss_weights = torch.ones(len(event_names), device=device)
@@ -55,16 +54,9 @@ def run_full_validation(
             abs_err = (preds - labels).abs()
             labels_abs = labels.abs()
             sq_err  = abs_err ** 2
-            
-            safe_labels = torch.where(labels_abs > 0, labels_abs, torch.full_like(labels_abs, float('inf')))
-            batch_min = torch.amin(safe_labels, dim=0)
-            running_min_nonzero = torch.minimum(running_min_nonzero, batch_min)
 
-            fallback_eps = torch.finfo(labels.dtype).eps
-            eps_vec = torch.where(torch.isfinite(running_min_nonzero), running_min_nonzero * 1e-2, torch.full_like(running_min_nonzero, fallback_eps))
-
-            rel_err = abs_err / (labels_abs + eps_vec)
-            smape = 2 * abs_err / (preds.abs() + labels.abs() + 1e-8)
+            rel_err = abs_err / (labels_abs + 1e-8)
+            smape = 2 * abs_err / (preds.abs() + labels_abs + 1e-8)
 
             val_sum_abs += abs_err.sum(dim=0)
             val_sum_sq  += sq_err.sum(dim=0)
@@ -95,6 +87,8 @@ def run_full_validation(
     val_mse = (val_sum_sq / denom).cpu().tolist()
     val_mre = (val_sum_rel / denom).cpu().tolist()
     val_smape = (val_sum_smape / denom).cpu().tolist()
+
+    model.train()
 
     return {
         "val_loss": val_loss,

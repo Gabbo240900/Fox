@@ -599,8 +599,7 @@ def main(fabric: Fabric):
                 rel_err = abs_err / (labels_abs + 1e-8)
                 smape   = 2 * abs_err / (preds.abs() + labels_abs + 1e-8)
 
-                current_step = batch_idx + 1
-                if current_step in val_checkpoints:
+                if optimizer_step_count in val_checkpoint_opt_steps:
                     batch_mae   = abs_err.mean(dim=0).detach().cpu().tolist()
                     batch_mse   = sq_err.mean(dim=0).detach().cpu().tolist()
                     batch_mre   = rel_err.mean(dim=0).detach().cpu().tolist()

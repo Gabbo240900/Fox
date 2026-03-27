@@ -164,6 +164,30 @@ def load_checkpoint(fabric, model, optimizer, lr_scheduler, checkpoint_path):
 
 
 
+def jukes_cantor_dist(msa: torch.Tensor) -> torch.Tensor:
+    """
+    Compute pairwise Jukes-Cantor distances from a padded MSA token tensor.
+
+    msa: [N, S]  int token ids  (PAD = 22)
+    Returns: [N, N] float distance matrix (symmetric, zero diagonal).
+
+    Runs on CPU inside collate workers — the loop over pairs is fast for
+    typical N ≤ 50 leaves.  The distance is clamped before log to avoid NaN.
+    """
+    N, S = msa.shape
+    dist = torch.zeros(N, N, dtype=torch.float32)
+    valid = (msa != 22)                  # [N, S]  True = real residue
+    for i in range(N):
+        for j in range(i + 1, N):
+            v = valid[i] & valid[j]      # [S]
+            n_v = v.sum().clamp(min=1).float()
+            p   = ((msa[i] != msa[j]) & v).float().sum() / n_v
+            p   = p.clamp(0.0, 0.74)    # keep argument of log > 0
+            d   = -0.75 * torch.log(1.0 - (4.0 / 3.0) * p)
+            dist[i, j] = dist[j, i] = d
+    return dist
+
+
 def collate_fn(batch):
     """Pads MSA sequences dynamically to match batch size."""
     # After dataset pre-filtering, no element should be None.
@@ -184,13 +208,19 @@ def collate_fn(batch):
     host_msas = torch.stack(host_msas)
     parasite_msas = torch.stack(parasite_msas)
     
-    return {
-        "host_msa": host_msas,
+    out = {
+        "host_msa":     host_msas,
         "parasite_msa": parasite_msas,
-        "labels": labels,
-        "mappings": mappings,  
-        "sim_time": sim_time,  
+        "labels":       labels,
+        "mappings":     mappings,
+        "sim_time":     sim_time,
     }
+
+    if use_dist_matrix:
+        out["host_dist"] = torch.stack([jukes_cantor_dist(m) for m in host_msas])
+        out["para_dist"] = torch.stack([jukes_cantor_dist(m) for m in parasite_msas])
+
+    return out
 
 
 def encode_sequence(sequence, max_len=500):
@@ -207,7 +237,7 @@ def encode_sequence(sequence, max_len=500):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded/"
+    preencoded_dir = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     # Build file list once, then create train/val datasets with different masking policies.
     dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0)
@@ -229,7 +259,7 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(train_dataset, train_indices)
     val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
     device = fabric.device
-    epochs = 20
+    epochs = 500
 
     batch_size = 8
 
@@ -283,7 +313,7 @@ def main(fabric: Fabric):
 
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
 
-    lr = 3e-4
+    lr = 1e-4
     wd = 0.01
 
     # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.
@@ -307,7 +337,15 @@ def main(fabric: Fabric):
     event_loss_weights = torch.tensor([1.0, 2.0, 1.0, 1.0], device=device)
     tail_weight_scale = 1.0
 
-    model = Cophyloformer(gradient_checkpointing=True)
+
+    use_opm         = True
+    use_dist_matrix = True
+
+    model = Cophyloformer(
+        gradient_checkpointing=True,
+        use_opm=use_opm,
+        use_dist_matrix=use_dist_matrix,
+    )
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)
 
@@ -466,6 +504,9 @@ def main(fabric: Fabric):
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
             batch["sim_time"] = batch["sim_time"].to(device)
             batch["labels"] = batch["labels"].to(device)
+            if use_dist_matrix:
+                batch["host_dist"] = batch["host_dist"].to(device)
+                batch["para_dist"] = batch["para_dist"].to(device)
             # Zero gradients only at the start of an accumulation window
             if (batch_idx % grad_accum_steps) == 0:
                 optimizer.zero_grad(set_to_none=True)
@@ -475,6 +516,8 @@ def main(fabric: Fabric):
                 batch["parasite_msa"],
                 batch["mappings"],
                 batch["sim_time"],
+                host_dist=batch.get("host_dist"),
+                para_dist=batch.get("para_dist"),
             )
 
             for idx in range(outputs.shape[0]):
@@ -500,7 +543,7 @@ def main(fabric: Fabric):
             is_accum_step = ((batch_idx + 1) % grad_accum_steps) == 0
             is_last_batch = (batch_idx + 1) == len(train_loader)
             if is_accum_step or is_last_batch:
-                grad_norm = fabric.clip_gradients(model, optimizer, max_norm=1.0, error_if_nonfinite=False)
+                grad_norm = fabric.clip_gradients(model, optimizer, max_norm=0.5, error_if_nonfinite=False)
                 if torch.isfinite(grad_norm):
                     optimizer.step()
                     lr_scheduler.step()

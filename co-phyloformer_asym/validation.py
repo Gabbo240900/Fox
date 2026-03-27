@@ -28,14 +28,19 @@ def run_full_validation(
                 continue
             batch["host_msa"] = batch["host_msa"].to(device)
             batch["parasite_msa"] = batch["parasite_msa"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device)  
+            batch["sim_time"] = batch["sim_time"].to(device)
             batch["labels"] = batch["labels"].to(device)
+            if "host_dist" in batch:
+                batch["host_dist"] = batch["host_dist"].to(device)
+                batch["para_dist"] = batch["para_dist"].to(device)
 
             outputs = model(
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch['sim_time']  
+                batch["sim_time"],
+                host_dist=batch.get("host_dist"),
+                para_dist=batch.get("para_dist"),
             )
 
             target_weights = 1.0 + tail_weight_scale * batch["labels"]

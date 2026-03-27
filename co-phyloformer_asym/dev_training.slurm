@@ -61,7 +61,6 @@ export WANDB_MODE=offline    # "online", "offline", or "disabled"
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300     
 
-export RESUME_CKPT="checkpoints/val_checkpoint_epoch1_step4344.pth"
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
-srun python train.py
+srun python train.py 

@@ -25,9 +25,10 @@ import math
 
 # CONFIGURATION FOR 1M DATASET (generalization run)
 
-torch.backends.cuda.enable_flash_sdp(False)
-torch.backends.cuda.enable_mem_efficient_sdp(False)
+torch.backends.cuda.enable_flash_sdp(True)
+torch.backends.cuda.enable_mem_efficient_sdp(True)
 torch.backends.cuda.enable_math_sdp(True)
+torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision('high')
 
 seed_everything(42)
@@ -41,8 +42,8 @@ event_names = [
 start_time = time.time()  # Record start time
 
 
-use_opm         = True
-use_dist_matrix = True
+use_opm         = os.environ.get("USE_OPM", "0").strip() == "1"
+use_dist_matrix = os.environ.get("USE_DIST_MATRIX", "0").strip() == "1"
 
 class LazyCophyloformerDataset(Dataset):
     def __init__(self, preencoded_dir, mask_prob=0.1, pt_files=None):
@@ -266,6 +267,13 @@ def main(fabric: Fabric):
     epochs = 500
 
     batch_size = 8
+    train_num_workers = int(os.environ.get("TRAIN_NUM_WORKERS", "8"))
+    val_num_workers = int(os.environ.get("VAL_NUM_WORKERS", str(train_num_workers)))
+    mid_epoch_validations = max(0, int(os.environ.get("MID_EPOCH_VALS", "2")))
+    save_mid_epoch_val_ckpts = os.environ.get("SAVE_MID_EPOCH_VAL_CKPTS", "0").strip() == "1"
+    collect_train_prediction_data = os.environ.get("COLLECT_TRAIN_PREDICTIONS", "0").strip() == "1"
+    enable_wandb_watch = os.environ.get("WANDB_WATCH", "0").strip() == "1"
+    gradient_checkpointing = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
 
     # -----------------------------
     # Gradient accumulation
@@ -296,10 +304,10 @@ def main(fabric: Fabric):
         sampler=train_sampler,
         shuffle=False,  # IMPORTANT: do not use shuffle with a sampler
         collate_fn=collate_fn,
-        num_workers=8,
+        num_workers=train_num_workers,
         persistent_workers=True,
         prefetch_factor=4,
-        pin_memory=False,
+        pin_memory=True,
     )
 
     # Create validation loader (also sharded for balanced work across ranks)
@@ -309,10 +317,10 @@ def main(fabric: Fabric):
         sampler=val_sampler,
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=4,
+        num_workers=val_num_workers,
         persistent_workers=True,
         prefetch_factor=2,
-        pin_memory=False,
+        pin_memory=True,
     )
 
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
@@ -344,9 +352,9 @@ def main(fabric: Fabric):
 
 
     model = Cophyloformer(
-        gradient_checkpointing=True,
-        use_opm=True,
-        use_dist_matrix=True,
+        gradient_checkpointing=gradient_checkpointing,
+        use_opm=use_opm,
+        use_dist_matrix=use_dist_matrix,
     )
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)
@@ -440,6 +448,12 @@ def main(fabric: Fabric):
                 "huber_delta": huber_delta,
                 "event_loss_weights": event_loss_weights.tolist(),
                 "tail_weight_scale": tail_weight_scale,
+                "mid_epoch_validations": mid_epoch_validations,
+                "save_mid_epoch_val_ckpts": save_mid_epoch_val_ckpts,
+                "collect_train_prediction_data": collect_train_prediction_data,
+                "gradient_checkpointing": gradient_checkpointing,
+                "use_opm": use_opm,
+                "use_dist_matrix": use_dist_matrix,
                 "model_name": model.__class__.__name__,
                 "dataset_size": len(dataset),
                 **model_config
@@ -460,7 +474,8 @@ def main(fabric: Fabric):
         run.config["num_parameters"] = num_params
 
         # Watch gradients and parameters
-        wandb.watch(getattr(model, "module", model), log="all", log_freq=100)
+        if enable_wandb_watch:
+            wandb.watch(getattr(model, "module", model), log="all", log_freq=100)
 
 
     # Training loop over all batches per epoch (no micro-epochs)
@@ -475,10 +490,10 @@ def main(fabric: Fabric):
             optimizer_step_count = start_batch // grad_accum_steps
         else:
             optimizer_step_count = 0
-        # Trigger validation at every 10 % of *optimizer* steps (10 %, 20 %, … 100 %)
+        # Trigger optional mid-epoch validation at evenly spaced optimizer steps.
         val_checkpoint_opt_steps = {
-            int(math.ceil(pct / 10 * effective_opt_steps_per_epoch))
-            for pct in range(1, 11)          # 1..10 → 10 % … 100 %
+            int(math.ceil(k * effective_opt_steps_per_epoch / (mid_epoch_validations + 1)))
+            for k in range(1, mid_epoch_validations + 1)
         }
         # Drop any checkpoints already passed at the resume point
         val_checkpoint_opt_steps = {s for s in val_checkpoint_opt_steps if s > optimizer_step_count}
@@ -488,7 +503,7 @@ def main(fabric: Fabric):
         sum_rel_err = torch.zeros(num_events, device=device)
         sum_smape   = torch.zeros(num_events, device=device)
         sample_count = 0
-        all_train_prediction_data = []
+        all_train_prediction_data = [] if collect_train_prediction_data else None
         if fabric.global_rank == 0:
             print(f"\nEpoch {epoch+1}/{epochs}")
         model.train()
@@ -502,13 +517,13 @@ def main(fabric: Fabric):
                 print(f"[Resume] Continuing from epoch {start_epoch+1}, batch {start_batch+1}")
             if batch is None:
                 raise RuntimeError("collate_fn returned None; this would desync DDP ranks")
-            batch["host_msa"] = batch["host_msa"].to(device)
-            batch["parasite_msa"] = batch["parasite_msa"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device)
-            batch["labels"] = batch["labels"].to(device)
+            batch["host_msa"] = batch["host_msa"].to(device, non_blocking=True)
+            batch["parasite_msa"] = batch["parasite_msa"].to(device, non_blocking=True)
+            batch["sim_time"] = batch["sim_time"].to(device, non_blocking=True)
+            batch["labels"] = batch["labels"].to(device, non_blocking=True)
             if use_dist_matrix:
-                batch["host_dist"] = batch["host_dist"].to(device)
-                batch["para_dist"] = batch["para_dist"].to(device)
+                batch["host_dist"] = batch["host_dist"].to(device, non_blocking=True)
+                batch["para_dist"] = batch["para_dist"].to(device, non_blocking=True)
             # Zero gradients only at the start of an accumulation window
             if (batch_idx % grad_accum_steps) == 0:
                 optimizer.zero_grad(set_to_none=True)
@@ -522,12 +537,13 @@ def main(fabric: Fabric):
                 para_dist=batch.get("para_dist"),
             )
 
-            for idx in range(outputs.shape[0]):
-                row = {"Sample_Index": batch_idx * outputs.shape[0] + idx}
-                for i, event in enumerate(event_names):
-                    row[f"{event}_Pred"] = outputs[idx, i].item()
-                    row[f"{event}_GT"] = batch["labels"][idx, i].item()
-                all_train_prediction_data.append(row)
+            if collect_train_prediction_data:
+                for idx in range(outputs.shape[0]):
+                    row = {"Sample_Index": batch_idx * outputs.shape[0] + idx}
+                    for i, event in enumerate(event_names):
+                        row[f"{event}_Pred"] = outputs[idx, i].item()
+                        row[f"{event}_GT"] = batch["labels"][idx, i].item()
+                    all_train_prediction_data.append(row)
 
             # Asymmetric Huber: penalises underprediction more than overprediction.
             # Tail-aware per-sample weighting + per-task reweighting.
@@ -609,37 +625,39 @@ def main(fabric: Fabric):
                         "val_loss_history":  val_loss_history,
                     }
                     ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
-                    save_checkpoint(
-                        fabric,
-                        model,
-                        optimizer,
-                        lr_scheduler,
-                        epoch,
-                        val_results["val_loss"],
-                        checkpoint_dir,
-                        ckpt_name,
-                        batch_idx=batch_idx,
-                        wandb_run_id=run_id,
-                        history=_mid_history,
-                    )
-                    print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
-                    # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
-                    if val_results["val_loss"] < best_val_loss:
-                        best_val_loss = val_results["val_loss"]
-                        ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
+                    if save_mid_epoch_val_ckpts:
                         save_checkpoint(
                             fabric,
                             model,
                             optimizer,
                             lr_scheduler,
                             epoch,
-                            best_val_loss,
+                            val_results["val_loss"],
                             checkpoint_dir,
                             ckpt_name,
                             batch_idx=batch_idx,
                             wandb_run_id=run_id,
                             history=_mid_history,
                         )
+                        print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
+                    # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
+                    if val_results["val_loss"] < best_val_loss:
+                        best_val_loss = val_results["val_loss"]
+                        if save_mid_epoch_val_ckpts:
+                            ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
+                            save_checkpoint(
+                                fabric,
+                                model,
+                                optimizer,
+                                lr_scheduler,
+                                epoch,
+                                best_val_loss,
+                                checkpoint_dir,
+                                ckpt_name,
+                                batch_idx=batch_idx,
+                                wandb_run_id=run_id,
+                                history=_mid_history,
+                            )
                         print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
 
             total_loss += total_loss_tensor.item()
@@ -899,17 +917,20 @@ def main(fabric: Fabric):
         # --- Combined Train + Val Scatter Plots (Pred vs GT) ---
         # val_preds_tensor / val_labels_tensor already computed above — reuse them
         plot_images = {"plots/loss_curve": wandb.Image("combined_loss.png")}
-        for j, event in enumerate(event_names):
-            fname = f"combined_label_vs_pred_{event.lower()}.png"
-            plot_labels_vs_predictions(
-                train_labels=[row[f"{event}_GT"] for row in all_train_prediction_data],
-                train_preds=[row[f"{event}_Pred"] for row in all_train_prediction_data],
-                val_labels=val_labels_tensor[:, j].numpy(),
-                val_preds=val_preds_tensor[:, j].numpy(),
-                event_name=event,
-                filename=fname,
-            )
-            plot_images[f"plots/labels_vs_preds_{event.lower()}"] = wandb.Image(fname)
+        if collect_train_prediction_data and all_train_prediction_data:
+            for j, event in enumerate(event_names):
+                fname = f"combined_label_vs_pred_{event.lower()}.png"
+                plot_labels_vs_predictions(
+                    train_labels=[row[f"{event}_GT"] for row in all_train_prediction_data],
+                    train_preds=[row[f"{event}_Pred"] for row in all_train_prediction_data],
+                    val_labels=val_labels_tensor[:, j].numpy(),
+                    val_preds=val_preds_tensor[:, j].numpy(),
+                    event_name=event,
+                    filename=fname,
+                )
+                plot_images[f"plots/labels_vs_preds_{event.lower()}"] = wandb.Image(fname)
+        else:
+            print("[Info] Skipping train-vs-val scatter plots (COLLECT_TRAIN_PREDICTIONS=0).")
 
         wandb.log(plot_images)
 
@@ -932,7 +953,7 @@ if __name__ == "__main__":
         devices="auto",
         precision="bf16-mixed",
         strategy=DDPStrategy(
-            find_unused_parameters=True,
+            find_unused_parameters=False,
         )
     )
     fabric.launch(main)

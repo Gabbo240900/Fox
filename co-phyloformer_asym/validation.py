@@ -26,13 +26,13 @@ def run_full_validation(
         for batch in val_loader:
             if batch is None:
                 continue
-            batch["host_msa"] = batch["host_msa"].to(device)
-            batch["parasite_msa"] = batch["parasite_msa"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device)
-            batch["labels"] = batch["labels"].to(device)
+            batch["host_msa"] = batch["host_msa"].to(device, non_blocking=True)
+            batch["parasite_msa"] = batch["parasite_msa"].to(device, non_blocking=True)
+            batch["sim_time"] = batch["sim_time"].to(device, non_blocking=True)
+            batch["labels"] = batch["labels"].to(device, non_blocking=True)
             if "host_dist" in batch:
-                batch["host_dist"] = batch["host_dist"].to(device)
-                batch["para_dist"] = batch["para_dist"].to(device)
+                batch["host_dist"] = batch["host_dist"].to(device, non_blocking=True)
+                batch["para_dist"] = batch["para_dist"].to(device, non_blocking=True)
 
             outputs = model(
                 batch["host_msa"],
@@ -111,16 +111,21 @@ def compute_val_predictions(model, val_loader, device):
         for batch in val_loader:
             if batch is None:
                 continue
-            batch["host_msa"] = batch["host_msa"].to(device)
-            batch["parasite_msa"] = batch["parasite_msa"].to(device)
-            batch["labels"] = batch["labels"].to(device)
-            batch["sim_time"] = batch["sim_time"].to(device)  
+            batch["host_msa"] = batch["host_msa"].to(device, non_blocking=True)
+            batch["parasite_msa"] = batch["parasite_msa"].to(device, non_blocking=True)
+            batch["labels"] = batch["labels"].to(device, non_blocking=True)
+            batch["sim_time"] = batch["sim_time"].to(device, non_blocking=True)
+            if "host_dist" in batch:
+                batch["host_dist"] = batch["host_dist"].to(device, non_blocking=True)
+                batch["para_dist"] = batch["para_dist"].to(device, non_blocking=True)
 
             outputs = model(
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch['sim_time'] 
+                batch["sim_time"],
+                host_dist=batch.get("host_dist"),
+                para_dist=batch.get("para_dist"),
             )
 
             preds_list.append(outputs.cpu())

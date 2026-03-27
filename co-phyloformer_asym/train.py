@@ -228,7 +228,7 @@ def collate_fn(batch):
     return out
 
 
-def encode_sequence(sequence, max_len=500):
+def encode_sequence(sequence, max_len=200):
     """ Convert an MSA sequence string into a numerical tensor (simple one-hot encoding). """
     amino_acids = "ACDEFGHIKLMNPQRSTVWY-"  # 21 tokens: 20 AAs + gap
     aa_to_index = {aa: i for i, aa in enumerate(amino_acids)}
@@ -356,7 +356,6 @@ def main(fabric: Fabric):
         use_opm=use_opm,
         use_dist_matrix=use_dist_matrix,
     )
-    model = torch.compile(model)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)
 

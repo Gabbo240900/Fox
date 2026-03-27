@@ -430,13 +430,18 @@ def main(fabric: Fabric):
         effective_steps_per_epoch = len(train_loader)
         # Number of optimizer (weight-update) steps this epoch
         effective_opt_steps_per_epoch = math.ceil(effective_steps_per_epoch / grad_accum_steps)
+        # When resuming mid-epoch, start counting from the steps already completed
+        if epoch == start_epoch and start_batch > 0:
+            optimizer_step_count = start_batch // grad_accum_steps
+        else:
+            optimizer_step_count = 0
         # Trigger validation at every 10 % of *optimizer* steps (10 %, 20 %, … 100 %)
-        # Stored as the batch_idx+1 value at which the corresponding opt-step fires.
         val_checkpoint_opt_steps = {
             int(math.ceil(pct / 10 * effective_opt_steps_per_epoch))
             for pct in range(1, 11)          # 1..10 → 10 % … 100 %
         }
-        optimizer_step_count = 0
+        # Drop any checkpoints already passed at the resume point
+        val_checkpoint_opt_steps = {s for s in val_checkpoint_opt_steps if s > optimizer_step_count}
         num_events = len(event_names)
         sum_abs_err = torch.zeros(num_events, device=device)
         sum_sq_err  = torch.zeros(num_events, device=device)
@@ -528,9 +533,11 @@ def main(fabric: Fabric):
                         f"{event_names[i]}: {val_results['val_mae'][i]:.4f}"
                         for i in range(len(event_names))
                     )
+                    current_lr = optimizer.param_groups[0]['lr']
                     print(
                         f"\n[Val {pct_done:3d}%] epoch {epoch+1}  "
                         f"opt-step {optimizer_step_count}/{effective_opt_steps_per_epoch}  "
+                        f"lr: {current_lr:.2e}  "
                         f"val_loss: {val_results['val_loss']:.6f}  MAE → {mae_str}"
                     )
                     wandb.log({

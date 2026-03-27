@@ -495,10 +495,15 @@ def main(fabric: Fabric):
             is_accum_step = ((batch_idx + 1) % grad_accum_steps) == 0
             is_last_batch = (batch_idx + 1) == len(train_loader)
             if is_accum_step or is_last_batch:
-                fabric.clip_gradients(model, optimizer, max_norm=1.0)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer_step_count += 1
+                grad_norm = fabric.clip_gradients(model, optimizer, max_norm=1.0, error_if_nonfinite=False)
+                if torch.isfinite(grad_norm):
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer_step_count += 1
+                else:
+                    if fabric.is_global_zero:
+                        print(f"[Warning] Non-finite grad norm ({grad_norm:.2e}) at batch {batch_idx+1} — skipping update")
+                    optimizer.zero_grad(set_to_none=True)
 
             current_step = batch_idx + 1
             if optimizer_step_count in val_checkpoint_opt_steps:

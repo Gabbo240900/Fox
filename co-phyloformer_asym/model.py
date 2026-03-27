@@ -157,22 +157,23 @@ class ColAttnPairBias(nn.Module):
         v = qkv[..., 2, :, :].transpose(1, 2)
         g = torch.sigmoid(self.g_proj(xl).view(B * S, N, H, d_h).transpose(1, 2))
 
-        # Pair bias: [B, H, N, N] → [B, S, H, N, N] as additive attn_mask for SDPA
-        bias = b.permute(0, 3, 1, 2)                              # [B, H, N, N]
-        attn_mask = bias.unsqueeze(1).expand(B, S, H, N, N)       # [B, S, H, N, N]
-        attn_mask = attn_mask.reshape(B * S, H, N, N)
+        # Pair bias: [B, H, N, N] → broadcast over S as additive attn_mask
+        # Keep as [B, 1, H, N, N] view (no copy) until we must materialise
+        bias = b.permute(0, 3, 1, 2).unsqueeze(1)                 # [B, 1, H, N, N]
 
-        # Key-padding mask for PAD leaves
         if leaf_pad.any():
-            km = leaf_pad[:, None, None, :].expand(B, S, N, N)    # [B, S, N, N] key dim
-            km = km.reshape(B * S, 1, 1, N).to(dtype=x.dtype) * -1e9
-            attn_mask = attn_mask + km
+            # Need to materialise so we can write the leaf-pad penalty in-place
+            attn_mask = bias.expand(B, S, H, N, N).reshape(B * S, H, N, N).clone()
+            km = leaf_pad.unsqueeze(1).expand(B, S, N).reshape(B * S, 1, 1, N)
+            attn_mask.add_(km.to(dtype=attn_mask.dtype), alpha=-1e9)
 
             # NaN guard: samples where ALL leaves are PAD
             all_leaves_pad = leaf_pad.all(dim=1)                   # [B]
             if all_leaves_pad.any():
                 ap = all_leaves_pad.unsqueeze(1).expand(B, S).reshape(B * S)
                 attn_mask[ap, :, :, 0] = 0.0
+        else:
+            attn_mask = bias.expand(B, S, H, N, N).contiguous().view(B * S, H, N, N)
 
         attn_out = F.scaled_dot_product_attention(
             q, k, v,

@@ -281,28 +281,13 @@ def main(fabric: Fabric):
     grad_accum_steps = 8
 
     # -----------------------------
-    # DDP-safe sampling
+    # DDP-safe sampling — let Fabric own the DistributedSampler so that
+    # set_epoch() always targets the live sampler (not a replaced copy).
     # -----------------------------
-    train_sampler = DistributedSampler(
-        train_subset,
-        num_replicas=fabric.world_size,
-        rank=fabric.global_rank,
-        shuffle=True,
-        seed=42,
-    )
-
-    val_sampler = DistributedSampler(
-        val_subset,
-        num_replicas=fabric.world_size,
-        rank=fabric.global_rank,
-        shuffle=False,
-    )
-
     train_loader = DataLoader(
         train_subset,
         batch_size=batch_size,
-        sampler=train_sampler,
-        shuffle=False,  # IMPORTANT: do not use shuffle with a sampler
+        shuffle=True,   # Fabric replaces this with DistributedSampler(shuffle=True)
         collate_fn=collate_fn,
         num_workers=train_num_workers,
         persistent_workers=True,
@@ -310,11 +295,9 @@ def main(fabric: Fabric):
         pin_memory=True,
     )
 
-    # Create validation loader (also sharded for balanced work across ranks)
     val_loader = DataLoader(
         val_subset,
         batch_size=batch_size,
-        sampler=val_sampler,
         shuffle=False,
         collate_fn=collate_fn,
         num_workers=val_num_workers,
@@ -324,6 +307,8 @@ def main(fabric: Fabric):
     )
 
     train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
+    # After setup, Fabric has injected a DistributedSampler — reference it directly
+    train_sampler = train_loader.sampler
 
     lr = 1e-4
     wd = 0.01

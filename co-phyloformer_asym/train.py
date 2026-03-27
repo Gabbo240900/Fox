@@ -40,6 +40,10 @@ event_names = [
 
 start_time = time.time()  # Record start time
 
+
+use_opm         = True
+use_dist_matrix = True
+
 class LazyCophyloformerDataset(Dataset):
     def __init__(self, preencoded_dir, mask_prob=0.1, pt_files=None):
         self.mask_prob = float(mask_prob)
@@ -338,13 +342,11 @@ def main(fabric: Fabric):
     tail_weight_scale = 1.0
 
 
-    use_opm         = True
-    use_dist_matrix = True
 
     model = Cophyloformer(
         gradient_checkpointing=True,
-        use_opm=use_opm,
-        use_dist_matrix=use_dist_matrix,
+        use_opm=True,
+        use_dist_matrix=True,
     )
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)

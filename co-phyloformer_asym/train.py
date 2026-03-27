@@ -347,7 +347,7 @@ def main(fabric: Fabric):
     # Scheduler must be created before checkpoint loading so its state can be restored
     steps_per_epoch = math.ceil(len(train_loader) / grad_accum_steps)
     total_steps = epochs * steps_per_epoch
-    warmup_steps = 2000
+    warmup_steps = int(0.1 * total_steps)  # 10% of total steps for warmup
 
     lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer,

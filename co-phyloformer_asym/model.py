@@ -55,9 +55,11 @@ class GatedRowAttention(nn.Module):
 
     def __init__(self, dim: int, n_heads: int, dropout: float = 0.0):
         super().__init__()
+        self.n_heads  = n_heads
+        self.head_dim = dim // n_heads
+        self.dropout  = dropout
         self.norm     = nn.LayerNorm(dim)
-        self.mha      = nn.MultiheadAttention(dim, n_heads, batch_first=True,
-                                               dropout=dropout, bias=False)
+        self.qkv_proj = nn.Linear(dim, dim * 3, bias=False)
         self.g_proj   = nn.Linear(dim, dim)
         self.out_proj = nn.Linear(dim, dim)
 
@@ -67,19 +69,36 @@ class GatedRowAttention(nn.Module):
         pad_mask: [B, N, S]   True = PAD token (ignore)
         """
         B, N, S, D = x.shape
+        H, d_h = self.n_heads, self.head_dim
         xn = self.norm(x).view(B * N, S, D)
         pm = pad_mask.view(B * N, S)
 
-        g = torch.sigmoid(self.g_proj(xn))          # [B*N, S, D]
+        g = torch.sigmoid(self.g_proj(xn))           # [B*N, S, D]
 
         # NaN guard: fully-PAD leaf rows would produce NaN in softmax
-        all_pad = pm.all(dim=1)                      # [B*N]
+        all_pad = pm.all(dim=1)                       # [B*N]
         if all_pad.any():
             xn = xn.clone(); pm = pm.clone()
             xn[all_pad] = 0.0
             pm[all_pad] = False
 
-        attn_out, _ = self.mha(xn, xn, xn, key_padding_mask=pm, need_weights=False)
+        q, k, v = self.qkv_proj(xn).chunk(3, dim=-1)
+        q = q.view(B * N, S, H, d_h).transpose(1, 2)  # [B*N, H, S, d_h]
+        k = k.view(B * N, S, H, d_h).transpose(1, 2)
+        v = v.view(B * N, S, H, d_h).transpose(1, 2)
+
+        # SDPA float mask: True positions become -inf
+        attn_mask = None
+        if pm.any():
+            # [B*N, 1, 1, S] — key mask broadcast over heads and queries
+            attn_mask = pm[:, None, None, :].to(dtype=x.dtype) * -1e9
+
+        attn_out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=self.dropout if self.training else 0.0,
+        )  # [B*N, H, S, d_h]
+        attn_out = attn_out.transpose(1, 2).contiguous().view(B * N, S, D)
         out = self.out_proj(g * attn_out)
 
         if all_pad.any():
@@ -107,18 +126,15 @@ class ColAttnPairBias(nn.Module):
         assert dim % n_heads == 0, "dim must be divisible by n_heads"
         self.n_heads  = n_heads
         self.head_dim = dim // n_heads
-        self.scale    = self.head_dim ** -0.5
+        self.dropout  = dropout
 
         self.msa_norm  = nn.LayerNorm(dim)
         self.pair_norm = nn.LayerNorm(pair_dim)
 
-        self.q_proj   = nn.Linear(dim, dim, bias=False)
-        self.k_proj   = nn.Linear(dim, dim, bias=False)
-        self.v_proj   = nn.Linear(dim, dim, bias=False)
+        self.qkv_proj = nn.Linear(dim, dim * 3, bias=False)
         self.g_proj   = nn.Linear(dim, dim)                      # gating
         self.b_proj   = nn.Linear(pair_dim, n_heads, bias=False) # pair → per-head bias
         self.out_proj = nn.Linear(dim, dim)
-        self.dropout  = nn.Dropout(dropout)
 
     def forward(
         self,
@@ -135,38 +151,38 @@ class ColAttnPairBias(nn.Module):
         # Reshape to process all residue columns in one batch: [B*S, N, D]
         xl = xn.permute(0, 2, 1, 3).contiguous().view(B * S, N, D)
 
-        def _proj(linear):
-            return linear(xl).view(B * S, N, H, d_h).transpose(1, 2)  # [B*S, H, N, d_h]
+        qkv = self.qkv_proj(xl).view(B * S, N, 3, H, d_h)
+        q = qkv[..., 0, :, :].transpose(1, 2)  # [B*S, H, N, d_h]
+        k = qkv[..., 1, :, :].transpose(1, 2)
+        v = qkv[..., 2, :, :].transpose(1, 2)
+        g = torch.sigmoid(self.g_proj(xl).view(B * S, N, H, d_h).transpose(1, 2))
 
-        q = _proj(self.q_proj)
-        k = _proj(self.k_proj)
-        v = _proj(self.v_proj)
-        g = torch.sigmoid(_proj(self.g_proj))
+        # Pair bias: [B, H, N, N] → [B, S, H, N, N] as additive attn_mask for SDPA
+        bias = b.permute(0, 3, 1, 2)                              # [B, H, N, N]
+        attn_mask = bias.unsqueeze(1).expand(B, S, H, N, N)       # [B, S, H, N, N]
+        attn_mask = attn_mask.reshape(B * S, H, N, N)
 
-        # Attention scores [B*S, H, N, N]
-        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
-
-        # Add pair bias [B, H, N, N] → broadcast over S (no extra allocation)
-        bias = b.permute(0, 3, 1, 2)                             # [B, H, N, N]
-        scores = scores.view(B, S, H, N, N) + bias.unsqueeze(1) # [B, S, H, N, N]
-
-        # Key-padding mask for PAD leaves — broadcast over S without expand
+        # Key-padding mask for PAD leaves
         if leaf_pad.any():
-            # [B, 1, 1, 1, N] True = ignore that key leaf
-            km = leaf_pad[:, None, None, None, :]
-            scores = scores.masked_fill(km, -1e9)
+            km = leaf_pad[:, None, None, :].expand(B, S, N, N)    # [B, S, N, N] key dim
+            km = km.reshape(B * S, 1, 1, N).to(dtype=x.dtype) * -1e9
+            attn_mask = attn_mask + km
 
-            # NaN guard: batch items where ALL leaves are PAD
-            all_leaves_pad = leaf_pad.all(dim=1)          # [B]
+            # NaN guard: samples where ALL leaves are PAD
+            all_leaves_pad = leaf_pad.all(dim=1)                   # [B]
             if all_leaves_pad.any():
-                scores[all_leaves_pad, :, :, :, 0] = 0.0  # unmask one key
+                ap = all_leaves_pad.unsqueeze(1).expand(B, S).reshape(B * S)
+                attn_mask[ap, :, :, 0] = 0.0
 
-        scores = scores.view(B * S, H, N, N)
-        attn   = self.dropout(torch.softmax(scores.float(), dim=-1).to(dtype=q.dtype))
+        attn_out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask.to(dtype=q.dtype),
+            dropout_p=self.dropout if self.training else 0.0,
+        )  # [B*S, H, N, d_h]
 
-        attn_out = g * torch.matmul(attn, v)              # [B*S, H, N, d_h]
+        attn_out = g * attn_out
         attn_out = attn_out.transpose(1, 2).contiguous().view(B * S, N, D)
-        out      = self.out_proj(attn_out)                # [B*S, N, D]
+        out      = self.out_proj(attn_out)                         # [B*S, N, D]
 
         # Back to [B, N, S, D]
         return out.view(B, S, N, D).permute(0, 2, 1, 3).contiguous()
@@ -392,25 +408,16 @@ class FlashMSAEncoderLayer(nn.Module):
         k = k.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
 
-        q_fp32 = q.float()
-        k_fp32 = k.float()
-        v_fp32 = v.float()
-
-        scores = torch.matmul(q_fp32, k_fp32.transpose(-2, -1))
-        scores = scores * (self.head_dim ** -0.5)
-
+        attn_mask = None
         if key_padding_mask is not None:
-            km = key_padding_mask[:, None, None, :]
             all_masked = key_padding_mask.all(dim=1)
+            km = key_padding_mask.clone() if all_masked.any() else key_padding_mask
             if all_masked.any():
                 km = km.clone()
-                km[all_masked, :, :, 0] = False
-            scores = scores.masked_fill(km, -1e9)
+                km[all_masked, 0] = False
+            attn_mask = km[:, None, None, :].to(dtype=q.dtype) * -1e9
 
-        attn = torch.softmax(scores, dim=-1)
-        out  = torch.matmul(attn, v_fp32)
-
-        out = out.to(dtype=q.dtype)
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         out = out.transpose(1, 2).contiguous().view(B, N, D)
 
         x = x + self.proj(out)
@@ -425,8 +432,8 @@ class FlashMSAEncoderLayer(nn.Module):
 class MSAEncoder(nn.Module):
     def __init__(
         self,
-        hidden_dim=1024,
-        seq_dim=256,
+        hidden_dim=512,
+        seq_dim=128,
         pair_dim=64,
         num_layers=8,
         num_heads=8,
@@ -547,8 +554,8 @@ class MSAEncoder(nn.Module):
 class Cophyloformer(nn.Module):
     def __init__(
         self,
-        hidden_dim=1024,
-        seq_dim=256,
+        hidden_dim=512,
+        seq_dim=128,
         pair_dim=64,
         num_layers=8,
         num_heads=8,

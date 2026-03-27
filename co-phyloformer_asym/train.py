@@ -358,6 +358,7 @@ def main(fabric: Fabric):
     )
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)
+    model = torch.compile(model)
 
     # Scheduler must be created before checkpoint loading so its state can be restored
     steps_per_epoch = math.ceil(len(train_loader) / grad_accum_steps)

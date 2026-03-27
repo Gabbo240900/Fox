@@ -356,9 +356,9 @@ def main(fabric: Fabric):
         use_opm=use_opm,
         use_dist_matrix=use_dist_matrix,
     )
+    model = torch.compile(model)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)
-    model = torch.compile(model)
 
     # Scheduler must be created before checkpoint loading so its state can be restored
     steps_per_epoch = math.ceil(len(train_loader) / grad_accum_steps)
@@ -954,7 +954,7 @@ if __name__ == "__main__":
         devices="auto",
         precision="bf16-mixed",
         strategy=DDPStrategy(
-            find_unused_parameters=False,
+            find_unused_parameters=True,
         )
     )
     fabric.launch(main)

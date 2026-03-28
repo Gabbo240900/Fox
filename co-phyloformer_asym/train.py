@@ -267,7 +267,8 @@ def main(fabric: Fabric):
     epochs = 500
 
     batch_size = 8
-    train_num_workers = int(os.environ.get("TRAIN_NUM_WORKERS", "8"))
+    overfit_mode = os.environ.get("OVERFIT_MODE", "0").strip() == "1"
+    train_num_workers = int(os.environ.get("TRAIN_NUM_WORKERS", "0" if overfit_mode else "8"))
     val_num_workers = int(os.environ.get("VAL_NUM_WORKERS", str(train_num_workers)))
     mid_epoch_validations = max(0, int(os.environ.get("MID_EPOCH_VALS", "2")))
     disable_checkpoints = os.environ.get("DISABLE_CHECKPOINTS", "0").strip() == "1"
@@ -738,12 +739,12 @@ def main(fabric: Fabric):
                 print(f"[Warning] No training batches completed in epoch {epoch+1}. Skipping sample preview.")
         # Log event-wise metrics to W&B
         if fabric.is_global_zero:
-            metrics = {f"MAE/{event_names[i]}": mae[i] for i in range(len(event_names))}
-            metrics.update({f"MSE/{event_names[i]}": mse[i] for i in range(len(event_names))})
-            metrics.update({f"MRE/{event_names[i]}": mre[i] for i in range(len(event_names))})
-            metrics.update({f"sMAPE/{event_names[i]}": smape[i] for i in range(len(event_names))})
+            metrics = {f"train/MAE/{event_names[i]}": mae[i] for i in range(len(event_names))}
+            metrics.update({f"train/MSE/{event_names[i]}": mse[i] for i in range(len(event_names))})
+            metrics.update({f"train/MRE/{event_names[i]}": mre[i] for i in range(len(event_names))})
+            metrics.update({f"train/sMAPE/{event_names[i]}": smape[i] for i in range(len(event_names))})
             metrics["epoch"] = epoch + 1
-            wandb.log(metrics)
+            wandb.log(metrics, step=(epoch + 1) * effective_opt_steps_per_epoch)
 
         # VALIDATION PHASE replaced by function
         val_results = run_full_validation(

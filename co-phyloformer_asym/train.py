@@ -242,7 +242,7 @@ def encode_sequence(sequence, max_len=200):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded/"
+    preencoded_dir = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     # Build file list once, then create train/val datasets with different masking policies.
     dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0)
@@ -264,13 +264,14 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(train_dataset, train_indices)
     val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
     device = fabric.device
-    epochs = 5
+    epochs = 500
 
     batch_size = 8
     train_num_workers = int(os.environ.get("TRAIN_NUM_WORKERS", "8"))
     val_num_workers = int(os.environ.get("VAL_NUM_WORKERS", str(train_num_workers)))
     mid_epoch_validations = max(0, int(os.environ.get("MID_EPOCH_VALS", "2")))
-    save_mid_epoch_val_ckpts = os.environ.get("SAVE_MID_EPOCH_VAL_CKPTS", "0").strip() == "1"
+    disable_checkpoints = os.environ.get("DISABLE_CHECKPOINTS", "0").strip() == "1"
+    save_mid_epoch_val_ckpts = (not disable_checkpoints) and os.environ.get("SAVE_MID_EPOCH_VAL_CKPTS", "0").strip() == "1"
     collect_train_prediction_data = os.environ.get("COLLECT_TRAIN_PREDICTIONS", "0").strip() == "1"
     enable_wandb_watch = os.environ.get("WANDB_WATCH", "0").strip() == "1"
     gradient_checkpointing = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
@@ -572,6 +573,19 @@ def main(fabric: Fabric):
                 )
                 # Consume this opt-step so it cannot fire again on the next batch
                 val_checkpoint_opt_steps.discard(optimizer_step_count)
+                # DDP-consistent train metrics: average running accumulators across all ranks
+                train_loss_step = fabric.all_reduce(
+                    torch.tensor(total_loss / max(1, num_batches), device=device),
+                    reduce_op="mean",
+                ).item()
+                global_sample_count = fabric.all_reduce(
+                    torch.tensor(sample_count, device=device), reduce_op="sum"
+                ).item()
+                denom = max(1, global_sample_count)
+                train_mae_step   = (fabric.all_reduce(sum_abs_err.clone(), reduce_op="sum") / denom).cpu().tolist()
+                train_mse_step   = (fabric.all_reduce(sum_sq_err.clone(),  reduce_op="sum") / denom).cpu().tolist()
+                train_mre_step   = (fabric.all_reduce(sum_rel_err.clone(), reduce_op="sum") / denom).cpu().tolist()
+                train_smape_step = (fabric.all_reduce(sum_smape.clone(),   reduce_op="sum") / denom).cpu().tolist()
                 if fabric.is_global_zero:
                     global_opt_step = epoch * effective_opt_steps_per_epoch + optimizer_step_count
                     pct_done = int(round(optimizer_step_count / effective_opt_steps_per_epoch * 100))
@@ -587,9 +601,13 @@ def main(fabric: Fabric):
                         f"val_loss: {val_results['val_loss']:.6f}  MAE → {mae_str}"
                     )
                     wandb.log({
-                        "train/loss_step": total_loss_tensor.item(),
+                        "train/loss_step": train_loss_step,
                         "lr": optimizer.param_groups[0]['lr'],
                         "step": global_opt_step,
+                        **{f"train/MAE_step/{event_names[i]}": train_mae_step[i]   for i in range(len(event_names))},
+                        **{f"train/MSE_step/{event_names[i]}": train_mse_step[i]   for i in range(len(event_names))},
+                        **{f"train/MRE_step/{event_names[i]}": train_mre_step[i]   for i in range(len(event_names))},
+                        **{f"train/sMAPE_step/{event_names[i]}": train_smape_step[i] for i in range(len(event_names))},
                         "val/loss_step": val_results["val_loss"],
                         **{f"val/MAE_step/{event_names[i]}": val_results["val_mae"][i] for i in range(len(event_names))},
                         **{f"val/MSE_step/{event_names[i]}": val_results["val_mse"][i] for i in range(len(event_names))},
@@ -659,24 +677,6 @@ def main(fabric: Fabric):
                 rel_err = abs_err / (labels_abs + 1e-8)
                 smape   = 2 * abs_err / (preds.abs() + labels_abs + 1e-8)
 
-                if optimizer_step_count in val_checkpoint_opt_steps:
-                    batch_mae   = abs_err.mean(dim=0).detach().cpu().tolist()
-                    batch_mse   = sq_err.mean(dim=0).detach().cpu().tolist()
-                    batch_mre   = rel_err.mean(dim=0).detach().cpu().tolist()
-                    batch_smape = smape.mean(dim=0).detach().cpu().tolist()
-
-                    if fabric.is_global_zero:
-                        log_dict = {
-                            "step": epoch * (len(train_loader) // grad_accum_steps + (1 if (len(train_loader) % grad_accum_steps) else 0)) + (batch_idx // grad_accum_steps),
-                            "lr": optimizer.param_groups[0]['lr']
-                        }
-                        for i, event in enumerate(event_names):
-                            log_dict[f"MAE_step/{event}"] = batch_mae[i]
-                            log_dict[f"MSE_step/{event}"] = batch_mse[i]
-                            log_dict[f"MRE_step/{event}"] = batch_mre[i]
-                            log_dict[f"sMAPE_step/{event}"] = batch_smape[i]
-
-                        wandb.log(log_dict)
 
                 sum_abs_err += abs_err.sum(dim=0)
                 sum_sq_err  += sq_err.sum(dim=0)
@@ -701,8 +701,7 @@ def main(fabric: Fabric):
                 "epoch": epoch + 1,
                 "train/loss": epoch_loss,
                 "lr": optimizer.param_groups[0]['lr'],
-                
-            })
+            }, step=(epoch + 1) * effective_opt_steps_per_epoch)
 
         #Synchronize metric accumulators across all ranks
         sum_abs_err = fabric.all_reduce(sum_abs_err, reduce_op="sum")
@@ -783,10 +782,10 @@ def main(fabric: Fabric):
                 **{f"val/MRE/{event_names[i]}": val_mre[i] for i in range(len(event_names))},
                 **{f"val/sMAPE/{event_names[i]}": val_smape[i] for i in range(len(event_names))},
                 "epoch": epoch + 1,
-            })
+            }, step=(epoch + 1) * effective_opt_steps_per_epoch)
 
         # Save end-of-epoch checkpoint (allows clean resume from the start of the next epoch)
-        if fabric.is_global_zero:
+        if fabric.is_global_zero and not disable_checkpoints:
             _history = {
                 "epoch_losses":      epoch_losses,
                 "mae_history":       mae_history,
@@ -831,6 +830,8 @@ def main(fabric: Fabric):
                     history=_history,
                 )
                 print(f"[Checkpoint] New BEST validation loss at end of epoch {epoch+1}: {best_val_loss:.6f}")
+        elif fabric.is_global_zero and val_loss < best_val_loss:
+            best_val_loss = val_loss
 
         model.train()
 

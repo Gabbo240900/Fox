@@ -64,13 +64,15 @@ export WANDB__SERVICE_WAIT=300
 
 export USE_OPM=1
 export USE_DIST_MATRIX=1
-export MID_EPOCH_VALS=5
-export SAVE_MID_EPOCH_VAL_CKPTS=1
+export MID_EPOCH_VALS=0
+export SAVE_MID_EPOCH_VAL_CKPTS=0
 export COLLECT_TRAIN_PREDICTIONS=1 #IF 0 train-vs-val scatter plots are skipped.
 export WANDB_WATCH=0  #IF 0 no parameter/gradient histograms in W&B.
-export GRADIENT_CHECKPOINTING=0 #IF 0 impact: faster, but higher GPU memory usage (can OOM on larger configs).
+export GRADIENT_CHECKPOINTING=1 #IF 0 impact: faster, but higher GPU memory usage (can OOM on larger configs).
 export TRAIN_NUM_WORKERS=8
 export VAL_NUM_WORKERS=8
+export DISABLE_CHECKPOINTS=1
+
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
 srun python train.py 

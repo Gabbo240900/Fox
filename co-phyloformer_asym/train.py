@@ -280,7 +280,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 20
 
-    batch_size = 8
+    batch_size = 64
     overfit_mode = os.environ.get("OVERFIT_MODE", "0").strip() == "1"
     train_num_workers = int(os.environ.get("TRAIN_NUM_WORKERS", "0" if overfit_mode else "8"))
     val_num_workers = int(os.environ.get("VAL_NUM_WORKERS", str(train_num_workers)))

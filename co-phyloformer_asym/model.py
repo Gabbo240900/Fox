@@ -425,10 +425,10 @@ class FlashMSAEncoderLayer(nn.Module):
 class MSAEncoder(nn.Module):
     def __init__(
         self,
-        hidden_dim=1024,
-        seq_dim=256,
+        hidden_dim=512,
+        seq_dim=128,
         pair_dim=64,
-        num_layers=8,
+        num_layers=4,
         num_heads=8,
         axial_layers=1,
         leaf_attn_max_leaves=128,
@@ -547,10 +547,10 @@ class MSAEncoder(nn.Module):
 class Cophyloformer(nn.Module):
     def __init__(
         self,
-        hidden_dim=1024,
-        seq_dim=256,
+        hidden_dim=512,
+        seq_dim=128,
         pair_dim=64,
-        num_layers=8,
+        num_layers=4,
         num_heads=8,
         gradient_checkpointing: bool = False,
         use_opm: bool = False,

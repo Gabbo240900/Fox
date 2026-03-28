@@ -72,7 +72,7 @@ export GRADIENT_CHECKPOINTING=1 #IF 0 impact: faster, but higher GPU memory usag
 export TRAIN_NUM_WORKERS=8
 export VAL_NUM_WORKERS=8
 export DISABLE_CHECKPOINTS=1
-export OVERFIT_MODE=0
+export OVERFIT_MODE=1
 
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"

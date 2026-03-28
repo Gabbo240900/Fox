@@ -256,7 +256,7 @@ def encode_sequence(sequence, max_len=200):
 
 def main(fabric: Fabric):
     # Load Data
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded/"
+    preencoded_dir = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
     #preencoded_dir = '/Users/gabriele/Co-phyloformer/generate_treeducken/generated_trees/test/'
     # Build file list once, then create train/val datasets with different masking policies.
     dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0)
@@ -280,7 +280,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 500
 
-    batch_size = 64
+    batch_size = 16
     overfit_mode = os.environ.get("OVERFIT_MODE", "0").strip() == "1"
     train_num_workers = int(os.environ.get("TRAIN_NUM_WORKERS", "0" if overfit_mode else "8"))
     val_num_workers = int(os.environ.get("VAL_NUM_WORKERS", str(train_num_workers)))

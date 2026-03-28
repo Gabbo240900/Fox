@@ -16,33 +16,22 @@ UNK_ID = 21
 PAD_ID = 22
 
 
-def encode_sequence(sequence, max_len=200):
+def encode_sequence(sequence, max_len=500):
     encoded = [AA_TO_INDEX.get(aa, UNK_ID) for aa in sequence[:max_len]]
     encoded += [PAD_ID] * (max_len - len(encoded))
     return torch.tensor(encoded, dtype=torch.long)
 
 
 def jukes_cantor_dist(msa: torch.Tensor) -> torch.Tensor:
-    """
-    Compute pairwise Jukes-Cantor distances from a padded MSA token tensor.
-
-    msa: [N, S]  int token ids  (PAD = 22)
-    Returns: [N, N] float distance matrix (symmetric, zero diagonal).
-
-    Runs on CPU inside collate workers — the loop over pairs is fast for
-    typical N ≤ 50 leaves.  The distance is clamped before log to avoid NaN.
-    """
-    N, S = msa.shape
-    dist = torch.zeros(N, N, dtype=torch.float32)
-    valid = (msa != 22)                  # [N, S]  True = real residue
-    for i in range(N):
-        for j in range(i + 1, N):
-            v = valid[i] & valid[j]      # [S]
-            n_v = v.sum().clamp(min=1).float()
-            p   = ((msa[i] != msa[j]) & v).float().sum() / n_v
-            p   = p.clamp(0.0, 0.74)    # keep argument of log > 0
-            d   = -0.75 * torch.log(1.0 - (4.0 / 3.0) * p)
-            dist[i, j] = dist[j, i] = d
+    """Vectorised pairwise Jukes-Cantor distances. msa: [N, S] int tokens (PAD=22)."""
+    valid = (msa != PAD_ID)
+    valid_pair = valid.unsqueeze(1) & valid.unsqueeze(0)         # [N, N, S]
+    n_v = valid_pair.sum(dim=2).clamp(min=1).float()             # [N, N]
+    mismatch = (msa.unsqueeze(1) != msa.unsqueeze(0)) & valid_pair
+    p = mismatch.float().sum(dim=2) / n_v
+    p = p.clamp(0.0, 0.74)
+    dist = -0.75 * torch.log(1.0 - (4.0 / 3.0) * p)
+    dist.fill_diagonal_(0.0)
     return dist
 
 

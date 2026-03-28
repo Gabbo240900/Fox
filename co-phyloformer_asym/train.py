@@ -242,7 +242,7 @@ def collate_fn(batch):
     return out
 
 
-def encode_sequence(sequence, max_len=200):
+def encode_sequence(sequence, max_len=500):
     """ Convert an MSA sequence string into a numerical tensor (simple one-hot encoding). """
     amino_acids = "ACDEFGHIKLMNPQRSTVWY-"  # 21 tokens: 20 AAs + gap
     aa_to_index = {aa: i for i, aa in enumerate(amino_acids)}
@@ -280,7 +280,7 @@ def main(fabric: Fabric):
     device = fabric.device
     epochs = 500
 
-    batch_size = 16
+    batch_size = 32
     overfit_mode = os.environ.get("OVERFIT_MODE", "0").strip() == "1"
     train_num_workers = int(os.environ.get("TRAIN_NUM_WORKERS", "0" if overfit_mode else "8"))
     val_num_workers = int(os.environ.get("VAL_NUM_WORKERS", str(train_num_workers)))
@@ -326,7 +326,7 @@ def main(fabric: Fabric):
     # After setup, Fabric has injected a DistributedSampler — reference it directly
     train_sampler = train_loader.sampler
 
-    lr = 1e-4
+    lr = 2e-4
     wd = 0.01
 
     # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.

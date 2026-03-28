@@ -106,7 +106,7 @@ class LazyCophyloformerDataset(Dataset):
 
         
         sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 1.0)], dtype=torch.float32)
-        return {
+        out = {
             "host_msa": torch.stack([
                 mask_sequence(encode_sequence(seq), mask_prob=self.mask_prob)
                 for seq in sample["host_msas"].values()
@@ -117,8 +117,12 @@ class LazyCophyloformerDataset(Dataset):
             ]),
             "mappings": valid_mappings,
             "labels": labels,
-            "sim_time": sim_time  
+            "sim_time": sim_time,
         }
+        if "host_dist" in sample:
+            out["host_dist"] = sample["host_dist"]
+            out["para_dist"] = sample["para_dist"]
+        return out
 def save_checkpoint(fabric, model, optimizer, lr_scheduler, epoch, val_loss, checkpoint_dir, filename, batch_idx=None, wandb_run_id=None, history=None):
     """Save model, optimizer, scheduler, and optional metric history via Fabric (DDP-safe, rank-0 only)."""
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -176,20 +180,16 @@ def jukes_cantor_dist(msa: torch.Tensor) -> torch.Tensor:
     msa: [N, S]  int token ids  (PAD = 22)
     Returns: [N, N] float distance matrix (symmetric, zero diagonal).
 
-    Runs on CPU inside collate workers — the loop over pairs is fast for
-    typical N ≤ 50 leaves.  The distance is clamped before log to avoid NaN.
+    Fully vectorised — no Python loop over pairs.
     """
-    N, S = msa.shape
-    dist = torch.zeros(N, N, dtype=torch.float32)
-    valid = (msa != 22)                  # [N, S]  True = real residue
-    for i in range(N):
-        for j in range(i + 1, N):
-            v = valid[i] & valid[j]      # [S]
-            n_v = v.sum().clamp(min=1).float()
-            p   = ((msa[i] != msa[j]) & v).float().sum() / n_v
-            p   = p.clamp(0.0, 0.74)    # keep argument of log > 0
-            d   = -0.75 * torch.log(1.0 - (4.0 / 3.0) * p)
-            dist[i, j] = dist[j, i] = d
+    valid = (msa != 22)                                      # [N, S]
+    valid_pair = valid.unsqueeze(1) & valid.unsqueeze(0)     # [N, N, S]
+    n_v = valid_pair.sum(dim=2).clamp(min=1).float()         # [N, N]
+    mismatch = (msa.unsqueeze(1) != msa.unsqueeze(0)) & valid_pair  # [N, N, S]
+    p = mismatch.float().sum(dim=2) / n_v                    # [N, N]
+    p = p.clamp(0.0, 0.74)
+    dist = -0.75 * torch.log(1.0 - (4.0 / 3.0) * p)
+    dist.fill_diagonal_(0.0)
     return dist
 
 
@@ -222,8 +222,22 @@ def collate_fn(batch):
     }
 
     if use_dist_matrix:
-        out["host_dist"] = torch.stack([jukes_cantor_dist(m) for m in host_msas])
-        out["para_dist"] = torch.stack([jukes_cantor_dist(m) for m in parasite_msas])
+        if "host_dist" in batch[0]:
+            # Precomputed distances available — pad [N,N] → [max_N, max_N] and stack
+            def pad_dist(d, target):
+                n = d.shape[0]
+                if n == target:
+                    return d
+                out = torch.zeros(target, target, dtype=d.dtype)
+                out[:n, :n] = d
+                return out
+            max_h = host_msas.shape[1]
+            max_p = parasite_msas.shape[1]
+            out["host_dist"] = torch.stack([pad_dist(s["host_dist"], max_h) for s in batch])
+            out["para_dist"] = torch.stack([pad_dist(s["para_dist"], max_p) for s in batch])
+        else:
+            out["host_dist"] = torch.stack([jukes_cantor_dist(m) for m in host_msas])
+            out["para_dist"] = torch.stack([jukes_cantor_dist(m) for m in parasite_msas])
 
     return out
 

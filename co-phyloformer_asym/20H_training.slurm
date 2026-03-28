@@ -61,5 +61,18 @@ export WANDB_MODE=offline    # "online", "offline", or "disabled"
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300     
 
+
+export USE_OPM=1
+export USE_DIST_MATRIX=1
+export MID_EPOCH_VALS=9 # Number of mid-epoch val checks (evenly spaced). If 0 only the final epoch val is done.
+export SAVE_MID_EPOCH_VAL_CKPTS=1 # If 0 only the final epoch checkpoint is saved, otherwise also mid-epoch val checkpoints.
+export COLLECT_TRAIN_PREDICTIONS=1 #IF 0 train-vs-val scatter plots are skipped.
+export WANDB_WATCH=0  #IF 0 no parameter/gradient histograms in W&B.
+export GRADIENT_CHECKPOINTING=1 #IF 0 impact: faster, but higher GPU memory usage (can OOM on larger configs).
+export TRAIN_NUM_WORKERS=8
+export VAL_NUM_WORKERS=8
+export DISABLE_CHECKPOINTS=0 
+export OVERFIT_MODE=0 
+
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
 srun python train.py

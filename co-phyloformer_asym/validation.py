@@ -59,7 +59,7 @@ def run_full_validation(
             labels_abs = labels.abs()
             sq_err  = abs_err ** 2
 
-            rel_err = abs_err / (labels_abs + 1e-8)
+            rel_err = abs_err / (labels_abs.clamp(min=0.1) + 1e-8)
             smape = 2 * abs_err / (preds.abs() + labels_abs + 1e-8)
 
             val_sum_abs += abs_err.sum(dim=0)
@@ -100,6 +100,7 @@ def run_full_validation(
         "val_mse": val_mse,
         "val_mre": val_mre,
         "val_smape": val_smape,
+        "val_sample_count": val_sample_count,
     }
 
 

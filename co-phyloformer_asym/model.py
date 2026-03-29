@@ -427,10 +427,10 @@ class MSAEncoder(nn.Module):
         self,
         hidden_dim=512,
         seq_dim=128,
-        pair_dim=64,
+        pair_dim=32,
         num_layers=4,
         num_heads=8,
-        axial_layers=1,
+        axial_layers=2,
         leaf_attn_max_leaves=128,
         gradient_checkpointing: bool = False,
         use_opm: bool = False,
@@ -549,9 +549,10 @@ class Cophyloformer(nn.Module):
         self,
         hidden_dim=512,
         seq_dim=128,
-        pair_dim=64,
+        pair_dim=32,
         num_layers=4,
         num_heads=8,
+        axial_layers=2,
         gradient_checkpointing: bool = False,
         use_opm: bool = False,
         use_dist_matrix: bool = False,
@@ -567,12 +568,14 @@ class Cophyloformer(nn.Module):
 
         self.host_encoder = MSAEncoder(
             hidden_dim, seq_dim, pair_dim, num_layers, num_heads,
+            axial_layers=axial_layers,
             gradient_checkpointing=gradient_checkpointing,
             use_opm=use_opm,
             use_dist_matrix=use_dist_matrix,
         )
         self.parasite_encoder = MSAEncoder(
             hidden_dim, seq_dim, pair_dim, num_layers, num_heads,
+            axial_layers=axial_layers,
             gradient_checkpointing=gradient_checkpointing,
             use_opm=use_opm,
             use_dist_matrix=use_dist_matrix,
@@ -609,8 +612,9 @@ class Cophyloformer(nn.Module):
         self.concat_dim = 4 * hidden_dim
 
         self.sim_time_fc = nn.Sequential(
-            nn.Linear(1, self.concat_dim * 2),
-            nn.Identity(),
+            nn.Linear(1, self.concat_dim),
+            nn.GELU(),
+            nn.Linear(self.concat_dim, self.concat_dim * 2),
         )
 
         self.feature_mixer = nn.Sequential(
@@ -689,11 +693,11 @@ class Cophyloformer(nn.Module):
         cross_para = parasite_seq
 
         for i in range(self.num_cross_layers):
-            h_attn, _ = self.cross_attn_h2p[i](cross_host, cross_para, cross_para, key_padding_mask=kv_pad_mask)
+            h_attn, _ = self.cross_attn_h2p[i](self.cross_norms_h[i](cross_host), cross_para, cross_para, key_padding_mask=kv_pad_mask)
             cross_host = cross_host + h_attn
             cross_host = cross_host + self.cross_ffns_h[i](self.cross_norms_h[i](cross_host))
 
-            p_attn, _ = self.cross_attn_p2h[i](cross_para, cross_host, cross_host, key_padding_mask=kv_pad_mask)
+            p_attn, _ = self.cross_attn_p2h[i](self.cross_norms_p[i](cross_para), cross_host, cross_host, key_padding_mask=kv_pad_mask)
             cross_para = cross_para + p_attn
             cross_para = cross_para + self.cross_ffns_p[i](self.cross_norms_p[i](cross_para))
 
@@ -706,9 +710,8 @@ class Cophyloformer(nn.Module):
 
         host_pooled  = masked_softmax_pool(self.pair_pool_score_h(cross_host).squeeze(-1), cross_host, pair_present)
         para_pooled  = masked_softmax_pool(self.pair_pool_score_p(cross_para).squeeze(-1), cross_para, pair_present)
-        cross_pooled = (host_pooled + para_pooled) / 2
 
-        attended_pairs = torch.cat([host_cls, parasite_cls, global_cross, cross_pooled], dim=-1)
+        attended_pairs = torch.cat([host_cls, parasite_cls, host_pooled, para_pooled], dim=-1)
         attended_pairs = self.feature_mixer(attended_pairs)
 
         if sim_time is not None:

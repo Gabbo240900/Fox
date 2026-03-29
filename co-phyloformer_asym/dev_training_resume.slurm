@@ -67,7 +67,7 @@ export WANDB__SERVICE_WAIT=300
 export RESUME_CKPT="checkpoints/epoch_12_end.pth"
 # ────────────────────────────────────────────────────────────────────────────
 
-export USE_OPM=1
+export USE_OPM=0
 export USE_DIST_MATRIX=1
 export MID_EPOCH_VALS=5 # Number of mid-epoch val checks (evenly spaced). If 0 only the final epoch val is done.
 export SAVE_MID_EPOCH_VAL_CKPTS=1 # If 0 only the final epoch checkpoint is saved, otherwise also mid-epoch val checkpoints.

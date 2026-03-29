@@ -12,7 +12,7 @@ import numpy as np
 import os
 from plot import plot_event_metric_over_epochs, plot_epoch_loss_curve, plot_labels_vs_predictions
 from sklearn.model_selection import train_test_split
-from transformers import get_cosine_schedule_with_warmup
+from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
 from itertools import islice
 import wandb
@@ -44,6 +44,7 @@ start_time = time.time()  # Record start time
 
 use_opm         = os.environ.get("USE_OPM", "0").strip() == "1"
 use_dist_matrix = os.environ.get("USE_DIST_MATRIX", "0").strip() == "1"
+axial_layers    = int(os.environ.get("AXIAL_LAYERS", "2"))
 
 class LazyCophyloformerDataset(Dataset):
     def __init__(self, preencoded_dir, mask_prob=0.1, pt_files=None):
@@ -123,6 +124,19 @@ class LazyCophyloformerDataset(Dataset):
             out["host_dist"] = sample["host_dist"]
             out["para_dist"] = sample["para_dist"]
         return out
+def get_cosine_schedule_with_warmup_eta_min(
+    optimizer, num_warmup_steps: int, num_training_steps: int, eta_min_ratio: float = 0.1
+) -> LambdaLR:
+    """Cosine decay with linear warmup and a non-zero LR floor (eta_min = eta_min_ratio * peak_lr)."""
+    def lr_lambda(current_step: int) -> float:
+        if current_step < num_warmup_steps:
+            return current_step / max(1, num_warmup_steps)
+        progress = (current_step - num_warmup_steps) / max(1, num_training_steps - num_warmup_steps)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return eta_min_ratio + (1.0 - eta_min_ratio) * cosine
+    return LambdaLR(optimizer, lr_lambda)
+
+
 def save_checkpoint(fabric, model, optimizer, lr_scheduler, epoch, val_loss, checkpoint_dir, filename, batch_idx=None, wandb_run_id=None, history=None):
     """Save model, optimizer, scheduler, and optional metric history via Fabric (DDP-safe, rank-0 only)."""
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -278,9 +292,9 @@ def main(fabric: Fabric):
     train_subset = torch.utils.data.Subset(train_dataset, train_indices)
     val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
     device = fabric.device
-    epochs = 20
+    epochs = 10
 
-    batch_size = 64
+    batch_size = 32
     overfit_mode = os.environ.get("OVERFIT_MODE", "0").strip() == "1"
     train_num_workers = int(os.environ.get("TRAIN_NUM_WORKERS", "0" if overfit_mode else "8"))
     val_num_workers = int(os.environ.get("VAL_NUM_WORKERS", str(train_num_workers)))
@@ -327,11 +341,11 @@ def main(fabric: Fabric):
     train_sampler = train_loader.sampler
 
     lr = 2e-4
-    wd = 0.01
+    wd = 0.05  # increased from 0.01 — stronger regularisation to close train/val gap
 
     # Asymmetric Huber: underprediction (target > pred) is penalized under_penalty times more.
     huber_delta = 1.0  # covers the full [0,1] label range quadratically
-    under_penalty = 2.5
+    under_penalty = 1.5  # reduced from 2.5 — was causing HGT systematic overprediction
 
     def asymmetric_huber(pred, target):
         err = target - pred  # positive = underpredicting, negative = overpredicting
@@ -347,14 +361,16 @@ def main(fabric: Fabric):
         return loss * weight
 
     criterion = asymmetric_huber  # used by validation calls
-    event_loss_weights = torch.tensor([1.0, 2.0, 1.0, 1.0], device=device)
+    event_loss_weights = torch.tensor([1.0, 1.5, 1.0, 1.0], device=device)  # HGT reduced from 2.0 — combined with under_penalty was too aggressive
     tail_weight_scale = 1.0
 
 
 
     model = Cophyloformer(
+        pair_dim=32,           # reduced from 64 — pair track is small, saves memory
+        axial_layers=axial_layers,  # increased default from 1→2 for more evolutionary signal
         gradient_checkpointing=gradient_checkpointing,
-        use_opm=use_opm,
+        use_opm=use_opm,       # default False — ConcatPairUpdate is faster at 2 axial layers
         use_dist_matrix=use_dist_matrix,
     )
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
@@ -363,12 +379,13 @@ def main(fabric: Fabric):
     # Scheduler must be created before checkpoint loading so its state can be restored
     steps_per_epoch = math.ceil(len(train_loader) / grad_accum_steps)
     total_steps = epochs * steps_per_epoch
-    warmup_steps = int(0.1 * total_steps)  # 10% of total steps for warmup
+    warmup_steps = int(0.15 * total_steps)  # 15% warmup — longer ramp prevents early instability
 
-    lr_scheduler = get_cosine_schedule_with_warmup(
+    lr_scheduler = get_cosine_schedule_with_warmup_eta_min(
         optimizer,
         num_warmup_steps=warmup_steps,
         num_training_steps=total_steps,
+        eta_min_ratio=0.1,  # LR floor at 10% of peak — avoids decay-to-zero instability
     )
 
     # Resume from checkpoint logic
@@ -455,6 +472,8 @@ def main(fabric: Fabric):
                 "gradient_checkpointing": gradient_checkpointing,
                 "use_opm": use_opm,
                 "use_dist_matrix": use_dist_matrix,
+                "axial_layers": axial_layers,
+                "pair_dim": 32,
                 "model_name": model.__class__.__name__,
                 "dataset_size": len(dataset),
                 **model_config
@@ -605,7 +624,7 @@ def main(fabric: Fabric):
                     global_opt_step = epoch * effective_opt_steps_per_epoch + optimizer_step_count
                     pct_done = int(round(optimizer_step_count / effective_opt_steps_per_epoch * 100))
                     mae_str = " | ".join(
-                        f"{event_names[i]}: {val_results['val_mae'][i]:.4f}"
+                        f"{event_names[i]}: {val_results['val_mae'][i]:.6f}"
                         for i in range(len(event_names))
                     )
                     current_lr = optimizer.param_groups[0]['lr']
@@ -613,7 +632,9 @@ def main(fabric: Fabric):
                         f"\n[Val {pct_done:3d}%] epoch {epoch+1}  "
                         f"opt-step {optimizer_step_count}/{effective_opt_steps_per_epoch}  "
                         f"lr: {current_lr:.2e}  "
-                        f"val_loss: {val_results['val_loss']:.6f}  MAE → {mae_str}"
+                        f"val_loss: {val_results['val_loss']:.8f}  "
+                        f"val_samples: {val_results.get('val_sample_count', '?')}  "
+                        f"MAE → {mae_str}"
                     )
                     wandb.log({
                         "train/loss_step": train_loss_step,
@@ -688,7 +709,7 @@ def main(fabric: Fabric):
                 sq_err  = (preds - labels).pow(2)
                 labels_abs = labels.abs()
 
-                rel_err = abs_err / (labels_abs + 1e-8)
+                rel_err = abs_err / (labels_abs.clamp(min=0.1) + 1e-8)
                 smape   = 2 * abs_err / (preds.abs() + labels_abs + 1e-8)
 
 
@@ -706,18 +727,7 @@ def main(fabric: Fabric):
 
         epoch_losses.append(epoch_loss)
 
-        if fabric.is_global_zero:
-            print(f"Epoch {epoch+1}/{epochs}, Training Loss: {epoch_loss:.6f}, Learning Rate: {optimizer.param_groups[0]['lr']}")
-            print(f"Effective batch size: {batch_size * grad_accum_steps * fabric.world_size}")
-
-        if fabric.is_global_zero:
-            wandb.log({
-                "epoch": epoch + 1,
-                "train/loss": epoch_loss,
-                "lr": optimizer.param_groups[0]['lr'],
-            }, step=(epoch + 1) * effective_opt_steps_per_epoch)
-
-        #Synchronize metric accumulators across all ranks
+        # Synchronize metric accumulators across all ranks (must happen before any wandb.log)
         sum_abs_err = fabric.all_reduce(sum_abs_err, reduce_op="sum")
         sum_sq_err  = fabric.all_reduce(sum_sq_err,  reduce_op="sum")
         sum_rel_err = fabric.all_reduce(sum_rel_err, reduce_op="sum")
@@ -736,8 +746,10 @@ def main(fabric: Fabric):
         mse_history.append(mse)
         mre_history.append(mre)
         smape_history.append(smape)
-    
+
         if fabric.is_global_zero:
+            print(f"Epoch {epoch+1}/{epochs}, Training Loss: {epoch_loss:.6f}, Learning Rate: {optimizer.param_groups[0]['lr']}")
+            print(f"Effective batch size: {batch_size * grad_accum_steps * fabric.world_size}")
             for i, event in enumerate(event_names):
                 print(f"  {event}: MAE {mae[i]:.6f}, MSE {mse[i]:.6f}, MRE {mre[i]:.6f}, sMAPE {smape[i]:.6f}")
             # Print predictions only if at least one batch ran
@@ -750,14 +762,17 @@ def main(fabric: Fabric):
                         print(f"  {event}: Pred {pred_val:.4f}, GT {gt_val:.4f}")
             else:
                 print(f"[Warning] No training batches completed in epoch {epoch+1}. Skipping sample preview.")
-        # Log event-wise metrics to W&B
-        if fabric.is_global_zero:
-            metrics = {f"train/MAE/{event_names[i]}": mae[i] for i in range(len(event_names))}
-            metrics.update({f"train/MSE/{event_names[i]}": mse[i] for i in range(len(event_names))})
-            metrics.update({f"train/MRE/{event_names[i]}": mre[i] for i in range(len(event_names))})
-            metrics.update({f"train/sMAPE/{event_names[i]}": smape[i] for i in range(len(event_names))})
-            metrics["epoch"] = epoch + 1
-            wandb.log(metrics, step=(epoch + 1) * effective_opt_steps_per_epoch)
+            # Single wandb.log call for ALL train epoch metrics
+            epoch_step = (epoch + 1) * effective_opt_steps_per_epoch
+            wandb.log({
+                "epoch": epoch + 1,
+                "train/loss": epoch_loss,
+                "lr": optimizer.param_groups[0]['lr'],
+                **{f"train/MAE/{event_names[i]}": mae[i]   for i in range(len(event_names))},
+                **{f"train/MSE/{event_names[i]}": mse[i]   for i in range(len(event_names))},
+                **{f"train/MRE/{event_names[i]}": mre[i]   for i in range(len(event_names))},
+                **{f"train/sMAPE/{event_names[i]}": smape[i] for i in range(len(event_names))},
+            }, step=epoch_step)
 
         # VALIDATION PHASE replaced by function
         val_results = run_full_validation(
@@ -789,14 +804,15 @@ def main(fabric: Fabric):
             for i, event in enumerate(event_names):
                 print(f"  {event}: val_MAE {val_mae[i]:.4f}, val_MSE {val_mse[i]:.4f}, val_MRE {val_mre[i]:.4f}, val_sMAPE {val_smape[i]:.4f}")
             print("----------------------------")
+            # Use epoch_step + 1 so val log never collides with the train log at the same step
             wandb.log({
                 "val/loss": val_loss,
-                **{f"val/MAE/{event_names[i]}": val_mae[i] for i in range(len(event_names))},
-                **{f"val/MSE/{event_names[i]}": val_mse[i] for i in range(len(event_names))},
-                **{f"val/MRE/{event_names[i]}": val_mre[i] for i in range(len(event_names))},
+                **{f"val/MAE/{event_names[i]}": val_mae[i]   for i in range(len(event_names))},
+                **{f"val/MSE/{event_names[i]}": val_mse[i]   for i in range(len(event_names))},
+                **{f"val/MRE/{event_names[i]}": val_mre[i]   for i in range(len(event_names))},
                 **{f"val/sMAPE/{event_names[i]}": val_smape[i] for i in range(len(event_names))},
                 "epoch": epoch + 1,
-            }, step=(epoch + 1) * effective_opt_steps_per_epoch)
+            }, step=epoch_step + 1)
 
         # Save end-of-epoch checkpoint (allows clean resume from the start of the next epoch)
         if fabric.is_global_zero and not disable_checkpoints:

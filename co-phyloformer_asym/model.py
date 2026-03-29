@@ -595,8 +595,10 @@ class Cophyloformer(nn.Module):
             nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True, dropout=0.1)
             for _ in range(self.num_cross_layers)
         ])
-        self.cross_norms_h = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
-        self.cross_norms_p = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
+        self.cross_norms_h  = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
+        self.cross_norms_p  = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
+        self.cross_norms_h2 = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
+        self.cross_norms_p2 = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
         self.cross_ffns_h  = nn.ModuleList([
             nn.Sequential(nn.Linear(hidden_dim, hidden_dim * 4), nn.GELU(), nn.Linear(hidden_dim * 4, hidden_dim))
             for _ in range(self.num_cross_layers)
@@ -609,7 +611,7 @@ class Cophyloformer(nn.Module):
         self.pair_pool_score_h = nn.Linear(hidden_dim, 1)
         self.pair_pool_score_p = nn.Linear(hidden_dim, 1)
 
-        self.concat_dim = 4 * hidden_dim
+        self.concat_dim = 5 * hidden_dim
 
         self.sim_time_fc = nn.Sequential(
             nn.Linear(1, self.concat_dim),
@@ -695,11 +697,11 @@ class Cophyloformer(nn.Module):
         for i in range(self.num_cross_layers):
             h_attn, _ = self.cross_attn_h2p[i](self.cross_norms_h[i](cross_host), cross_para, cross_para, key_padding_mask=kv_pad_mask)
             cross_host = cross_host + h_attn
-            cross_host = cross_host + self.cross_ffns_h[i](self.cross_norms_h[i](cross_host))
+            cross_host = cross_host + self.cross_ffns_h[i](self.cross_norms_h2[i](cross_host))
 
             p_attn, _ = self.cross_attn_p2h[i](self.cross_norms_p[i](cross_para), cross_host, cross_host, key_padding_mask=kv_pad_mask)
             cross_para = cross_para + p_attn
-            cross_para = cross_para + self.cross_ffns_p[i](self.cross_norms_p[i](cross_para))
+            cross_para = cross_para + self.cross_ffns_p[i](self.cross_norms_p2[i](cross_para))
 
         def masked_softmax_pool(logits, seq, mask):
             logits = logits.masked_fill(~mask, -1e4)
@@ -711,7 +713,7 @@ class Cophyloformer(nn.Module):
         host_pooled  = masked_softmax_pool(self.pair_pool_score_h(cross_host).squeeze(-1), cross_host, pair_present)
         para_pooled  = masked_softmax_pool(self.pair_pool_score_p(cross_para).squeeze(-1), cross_para, pair_present)
 
-        attended_pairs = torch.cat([host_cls, parasite_cls, host_pooled, para_pooled], dim=-1)
+        attended_pairs = torch.cat([host_cls, parasite_cls, global_cross, host_pooled, para_pooled], dim=-1)
         attended_pairs = self.feature_mixer(attended_pairs)
 
         if sim_time is not None:

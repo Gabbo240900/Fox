@@ -64,7 +64,7 @@ export WANDB__SERVICE_WAIT=300
 
 export USE_OPM=1
 export USE_DIST_MATRIX=1
-export MID_EPOCH_VALS=9 # Number of mid-epoch val checks (evenly spaced). If 0 only the final epoch val is done.
+export MID_EPOCH_VALS=5 # Number of mid-epoch val checks (evenly spaced). If 0 only the final epoch val is done.
 export SAVE_MID_EPOCH_VAL_CKPTS=1 # If 0 only the final epoch checkpoint is saved, otherwise also mid-epoch val checkpoints.
 export COLLECT_TRAIN_PREDICTIONS=1 #IF 0 train-vs-val scatter plots are skipped.
 export WANDB_WATCH=0  #IF 0 no parameter/gradient histograms in W&B.

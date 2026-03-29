@@ -618,7 +618,6 @@ def main(fabric: Fabric):
                     wandb.log({
                         "train/loss_step": train_loss_step,
                         "lr": optimizer.param_groups[0]['lr'],
-                        "step": global_opt_step,
                         **{f"train/MAE_step/{event_names[i]}": train_mae_step[i]   for i in range(len(event_names))},
                         **{f"train/MSE_step/{event_names[i]}": train_mse_step[i]   for i in range(len(event_names))},
                         **{f"train/MRE_step/{event_names[i]}": train_mre_step[i]   for i in range(len(event_names))},
@@ -628,7 +627,7 @@ def main(fabric: Fabric):
                         **{f"val/MSE_step/{event_names[i]}": val_results["val_mse"][i] for i in range(len(event_names))},
                         **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
                         **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))}
-                    })
+                    }, step=global_opt_step)
                     # History at mid-epoch contains all fully completed epochs so far
                     _mid_history = {
                         "epoch_losses":      epoch_losses,

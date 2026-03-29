@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 
 
 class MSAEmbedder(nn.Module):
@@ -504,8 +505,7 @@ class MSAEncoder(nn.Module):
         # EvoPF blocks (MSA track + pair track)
         for blk in self.evopf_blocks:
             if self.gradient_checkpointing and self.training:
-                from torch.utils.checkpoint import checkpoint
-                x, pairs = checkpoint(blk, x, pairs, x_ids, use_reentrant=False)
+                x, pairs = grad_checkpoint(blk, x, pairs, x_ids, use_reentrant=False)
             else:
                 x, pairs = blk(x, pairs, x_ids)
 

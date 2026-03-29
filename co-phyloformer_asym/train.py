@@ -534,6 +534,6 @@ if __name__ == "__main__":
         accelerator="cuda" if torch.cuda.is_available() else "cpu",
         devices="auto",
         precision="bf16-mixed",
-        strategy=DDPStrategy(find_unused_parameters=False),
+        strategy=DDPStrategy(find_unused_parameters=True),
     )
     fabric.launch(main)

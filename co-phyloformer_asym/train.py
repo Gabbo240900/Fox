@@ -58,16 +58,7 @@ def jukes_cantor_dist(msa: torch.Tensor) -> torch.Tensor:
 class LazyCophyloformerDataset(Dataset):
     def __init__(self, preencoded_dir, pt_files=None):
         if pt_files is None:
-            all_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
-            valid = []
-            for p in all_files:
-                try:
-                    s = torch.load(p, map_location="cpu", weights_only=False)
-                    if s.get("host_msas") and s.get("parasite_msas"):
-                        valid.append(p)
-                except Exception:
-                    continue
-            self.pt_files = valid
+            self.pt_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
         else:
             self.pt_files = list(pt_files)
 
@@ -76,6 +67,10 @@ class LazyCophyloformerDataset(Dataset):
 
     def __getitem__(self, idx):
         sample = torch.load(self.pt_files[idx], map_location="cpu", weights_only=False)
+
+        if not sample.get("host_msas") or not sample.get("parasite_msas"):
+            print(f"[Warning] sample {self.pt_files[idx]} missing host or parasite MSAs, skipping")
+            return None
 
         host_list = list(sample["host_msas"].keys())
         para_list = list(sample["parasite_msas"].keys())
@@ -106,6 +101,11 @@ class LazyCophyloformerDataset(Dataset):
 
 
 def collate_fn(batch):
+    batch = [s for s in batch if s is not None]
+    if len(batch) == 0:
+        print("[Warning] all samples in batch were invalid, returning None")
+        return None
+
     def pad(msas, pad_val=PAD_ID):
         max_n = max(m.shape[0] for m in msas)
         return torch.stack([F.pad(m, (0, 0, 0, max_n - m.shape[0]), value=pad_val) for m in msas])
@@ -384,6 +384,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
 
         for batch_idx, batch in tqdm(enumerate(train_loader), total=len(train_loader),
                                      desc=f"Epoch {epoch+1}", leave=False):
+            if batch is None:
+                continue
             batch["host_msa"]     = batch["host_msa"].to(device, non_blocking=True)
             batch["parasite_msa"] = batch["parasite_msa"].to(device, non_blocking=True)
             batch["sim_time"]     = batch["sim_time"].to(device, non_blocking=True)

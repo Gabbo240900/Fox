@@ -144,70 +144,120 @@ def cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps, eta_min_ra
     return LambdaLR(optimizer, lr_lambda)
 
 
-def save_checkpoint(fabric, model, optimizer, scheduler, epoch, val_loss, path, history=None, batch_idx=None):
-    state = {
-        "model": model, "optimizer": optimizer,
-        "lr_scheduler": scheduler.state_dict(),
-        "epoch": epoch, "val_loss": val_loss,
-    }
-    if batch_idx is not None:
-        state["batch_idx"] = batch_idx
-    if history is not None:
-        state["history"] = history
-    fabric.save(path, state)
+def save_checkpoint(fabric, model, optimizer, scheduler, epoch, global_step, epoch_step,
+                    val_loss, hparams, ckpt_dir, best_val, end_of_epoch=False, best_only=False):
+    """Save a checkpoint following the Phyloformer-2 schema.
+
+    Unless best_only=True, always writes latest.ckpt (and last_epoch.ckpt at end of epoch).
+    When val_loss improves, always writes best_val_loss.ckpt.
+    Returns the (possibly updated) best_val.
+    """
+    new_best_val = best_val
+    if fabric.is_global_zero:
+        # Skip building state entirely if best_only and no improvement
+        if best_only and val_loss >= best_val:
+            pass
+        else:
+            state = {
+                "model":      fabric.unwrap_model(model).state_dict(),
+                "optimizer":  optimizer.state_dict(),
+                "scheduler":  scheduler.state_dict(),
+                "epoch":      epoch,
+                "step":       global_step,
+                "epoch_step": 0 if end_of_epoch else epoch_step,
+                "val_loss":   val_loss,
+                "hparams":    hparams,
+            }
+            os.makedirs(ckpt_dir, exist_ok=True)
+            if not best_only:
+                torch.save(state, os.path.join(ckpt_dir, "latest.ckpt"))
+                if end_of_epoch:
+                    torch.save(state, os.path.join(ckpt_dir, "last_epoch.ckpt"))
+            if val_loss < best_val:
+                torch.save(state, os.path.join(ckpt_dir, "best_val_loss.ckpt"))
+                new_best_val = val_loss
+                print(f"  [Checkpoint] new best val={new_best_val:.6f} → best_val_loss.ckpt")
+    fabric.barrier()
+    return new_best_val
 
 
-def load_checkpoint(fabric, model, optimizer, scheduler, path):
-    state = {"model": model, "optimizer": optimizer}
-    meta = fabric.load(path, state)
-    if scheduler is not None and "lr_scheduler" in meta:
-        scheduler.load_state_dict(meta["lr_scheduler"])
-    return (
-        meta.get("epoch", 0),
-        meta.get("val_loss", float("inf")),
-        meta.get("batch_idx", None),
-        meta.get("history", None),
-    )
+def load_checkpoint(fabric, model, optimizer, scheduler, ckpt):
+    """Restore model, optimizer and scheduler from a checkpoint dict.
+
+    Returns (start_epoch, global_step, epoch_step, best_val).
+    """
+    fabric.unwrap_model(model).load_state_dict(ckpt["model"])
+    optimizer.load_state_dict(ckpt["optimizer"])
+    scheduler.load_state_dict(ckpt["scheduler"])
+    start_epoch = ckpt["epoch"]
+    global_step = ckpt["step"] + 1
+    epoch_step  = ckpt.get("epoch_step", 0)
+    best_val    = ckpt["val_loss"]
+    if fabric.is_global_zero:
+        print(f"[Resume] epoch={start_epoch}  step={global_step}  best_val={best_val:.6f}")
+    return start_epoch, global_step, epoch_step, best_val
 
 
-def plot_scatter(preds, labels, split, event_names):
+def plot_scatter(train_preds, train_labels, val_preds, val_labels, event_names):
+    """Combined train+val scatter plots per event, returned as wandb Images."""
     images = {}
     for i, name in enumerate(event_names):
-        fig, ax = plt.subplots(figsize=(4, 4))
-        x = labels[:, i].numpy()
-        y = preds[:, i].numpy()
-        ax.scatter(x, y, alpha=0.3, s=4)
-        lo = min(x.min(), y.min())
-        hi = max(x.max(), y.max())
-        ax.plot([lo, hi], [lo, hi], "r--", lw=1)
-        ax.set_xlabel("True")
-        ax.set_ylabel("Pred")
-        ax.set_title(f"{split} — {name}")
+        fig, ax = plt.subplots(figsize=(8, 8))
+        tl = train_labels[:, i].numpy()
+        tp = train_preds[:, i].numpy()
+        vl = val_labels[:, i].numpy()
+        vp = val_preds[:, i].numpy()
+        ax.scatter(tl, tp, alpha=0.4, s=10, color="blue", label="Train")
+        ax.scatter(vl, vp, alpha=0.4, s=10, color="orange", label="Validation")
+        lo = min(tl.min(), tp.min(), vl.min(), vp.min())
+        hi = max(tl.max(), tp.max(), vl.max(), vp.max())
+        ax.plot([lo, hi], [lo, hi], "r--", lw=1, label="Perfect prediction")
+        ax.set_xlabel("True Labels")
+        ax.set_ylabel("Predictions")
+        ax.set_title(f"Train vs Val — {name}")
+        ax.legend()
+        ax.grid(True, linestyle="--", linewidth=0.5)
         fig.tight_layout()
-        images[f"scatter/{split}/{name}"] = wandb.Image(fig)
+        images[f"scatter/{name}"] = wandb.Image(fig)
         plt.close(fig)
     return images
 
 
-def main(fabric: Fabric):
+def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     # Config
     # -------------------------------------------------------------------------
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
-    epochs          = 500
-    batch_size      = 32
-    grad_accum      = 8
-    lr              = 2e-4
-    wd              = 0.05
-    huber_delta     = 1.0
-    under_penalty   = 1.5
-    tail_weight     = 1.0
-    mid_epoch_vals  = max(0, int(os.environ.get("MID_EPOCH_VALS", "2")))
-    num_workers     = int(os.environ.get("NUM_WORKERS", "8"))
-    disable_ckpt    = os.environ.get("DISABLE_CHECKPOINTS", "0").strip() == "1"
-    gradient_ckpt   = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
-    checkpoint_dir  = "checkpoints"
-    device          = fabric.device
+    preencoded_dir = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
+    epochs         = 500
+    batch_size     = 32
+    grad_accum     = 8
+    lr             = 2e-4
+    wd             = 0.05
+    huber_delta    = 1.0
+    under_penalty  = 1.5
+    tail_weight    = 1.0
+    mid_epoch_vals = int(os.environ.get("MID_EPOCH_VALS", "8"))
+    num_workers    = int(os.environ.get("NUM_WORKERS", "8"))
+    ckpt_dir       = os.environ.get("CKPT_DIR", "checkpoints")
+    device         = fabric.device
+
+    hparams = {
+        "preencoded_dir":  preencoded_dir,
+        "epochs":          epochs,
+        "batch_size":      batch_size,
+        "grad_accum":      grad_accum,
+        "lr":              lr,
+        "wd":              wd,
+        "huber_delta":     huber_delta,
+        "under_penalty":   under_penalty,
+        "tail_weight":     tail_weight,
+        "axial_layers":    axial_layers,
+        "use_opm":         use_opm,
+        "use_dist_matrix": use_dist_matrix,
+        "pair_dim":        32,
+        "mid_epoch_vals":  mid_epoch_vals,
+        "ckpt_dir":        ckpt_dir,
+    }
 
     event_loss_weights = torch.tensor([1.0, 1.5, 1.0, 1.0], device=device)
 
@@ -245,104 +295,95 @@ def main(fabric: Fabric):
     # -------------------------------------------------------------------------
     model = Cophyloformer(
         pair_dim=32, axial_layers=axial_layers,
-        gradient_checkpointing=gradient_ckpt,
         use_opm=use_opm, use_dist_matrix=use_dist_matrix,
     )
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)
 
-    steps_per_epoch = math.ceil(len(train_loader) / grad_accum)
-    total_steps     = epochs * steps_per_epoch
+    opt_steps_per_epoch = math.ceil(len(train_loader) / grad_accum)
+    total_steps         = epochs * opt_steps_per_epoch
     warmup_steps    = int(0.15 * total_steps)
     scheduler = cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps, eta_min_ratio=0.1)
 
     # -------------------------------------------------------------------------
-    # Resume
+    # Resume from checkpoint if provided
     # -------------------------------------------------------------------------
     start_epoch = 0
-    start_batch = 0
+    global_step = 0
     best_val    = float("inf")
-    history     = {"epoch_losses": [], "val_loss_history": [],
-                   "mae_history": [], "val_mae_history": []}
 
-    resume_path = os.environ.get("RESUME_CKPT")
-    if resume_path and os.path.exists(resume_path):
-        if fabric.is_global_zero:
-            print(f"[Resume] Loading {resume_path}")
-        loaded_epoch, loaded_val, loaded_batch, loaded_hist = load_checkpoint(
-            fabric, model, optimizer, scheduler, resume_path)
-        start_epoch = loaded_epoch
-        start_batch = (loaded_batch + 1) if loaded_batch is not None else 0
-        best_val    = loaded_val
-        if loaded_hist:
-            history = loaded_hist
-        if fabric.is_global_zero:
-            print(f"[Resume] epoch={start_epoch}  best_val={best_val:.6f}  batch={loaded_batch}")
+    if ckpt_to_load is not None:
+        start_epoch, global_step, _, best_val = load_checkpoint(
+            fabric, model, optimizer, scheduler, ckpt_to_load
+        )
 
     # -------------------------------------------------------------------------
-    # WandB — always fresh run, replay history so every offline file is complete
+    # WandB
     # -------------------------------------------------------------------------
     if fabric.is_global_zero:
-        run = wandb.init(
+        wandb.init(
             entity=os.environ.get("WANDB_ENTITY", "cophylo_team"),
             project=os.environ.get("WANDB_PROJECT", "CoPhyloformer"),
             name=os.environ.get("WANDB_NAME", "run"),
             group=os.environ.get("WANDB_NAME", "run"),
             mode=os.environ.get("WANDB_MODE", "offline"),
             config={
-                "epochs": epochs, "batch_size": batch_size, "lr": lr, "wd": wd,
-                "grad_accum": grad_accum, "total_steps": total_steps,
-                "warmup_steps": warmup_steps, "axial_layers": axial_layers,
-                "use_opm": use_opm, "use_dist_matrix": use_dist_matrix,
-                "pair_dim": 32, "dataset_size": len(dataset), "start_epoch": start_epoch,
+                **hparams,
+                "total_steps":  total_steps,
+                "warmup_steps": warmup_steps,
+                "dataset_size": len(dataset),
+                "start_epoch":  start_epoch,
                 "params": sum(p.numel() for p in model.parameters() if p.requires_grad),
             },
         )
-        # Replay history so this offline file is self-contained
-        for ep_i, ep_loss in enumerate(history["epoch_losses"]):
-            ep_step = (ep_i + 1) * steps_per_epoch
-            log = {"epoch": ep_i + 1, "train/loss": ep_loss}
-            if ep_i < len(history["mae_history"]):
-                for j, n in enumerate(EVENT_NAMES):
-                    log[f"train/MAE/{n}"] = history["mae_history"][ep_i][j]
-            wandb.log(log, step=ep_step)
-            if ep_i < len(history["val_loss_history"]):
-                vlog = {"epoch": ep_i + 1, "val/loss": history["val_loss_history"][ep_i]}
-                if ep_i < len(history["val_mae_history"]):
-                    for j, n in enumerate(EVENT_NAMES):
-                        vlog[f"val/MAE/{n}"] = history["val_mae_history"][ep_i][j]
-                wandb.log(vlog, step=ep_step + 1)
 
     # -------------------------------------------------------------------------
     # Training loop
     # -------------------------------------------------------------------------
+    def run_mid_val(label, epoch, global_step, epoch_step, best_val):
+        """Run validation, log to wandb, save best_val_loss.ckpt only if improved."""
+        fabric.barrier()
+        vr = run_full_validation(fabric, model, val_loader, asymmetric_huber,
+                                  EVENT_NAMES, device,
+                                  event_loss_weights=event_loss_weights,
+                                  tail_weight_scale=tail_weight)
+        fabric.barrier()
+        if fabric.is_global_zero:
+            mae_s = " | ".join(f"{EVENT_NAMES[i]}: {vr['val_mae'][i]:.4f}" for i in range(len(EVENT_NAMES)))
+            print(f"  [{label}] loss={vr['val_loss']:.6f}  MAE → {mae_s}  lr={optimizer.param_groups[0]['lr']:.2e}")
+            wandb.log({"val/loss_mid": vr["val_loss"],
+                       **{f"val/MAE_mid/{EVENT_NAMES[i]}": vr["val_mae"][i] for i in range(len(EVENT_NAMES))}},
+                      step=global_step)
+        return save_checkpoint(
+            fabric, model, optimizer, scheduler,
+            epoch, global_step, epoch_step, vr["val_loss"],
+            hparams, ckpt_dir, best_val, end_of_epoch=False, best_only=True,
+        )
+
     for epoch in range(start_epoch, epochs):
         train_sampler.set_epoch(epoch)
-        opt_steps_per_epoch = math.ceil(len(train_loader) / grad_accum)
 
-        # mid-epoch val trigger steps
+        # evenly-spaced mid-epoch validation trigger steps
         mid_val_steps = {
             math.ceil(k * opt_steps_per_epoch / (mid_epoch_vals + 1))
             for k in range(1, mid_epoch_vals + 1)
         }
+
         if fabric.is_global_zero:
             print(f"\nEpoch {epoch+1}/{epochs}")
 
-        model.train()
-        total_loss   = 0.0
-        num_batches  = 0
-        opt_step     = (start_batch // grad_accum) if (epoch == start_epoch and start_batch > 0) else 0
-        mid_val_steps = {s for s in mid_val_steps if s > opt_step}
+        # beginning-of-epoch validation (no checkpoint unless new best)
+        best_val = run_mid_val("Begin", epoch, global_step, 0, best_val)
 
-        sum_abs = torch.zeros(len(EVENT_NAMES), device=device)
+        total_loss  = 0.0
+        num_batches = 0
+        epoch_step  = 0
+
+        sum_abs   = torch.zeros(len(EVENT_NAMES), device=device)
         n_samples = 0
 
         for batch_idx, batch in tqdm(enumerate(train_loader), total=len(train_loader),
                                      desc=f"Epoch {epoch+1}", leave=False):
-            # skip already-processed batches on resume
-            if epoch == start_epoch and batch_idx < start_batch:
-                continue
-
             batch["host_msa"]     = batch["host_msa"].to(device, non_blocking=True)
             batch["parasite_msa"] = batch["parasite_msa"].to(device, non_blocking=True)
             batch["sim_time"]     = batch["sim_time"].to(device, non_blocking=True)
@@ -374,7 +415,14 @@ def main(fabric: Fabric):
                 if torch.isfinite(gnorm):
                     optimizer.step()
                     scheduler.step()
-                    opt_step += 1
+                    epoch_step  += 1
+                    global_step += 1
+
+                    # mid-epoch validation (no checkpoint unless new best)
+                    if epoch_step in mid_val_steps:
+                        mid_val_steps.discard(epoch_step)
+                        pct = int(round(epoch_step / opt_steps_per_epoch * 100))
+                        best_val = run_mid_val(f"Val {pct:3d}%", epoch, global_step, epoch_step, best_val)
                 else:
                     if fabric.is_global_zero:
                         print(f"[Warning] non-finite grad norm {gnorm:.2e} at batch {batch_idx+1}, skipping")
@@ -383,27 +431,8 @@ def main(fabric: Fabric):
             total_loss  += loss.item()
             num_batches += 1
             with torch.no_grad():
-                sum_abs  += (outputs.detach() - batch["labels"]).abs().sum(dim=0)
+                sum_abs   += (outputs.detach() - batch["labels"]).abs().sum(dim=0)
                 n_samples += outputs.shape[0]
-
-            # mid-epoch validation
-            if opt_step in mid_val_steps:
-                mid_val_steps.discard(opt_step)
-                fabric.barrier()
-                vr = run_full_validation(fabric, model, val_loader, asymmetric_huber,
-                                         EVENT_NAMES, device,
-                                         event_loss_weights=event_loss_weights,
-                                         tail_weight_scale=tail_weight)
-                fabric.barrier()
-                if fabric.is_global_zero:
-                    pct = int(round(opt_step / opt_steps_per_epoch * 100))
-                    mae_s = " | ".join(f"{EVENT_NAMES[i]}: {vr['val_mae'][i]:.4f}" for i in range(len(EVENT_NAMES)))
-                    print(f"  [Val {pct:3d}%] loss={vr['val_loss']:.6f}  MAE → {mae_s}  "
-                          f"lr={optimizer.param_groups[0]['lr']:.2e}")
-                    gstep = epoch * opt_steps_per_epoch + opt_step
-                    wandb.log({"val/loss_mid": vr["val_loss"],
-                               **{f"val/MAE_mid/{EVENT_NAMES[i]}": vr["val_mae"][i] for i in range(len(EVENT_NAMES))}},
-                              step=gstep)
 
         # --- End of epoch ---
         epoch_loss = fabric.all_reduce(torch.tensor(total_loss / max(1, num_batches), device=device),
@@ -412,14 +441,11 @@ def main(fabric: Fabric):
         global_n   = int(fabric.all_reduce(torch.tensor(n_samples, device=device), reduce_op="sum").item())
         mae = (global_abs / max(1, global_n)).cpu().tolist()
 
-        history["epoch_losses"].append(epoch_loss)
-        history["mae_history"].append(mae)
-
         if fabric.is_global_zero:
             print(f"  train loss={epoch_loss:.6f}  lr={optimizer.param_groups[0]['lr']:.2e}")
             print("  MAE  " + "  ".join(f"{EVENT_NAMES[i]}: {mae[i]:.4f}" for i in range(len(EVENT_NAMES))))
 
-        # end-of-epoch validation
+        # end-of-epoch validation + checkpoint
         fabric.barrier()
         vr = run_full_validation(fabric, model, val_loader, asymmetric_huber,
                                   EVENT_NAMES, device,
@@ -428,13 +454,11 @@ def main(fabric: Fabric):
         fabric.barrier()
         val_loss = vr["val_loss"]
         val_mae  = vr["val_mae"]
-        history["val_loss_history"].append(val_loss)
-        history["val_mae_history"].append(val_mae)
 
         if fabric.is_global_zero:
             print(f"  val  loss={val_loss:.6f}")
             print("  MAE  " + "  ".join(f"{EVENT_NAMES[i]}: {val_mae[i]:.4f}" for i in range(len(EVENT_NAMES))))
-            ep_step = (epoch + 1) * steps_per_epoch
+            ep_step = (epoch + 1) * opt_steps_per_epoch
             wandb.log({
                 "epoch": epoch + 1, "train/loss": epoch_loss,
                 "lr": optimizer.param_groups[0]["lr"],
@@ -445,31 +469,17 @@ def main(fabric: Fabric):
                 **{f"val/MAE/{EVENT_NAMES[i]}": val_mae[i] for i in range(len(EVENT_NAMES))},
             }, step=ep_step + 1)
 
-        # checkpoint
-        if not disable_ckpt:
-            ckpt_path = os.path.join(checkpoint_dir, f"epoch_{epoch+1}_end.pth")
-            save_checkpoint(fabric, model, optimizer, scheduler,
-                            epoch + 1, val_loss, ckpt_path, history=history)
-            if fabric.is_global_zero:
-                print(f"  [Checkpoint] saved {ckpt_path}")
-
-            if val_loss < best_val:
-                best_val = val_loss
-                best_path = os.path.join(checkpoint_dir, "best.pth")
-                save_checkpoint(fabric, model, optimizer, scheduler,
-                                epoch + 1, best_val, best_path, history=history)
-                if fabric.is_global_zero:
-                    print(f"  [Checkpoint] new best val={best_val:.6f} → {best_path}")
-        elif fabric.is_global_zero and val_loss < best_val:
-            best_val = val_loss
-
-        model.train()
+        best_val = save_checkpoint(
+            fabric, model, optimizer, scheduler,
+            epoch, global_step, epoch_step, val_loss,
+            hparams, ckpt_dir, best_val, end_of_epoch=True,
+        )
 
     # -------------------------------------------------------------------------
     # Final save + scatter plots
     # -------------------------------------------------------------------------
     if fabric.is_global_zero:
-        torch.save(model.state_dict(), "cophyloformer_final.pth")
+        torch.save(fabric.unwrap_model(model).state_dict(), "cophyloformer_final.pth")
 
         raw_model = fabric.unwrap_model(model)
         raw_model.eval()
@@ -481,7 +491,7 @@ def main(fabric: Fabric):
         )
         val_preds, val_labels = compute_val_predictions(raw_model, scatter_val_loader, device)
 
-        # train scatter — up to 2000 random samples, no masking
+        # train scatter — up to 2000 random samples
         scatter_n = min(2000, len(train_idx))
         scatter_idx = random.sample(train_idx, scatter_n)
         scatter_train_ds = LazyCophyloformerDataset(
@@ -494,9 +504,10 @@ def main(fabric: Fabric):
         )
         train_preds, train_labels = compute_val_predictions(raw_model, scatter_train_loader, device)
 
+        if val_preds is not None and train_preds is not None:
+            wandb.log(plot_scatter(train_preds, train_labels, val_preds, val_labels, EVENT_NAMES))
+
         if val_preds is not None:
-            wandb.log(plot_scatter(val_preds, val_labels, "val", EVENT_NAMES))
-            # save validation predictions to CSV
             import csv
             csv_path = "val_predictions.csv"
             with open(csv_path, "w", newline="") as f:
@@ -511,18 +522,34 @@ def main(fabric: Fabric):
             print(f"  [CSV] saved {csv_path}  ({len(val_labels)} rows)")
             wandb.save(csv_path)
 
-        if train_preds is not None:
-            wandb.log(plot_scatter(train_preds, train_labels, "train", EVENT_NAMES))
-
         wandb.finish()
         print("Training complete.")
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser("Train Co-Phyloformer")
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("train", description="Train from scratch")
+    resumer = subparsers.add_parser("resume", description="Resume from a checkpoint")
+    resumer.add_argument("checkpoint", help="Path to .ckpt file (latest.ckpt or last_epoch.ckpt)")
+    args = parser.parse_args()
+
+    ckpt_to_load = None
+    if args.command == "resume":
+        ckpt_to_load = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+        # If resuming from an end-of-epoch checkpoint, start from the next epoch
+        if "last_epoch.ckpt" in args.checkpoint:
+            ckpt_to_load["epoch"] += 1
+
+    def _main(fabric: Fabric):
+        main(fabric, ckpt_to_load=ckpt_to_load)
+
     fabric = Fabric(
         accelerator="cuda" if torch.cuda.is_available() else "cpu",
         devices="auto",
         precision="bf16-mixed",
         strategy=DDPStrategy(find_unused_parameters=True),
     )
-    fabric.launch(main)
+    fabric.launch(_main)

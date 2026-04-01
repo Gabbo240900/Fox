@@ -3,8 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
-from torch.utils.checkpoint import checkpoint as grad_checkpoint
-
 
 class MSAEmbedder(nn.Module):
     VOCAB_SIZE = 23  # 0-19 AAs, 20=gap, 21=UNK, 22=PAD
@@ -282,12 +280,10 @@ class MSAEncoder(nn.Module):
         pair_dim=32,
         num_heads=8,
         axial_layers=2,
-        gradient_checkpointing: bool = False,
         use_opm: bool = False,
         use_dist_matrix: bool = False,
     ):
         super().__init__()
-        self.gradient_checkpointing = gradient_checkpointing
         self.pair_dim        = pair_dim
         self.use_dist_matrix = use_dist_matrix
 
@@ -325,10 +321,7 @@ class MSAEncoder(nn.Module):
             pairs = torch.zeros(B, N, N, self.pair_dim, device=x.device, dtype=x.dtype)
 
         for blk in self.evopf_blocks:
-            if self.gradient_checkpointing and self.training:
-                x, pairs = grad_checkpoint(blk, x, pairs, x_ids, use_reentrant=False)
-            else:
-                x, pairs = blk(x, pairs, x_ids)
+            x, pairs = blk(x, pairs, x_ids)
 
         # Max-pool over S, ignoring PAD tokens → (B, N, hidden_dim)
         pad_mask = (x_ids != 22)
@@ -352,7 +345,6 @@ class Cophyloformer(nn.Module):
         pair_dim=32,
         num_heads=8,
         axial_layers=2,
-        gradient_checkpointing: bool = False,
         use_opm: bool = False,
         use_dist_matrix: bool = False,
     ):
@@ -366,14 +358,12 @@ class Cophyloformer(nn.Module):
         self.host_encoder = MSAEncoder(
             hidden_dim, pair_dim, num_heads,
             axial_layers=axial_layers,
-            gradient_checkpointing=gradient_checkpointing,
             use_opm=use_opm,
             use_dist_matrix=use_dist_matrix,
         )
         self.parasite_encoder = MSAEncoder(
             hidden_dim, pair_dim, num_heads,
             axial_layers=axial_layers,
-            gradient_checkpointing=gradient_checkpointing,
             use_opm=use_opm,
             use_dist_matrix=use_dist_matrix,
         )

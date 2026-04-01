@@ -1,5 +1,4 @@
 import torch
-from torch.utils.checkpoint import checkpoint as grad_checkpoint
 
 
 def run_full_validation(

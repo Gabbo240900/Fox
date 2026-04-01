@@ -56,8 +56,7 @@ def jukes_cantor_dist(msa: torch.Tensor) -> torch.Tensor:
 
 
 class LazyCophyloformerDataset(Dataset):
-    def __init__(self, preencoded_dir, mask_prob=0.1, pt_files=None):
-        self.mask_prob = float(mask_prob)
+    def __init__(self, preencoded_dir, pt_files=None):
         if pt_files is None:
             all_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
             valid = []
@@ -78,14 +77,6 @@ class LazyCophyloformerDataset(Dataset):
     def __getitem__(self, idx):
         sample = torch.load(self.pt_files[idx], map_location="cpu", weights_only=False)
 
-        def mask_seq(seq, prob=self.mask_prob):
-            if prob <= 0:
-                return seq
-            mask = (torch.rand_like(seq, dtype=torch.float32) < prob) & (seq != PAD_ID)
-            out = seq.clone()
-            out[mask] = 23  # MASK token
-            return out
-
         host_list = list(sample["host_msas"].keys())
         para_list = list(sample["parasite_msas"].keys())
         h_idx = {n: i for i, n in enumerate(host_list)}
@@ -96,8 +87,8 @@ class LazyCophyloformerDataset(Dataset):
             if p in p_idx and h in h_idx
         ]
         out = {
-            "host_msa":    torch.stack([mask_seq(encode_sequence(s)) for s in sample["host_msas"].values()]),
-            "parasite_msa": torch.stack([mask_seq(encode_sequence(s)) for s in sample["parasite_msas"].values()]),
+            "host_msa":    torch.stack([encode_sequence(s) for s in sample["host_msas"].values()]),
+            "parasite_msa": torch.stack([encode_sequence(s) for s in sample["parasite_msas"].values()]),
             "mappings": mappings,
             "labels": torch.tensor(
                 [sample["event_frequencies"].get(e, 0.0) for e in EVENT_NAMES],
@@ -202,8 +193,8 @@ def main(fabric: Fabric):
     # -------------------------------------------------------------------------
     # Config
     # -------------------------------------------------------------------------
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded/"
-    epochs          = int(os.environ.get("EPOCHS", "20"))
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
+    epochs          = 500
     batch_size      = 32
     grad_accum      = 8
     lr              = 2e-4
@@ -232,14 +223,12 @@ def main(fabric: Fabric):
     # -------------------------------------------------------------------------
     # Data
     # -------------------------------------------------------------------------
-    dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0)
+    dataset = LazyCophyloformerDataset(preencoded_dir)
     indices = list(range(len(dataset)))
     train_idx, val_idx = train_test_split(indices, test_size=0.2, random_state=42)
 
-    train_ds = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.15, pt_files=dataset.pt_files)
-    val_ds   = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0,  pt_files=dataset.pt_files)
-    train_subset = torch.utils.data.Subset(train_ds, train_idx)
-    val_subset   = torch.utils.data.Subset(val_ds,   val_idx)
+    train_subset = torch.utils.data.Subset(dataset, train_idx)
+    val_subset   = torch.utils.data.Subset(dataset, val_idx)
 
     train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True,
                               collate_fn=collate_fn, num_workers=num_workers,
@@ -496,7 +485,7 @@ def main(fabric: Fabric):
         scatter_n = min(2000, len(train_idx))
         scatter_idx = random.sample(train_idx, scatter_n)
         scatter_train_ds = LazyCophyloformerDataset(
-            preencoded_dir, mask_prob=0.0,
+            preencoded_dir,
             pt_files=[dataset.pt_files[i] for i in scatter_idx],
         )
         scatter_train_loader = DataLoader(

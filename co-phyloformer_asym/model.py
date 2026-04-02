@@ -86,6 +86,47 @@ class ColAttnPairBias(nn.Module):
         self.out_proj = nn.Linear(dim, dim)
         self.dropout  = nn.Dropout(dropout)
 
+    def _attn_chunk(self, xn_chunk, bias, leaf_pad, B, N):
+        """Run column attention on a chunk of S positions.
+
+        xn_chunk: [B, S_c, N, D]   (S_c = chunk size)
+        bias:     [B, H, N, N]     (shared across all S positions)
+        """
+        S_c = xn_chunk.shape[1]
+        H, d_h, D = self.n_heads, self.head_dim, xn_chunk.shape[-1]
+
+        xl = xn_chunk.reshape(B * S_c, N, D)
+
+        def _proj(linear):
+            return linear(xl).view(B * S_c, N, H, d_h).transpose(1, 2)
+
+        q = _proj(self.q_proj)
+        k = _proj(self.k_proj)
+        v = _proj(self.v_proj)
+        g = torch.sigmoid(_proj(self.g_proj))
+
+        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B*S_c, H, N, N]
+        scores = scores.view(B, S_c, H, N, N) + bias.unsqueeze(1)   # broadcast
+
+        if leaf_pad.any():
+            km = leaf_pad[:, None, None, None, :]
+            scores = scores.masked_fill(km, -1e9)
+            all_leaves_pad = leaf_pad.all(dim=1)
+            if all_leaves_pad.any():
+                scores[all_leaves_pad, :, :, :, 0] = 0.0
+
+        scores = scores.view(B * S_c, H, N, N)
+        attn   = self.dropout(torch.softmax(scores.float(), dim=-1).to(dtype=q.dtype))
+
+        attn_out = g * torch.matmul(attn, v)
+        attn_out = attn_out.transpose(1, 2).contiguous().view(B * S_c, N, D)
+        out      = self.out_proj(attn_out)
+        return out.view(B, S_c, N, D)
+
+    # Maximum residue positions to process at once in column attention.
+    # Smaller = less peak memory, slightly more overhead.
+    COL_ATTN_CHUNK = 64
+
     def forward(
         self,
         x: torch.Tensor,           # [B, N, S, D]
@@ -93,49 +134,25 @@ class ColAttnPairBias(nn.Module):
         leaf_pad: torch.Tensor,     # [B, N]  True = leaf is fully PAD
     ) -> torch.Tensor:
         B, N, S, D = x.shape
-        H, d_h = self.n_heads, self.head_dim
 
         xn = self.msa_norm(x)                                    # [B, N, S, D]
         b  = self.b_proj(self.pair_norm(pairs))                  # [B, N, N, H]
-
-        # Reshape to process all residue columns in one batch: [B*S, N, D]
-        xl = xn.permute(0, 2, 1, 3).contiguous().view(B * S, N, D)
-
-        def _proj(linear):
-            return linear(xl).view(B * S, N, H, d_h).transpose(1, 2)  # [B*S, H, N, d_h]
-
-        q = _proj(self.q_proj)
-        k = _proj(self.k_proj)
-        v = _proj(self.v_proj)
-        g = torch.sigmoid(_proj(self.g_proj))
-
-        # Attention scores [B*S, H, N, N]
-        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
-
-        # Add pair bias [B, H, N, N] → broadcast over S (no extra allocation)
         bias = b.permute(0, 3, 1, 2)                             # [B, H, N, N]
-        scores = scores.view(B, S, H, N, N) + bias.unsqueeze(1) # [B, S, H, N, N]
 
-        # Key-padding mask for PAD leaves — broadcast over S without expand
-        if leaf_pad.any():
-            # [B, 1, 1, 1, N] True = ignore that key leaf
-            km = leaf_pad[:, None, None, None, :]
-            scores = scores.masked_fill(km, -1e9)
+        # Process column attention in chunks over S to limit peak memory
+        xn_s = xn.permute(0, 2, 1, 3)                           # [B, S, N, D]
 
-            # NaN guard: batch items where ALL leaves are PAD
-            all_leaves_pad = leaf_pad.all(dim=1)          # [B]
-            if all_leaves_pad.any():
-                scores[all_leaves_pad, :, :, :, 0] = 0.0  # unmask one key
+        if S <= self.COL_ATTN_CHUNK:
+            out = self._attn_chunk(xn_s, bias, leaf_pad, B, N)
+        else:
+            chunks = []
+            for i in range(0, S, self.COL_ATTN_CHUNK):
+                chunks.append(self._attn_chunk(
+                    xn_s[:, i:i + self.COL_ATTN_CHUNK], bias, leaf_pad, B, N))
+            out = torch.cat(chunks, dim=1)
 
-        scores = scores.view(B * S, H, N, N)
-        attn   = self.dropout(torch.softmax(scores.float(), dim=-1).to(dtype=q.dtype))
-
-        attn_out = g * torch.matmul(attn, v)              # [B*S, H, N, d_h]
-        attn_out = attn_out.transpose(1, 2).contiguous().view(B * S, N, D)
-        out      = self.out_proj(attn_out)                # [B*S, N, D]
-
-        # Back to [B, N, S, D]
-        return out.view(B, S, N, D).permute(0, 2, 1, 3).contiguous()
+        # [B, S, N, D] → [B, N, S, D]
+        return out.permute(0, 2, 1, 3).contiguous()
 
 
 class ConcatPairUpdate(nn.Module):

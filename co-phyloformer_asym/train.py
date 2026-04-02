@@ -45,7 +45,7 @@ def unwrap_model(model):
         m = m.module
     return m
 
-def encode_sequence(sequence, max_len=500):
+def encode_sequence(sequence, max_len=256):
     encoded = [AA_TO_INDEX.get(aa, UNK_ID) for aa in sequence[:max_len]]
     encoded += [PAD_ID] * (max_len - len(encoded))
     return torch.tensor(encoded, dtype=torch.long)
@@ -236,8 +236,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     preencoded_dir = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
     epochs         = 500
-    batch_size     = 4
-    grad_accum     = 64
+    batch_size     = 16
+    grad_accum     = 16
     lr             = 2e-4
     wd             = 0.05
     huber_delta    = 1.0

@@ -31,8 +31,9 @@ EVENT_NAMES = ["Speciation", "HGT", "Loss", "Duplication"]
 # --- env flags ---
 use_opm         = os.environ.get("USE_OPM", "0").strip() == "1"
 use_dist_matrix = os.environ.get("USE_DIST_MATRIX", "0").strip() == "1"
-axial_layers    = int(os.environ.get("AXIAL_LAYERS", "2"))
-grad_ckpt       = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
+axial_layers     = int(os.environ.get("AXIAL_LAYERS", "2"))
+cross_layers     = int(os.environ.get("CROSS_LAYERS", "1"))
+grad_ckpt        = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
 
 AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY-"
 AA_TO_INDEX = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
@@ -205,8 +206,10 @@ def load_checkpoint(fabric, model, optimizer, scheduler, ckpt):
     return start_epoch, global_step, epoch_step, best_val
 
 
-def plot_scatter(train_preds, train_labels, val_preds, val_labels, event_names):
-    """Combined train+val scatter plots per event, returned as wandb Images."""
+def plot_scatter(train_preds, train_labels, val_preds, val_labels, event_names,
+                 save_dir="scatter_plots"):
+    """Combined train+val scatter plots per event, saved to disk and returned as wandb Images."""
+    os.makedirs(save_dir, exist_ok=True)
     images = {}
     for i, name in enumerate(event_names):
         fig, ax = plt.subplots(figsize=(8, 8))
@@ -225,6 +228,9 @@ def plot_scatter(train_preds, train_labels, val_preds, val_labels, event_names):
         ax.legend()
         ax.grid(True, linestyle="--", linewidth=0.5)
         fig.tight_layout()
+        png_path = os.path.join(save_dir, f"{name}.png")
+        fig.savefig(png_path, dpi=150)
+        print(f"  [Scatter] saved {png_path}")
         images[f"scatter/{name}"] = wandb.Image(fig)
         plt.close(fig)
     return images
@@ -304,6 +310,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
         pair_dim=32, axial_layers=axial_layers,
         use_opm=use_opm, use_dist_matrix=use_dist_matrix,
         gradient_checkpointing=grad_ckpt,
+        num_cross_layers=cross_layers,
     )
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)

@@ -64,6 +64,8 @@ export WANDB__SERVICE_WAIT=300
 # Training settings
 export USE_OPM=0
 export USE_DIST_MATRIX=1
+export AXIAL_LAYERS=4
+export CROSS_LAYERS=2
 export GRADIENT_CHECKPOINTING=1
 export MID_EPOCH_VALS=0
 export NUM_WORKERS=8

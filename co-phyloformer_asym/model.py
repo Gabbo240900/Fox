@@ -371,6 +371,7 @@ class Cophyloformer(nn.Module):
         use_opm: bool = False,
         use_dist_matrix: bool = False,
         gradient_checkpointing: bool = False,
+        num_cross_layers: int = 1,
     ):
         super().__init__()
         self.hidden_dim      = hidden_dim
@@ -395,7 +396,7 @@ class Cophyloformer(nn.Module):
         )
 
         # ── Cross-attention (Co-phyloformer specific, no equivalent in Phyloformer-2) ──
-        self.num_cross_layers = 1
+        self.num_cross_layers = num_cross_layers
 
         # Simultaneous bidirectional cross-attention
         self.cross_attn_h2p = nn.ModuleList([

@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from typing import Optional
 
 class MSAEmbedder(nn.Module):
@@ -282,10 +283,12 @@ class MSAEncoder(nn.Module):
         axial_layers=1,
         use_opm: bool = False,
         use_dist_matrix: bool = False,
+        gradient_checkpointing: bool = False,
     ):
         super().__init__()
         self.pair_dim        = pair_dim
         self.use_dist_matrix = use_dist_matrix
+        self.gradient_checkpointing = gradient_checkpointing
 
         self.embedder = MSAEmbedder(hidden_dim)
 
@@ -321,7 +324,10 @@ class MSAEncoder(nn.Module):
             pairs = torch.zeros(B, N, N, self.pair_dim, device=x.device, dtype=x.dtype)
 
         for blk in self.evopf_blocks:
-            x, pairs = blk(x, pairs, x_ids)
+            if self.gradient_checkpointing and self.training:
+                x, pairs = grad_checkpoint(blk, x, pairs, x_ids, use_reentrant=False)
+            else:
+                x, pairs = blk(x, pairs, x_ids)
 
         # Max-pool over S, ignoring PAD tokens → (B, N, hidden_dim)
         pad_mask = (x_ids != 22)
@@ -347,6 +353,7 @@ class Cophyloformer(nn.Module):
         axial_layers=1,
         use_opm: bool = False,
         use_dist_matrix: bool = False,
+        gradient_checkpointing: bool = False,
     ):
         super().__init__()
         self.hidden_dim      = hidden_dim
@@ -360,12 +367,14 @@ class Cophyloformer(nn.Module):
             axial_layers=axial_layers,
             use_opm=use_opm,
             use_dist_matrix=use_dist_matrix,
+            gradient_checkpointing=gradient_checkpointing,
         )
         self.parasite_encoder = MSAEncoder(
             hidden_dim, pair_dim, num_heads,
             axial_layers=axial_layers,
             use_opm=use_opm,
             use_dist_matrix=use_dist_matrix,
+            gradient_checkpointing=gradient_checkpointing,
         )
 
         # ── Cross-attention (Co-phyloformer specific, no equivalent in Phyloformer-2) ──

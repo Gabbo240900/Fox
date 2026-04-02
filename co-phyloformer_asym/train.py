@@ -32,6 +32,7 @@ EVENT_NAMES = ["Speciation", "HGT", "Loss", "Duplication"]
 use_opm         = os.environ.get("USE_OPM", "0").strip() == "1"
 use_dist_matrix = os.environ.get("USE_DIST_MATRIX", "0").strip() == "1"
 axial_layers    = int(os.environ.get("AXIAL_LAYERS", "2"))
+grad_ckpt       = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
 
 AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY-"
 AA_TO_INDEX = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
@@ -302,6 +303,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
     model = Cophyloformer(
         pair_dim=32, axial_layers=axial_layers,
         use_opm=use_opm, use_dist_matrix=use_dist_matrix,
+        gradient_checkpointing=grad_ckpt,
     )
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)

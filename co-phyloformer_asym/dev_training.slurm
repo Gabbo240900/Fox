@@ -64,6 +64,7 @@ export WANDB__SERVICE_WAIT=300
 # Training settings
 export USE_OPM=1
 export USE_DIST_MATRIX=1
+export GRADIENT_CHECKPOINTING=1
 export MID_EPOCH_VALS=0
 export NUM_WORKERS=8
 export CKPT_DIR=checkpoints

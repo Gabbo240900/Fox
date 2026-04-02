@@ -276,10 +276,10 @@ class EvoPFBlockLite(nn.Module):
 class MSAEncoder(nn.Module):
     def __init__(
         self,
-        hidden_dim=512,
+        hidden_dim=256,
         pair_dim=32,
-        num_heads=8,
-        axial_layers=2,
+        num_heads=4,
+        axial_layers=1,
         use_opm: bool = False,
         use_dist_matrix: bool = False,
     ):
@@ -341,10 +341,10 @@ class MSAEncoder(nn.Module):
 class Cophyloformer(nn.Module):
     def __init__(
         self,
-        hidden_dim=512,
+        hidden_dim=256,
         pair_dim=32,
-        num_heads=8,
-        axial_layers=2,
+        num_heads=4,
+        axial_layers=1,
         use_opm: bool = False,
         use_dist_matrix: bool = False,
     ):
@@ -369,7 +369,7 @@ class Cophyloformer(nn.Module):
         )
 
         # ── Cross-attention (Co-phyloformer specific, no equivalent in Phyloformer-2) ──
-        self.num_cross_layers = 2
+        self.num_cross_layers = 1
 
         # Simultaneous bidirectional cross-attention
         self.cross_attn_h2p = nn.ModuleList([

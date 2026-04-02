@@ -236,8 +236,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     preencoded_dir = "/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/"
     epochs         = 500
-    batch_size     = 32
-    grad_accum     = 8
+    batch_size     = 4
+    grad_accum     = 64
     lr             = 2e-4
     wd             = 0.05
     huber_delta    = 1.0

@@ -61,23 +61,18 @@ export WANDB_MODE=offline
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300
 
-# ── RESUME: only line you need to change ────────────────────────────────────
-# Replace with the actual checkpoint you want to resume from.
-# Run ID is read automatically from the checkpoint — no WANDB_RUN_ID needed.
-export RESUME_CKPT="checkpoints/epoch_12_end.pth"
-# ────────────────────────────────────────────────────────────────────────────
-
+# Training settings
 export USE_OPM=0
 export USE_DIST_MATRIX=1
-export MID_EPOCH_VALS=5 # Number of mid-epoch val checks (evenly spaced). If 0 only the final epoch val is done.
-export SAVE_MID_EPOCH_VAL_CKPTS=1 # If 0 only the final epoch checkpoint is saved, otherwise also mid-epoch val checkpoints.
-export COLLECT_TRAIN_PREDICTIONS=1 #IF 0 train-vs-val scatter plots are skipped.
-export WANDB_WATCH=0  #IF 0 no parameter/gradient histograms in W&B.
-export GRADIENT_CHECKPOINTING=1 #IF 0 impact: faster, but higher GPU memory usage (can OOM on larger configs).
-export TRAIN_NUM_WORKERS=8
-export VAL_NUM_WORKERS=8
-export DISABLE_CHECKPOINTS=0 
-export OVERFIT_MODE=0 
+export MID_EPOCH_VALS=8
+export NUM_WORKERS=8
+export CKPT_DIR=checkpoints
+
+# ── RESUME: change the checkpoint path as needed ──────────────────────────────
+# Use last_epoch.ckpt to resume from the start of the next epoch.
+# Use latest.ckpt to resume from the last saved state (possibly mid-epoch).
+RESUME_FROM="checkpoints/last_epoch.ckpt"
+# ──────────────────────────────────────────────────────────────────────────────
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
-srun python train.py
+srun python train.py resume "$RESUME_FROM"

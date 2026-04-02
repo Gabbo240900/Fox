@@ -62,7 +62,7 @@ export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300
 
 # Training settings
-export USE_OPM=1
+export USE_OPM=0
 export USE_DIST_MATRIX=1
 export GRADIENT_CHECKPOINTING=1
 export MID_EPOCH_VALS=0

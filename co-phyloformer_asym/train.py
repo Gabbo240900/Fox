@@ -37,6 +37,12 @@ AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY-"
 AA_TO_INDEX = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
 UNK_ID, PAD_ID = 21, 22
 
+def unwrap_model(model):
+    """Safely unwrap Fabric and DDP wrappers to get the base PyTorch model."""
+    m = model
+    while hasattr(m, "module"):
+        m = m.module
+    return m
 
 def encode_sequence(sequence, max_len=500):
     encoded = [AA_TO_INDEX.get(aa, UNK_ID) for aa in sequence[:max_len]]
@@ -159,7 +165,7 @@ def save_checkpoint(fabric, model, optimizer, scheduler, epoch, global_step, epo
             pass
         else:
             state = {
-                "model":      fabric.unwrap_model(model).state_dict(),
+                "model":      unwrap_model(model).state_dict(),
                 "optimizer":  optimizer.state_dict(),
                 "scheduler":  scheduler.state_dict(),
                 "epoch":      epoch,
@@ -186,7 +192,7 @@ def load_checkpoint(fabric, model, optimizer, scheduler, ckpt):
 
     Returns (start_epoch, global_step, epoch_step, best_val).
     """
-    fabric.unwrap_model(model).load_state_dict(ckpt["model"])
+    unwrap_model(model).load_state_dict(ckpt["model"])
     optimizer.load_state_dict(ckpt["optimizer"])
     scheduler.load_state_dict(ckpt["scheduler"])
     start_epoch = ckpt["epoch"]
@@ -481,9 +487,9 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # Final save + scatter plots
     # -------------------------------------------------------------------------
     if fabric.is_global_zero:
-        torch.save(fabric.unwrap_model(model).state_dict(), "cophyloformer_final.pth")
+        torch.save(unwrap_model(model).state_dict(), "cophyloformer_final.pth")
 
-        raw_model = fabric.unwrap_model(model)
+        raw_model = unwrap_model(model)
         raw_model.eval()
 
         # val scatter — all val data

@@ -64,6 +64,8 @@ export WANDB__SERVICE_WAIT=300
 # Training settings
 export USE_OPM=0
 export USE_DIST_MATRIX=1
+export AXIAL_LAYERS=4
+export CROSS_LAYERS=2
 export GRADIENT_CHECKPOINTING=1
 export MID_EPOCH_VALS=8
 export NUM_WORKERS=8
@@ -72,7 +74,7 @@ export CKPT_DIR=checkpoints
 # ── RESUME: change the checkpoint path as needed ──────────────────────────────
 # Use last_epoch.ckpt to resume from the start of the next epoch.
 # Use latest.ckpt to resume from the last saved state (possibly mid-epoch).
-RESUME_FROM="checkpoints/last_epoch.ckpt"
+RESUME_FROM="checkpoints/best_val_loss.ckpt"
 # ──────────────────────────────────────────────────────────────────────────────
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"

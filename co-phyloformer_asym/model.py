@@ -294,10 +294,10 @@ class EvoPFBlockLite(nn.Module):
 class MSAEncoder(nn.Module):
     def __init__(
         self,
-        hidden_dim=256,
+        hidden_dim=512,
         pair_dim=32,
-        num_heads=4,
-        axial_layers=1,
+        num_heads=8,
+        axial_layers=4,
         use_opm: bool = False,
         use_dist_matrix: bool = False,
         gradient_checkpointing: bool = False,
@@ -364,14 +364,14 @@ class MSAEncoder(nn.Module):
 class Cophyloformer(nn.Module):
     def __init__(
         self,
-        hidden_dim=256,
+        hidden_dim=512,
         pair_dim=32,
-        num_heads=4,
-        axial_layers=1,
+        num_heads=8,
+        axial_layers=4,
         use_opm: bool = False,
         use_dist_matrix: bool = False,
         gradient_checkpointing: bool = False,
-        num_cross_layers: int = 1,
+        num_cross_layers: int = 2,
     ):
         super().__init__()
         self.hidden_dim      = hidden_dim

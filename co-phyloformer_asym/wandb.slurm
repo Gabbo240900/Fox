@@ -10,7 +10,7 @@ module load miniforge/24.9.0
 conda activate cophylo
 
 
-while squeue -u $USER | grep -q 20H_resu; do
+while squeue -u $USER | grep -q 20H_trai; do
     wandb sync --sync-all wandb/offline-run-* >/dev/null 2>&1
     sleep 60
 done

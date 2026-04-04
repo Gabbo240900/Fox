@@ -61,13 +61,16 @@ export WANDB_MODE=offline
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300
 
-# Training settings
-export USE_OPM=0
-export USE_DIST_MATRIX=1
+# Architecture — smaller model, larger batches, much faster
+export HIDDEN_DIM=128
 export AXIAL_LAYERS=4
 export CROSS_LAYERS=2
+export USE_OPM=0
+export USE_DIST_MATRIX=1
 export GRADIENT_CHECKPOINTING=1
-export MID_EPOCH_VALS=8
+
+# Training settings
+export MID_EPOCH_VALS=2
 export NUM_WORKERS=8
 export CKPT_DIR=checkpoints
 

@@ -33,6 +33,7 @@ use_opm         = os.environ.get("USE_OPM", "0").strip() == "1"
 use_dist_matrix = os.environ.get("USE_DIST_MATRIX", "0").strip() == "1"
 axial_layers     = int(os.environ.get("AXIAL_LAYERS", "2"))
 cross_layers     = int(os.environ.get("CROSS_LAYERS", "1"))
+hidden_dim       = int(os.environ.get("HIDDEN_DIM", "256"))
 grad_ckpt        = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
 
 AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY-"
@@ -147,7 +148,7 @@ def cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps, eta_min_ra
     def lr_lambda(step):
         if step < warmup_steps:
             return step / max(1, warmup_steps)
-        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        progress = min((step - warmup_steps) / max(1, total_steps - warmup_steps), 1.0)
         return eta_min_ratio + (1.0 - eta_min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
     return LambdaLR(optimizer, lr_lambda)
 
@@ -193,16 +194,22 @@ def load_checkpoint(fabric, model, optimizer, scheduler, ckpt):
     """Restore model, optimizer and scheduler from a checkpoint dict.
 
     Returns (start_epoch, global_step, epoch_step, best_val).
+    The scheduler is fast-forwarded to the correct step rather than restoring
+    its saved state, so it stays consistent with the freshly-computed schedule.
     """
     unwrap_model(model).load_state_dict(ckpt["model"])
     optimizer.load_state_dict(ckpt["optimizer"])
-    scheduler.load_state_dict(ckpt["scheduler"])
-    start_epoch = ckpt["epoch"]
+    # Fast-forward the scheduler instead of restoring saved state.
+    # Restoring state can misalign progress if total_steps changed between runs.
     global_step = ckpt["step"] + 1
+    for _ in range(global_step):
+        scheduler.step()
+    start_epoch = ckpt["epoch"]
     epoch_step  = ckpt.get("epoch_step", 0)
     best_val    = ckpt["val_loss"]
     if fabric.is_global_zero:
-        print(f"[Resume] epoch={start_epoch}  step={global_step}  best_val={best_val:.6f}")
+        print(f"[Resume] epoch={start_epoch}  step={global_step}  "
+              f"lr={optimizer.param_groups[0]['lr']:.3e}  best_val={best_val:.6f}")
     return start_epoch, global_step, epoch_step, best_val
 
 
@@ -242,8 +249,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded/"
     epochs         = 5
-    batch_size     = 8
-    grad_accum     = 32
+    batch_size     = 32
+    grad_accum     = 8
     lr             = 2e-4
     wd             = 0.05
     huber_delta    = 1.0
@@ -293,21 +300,30 @@ def main(fabric: Fabric, ckpt_to_load=None):
     train_subset = torch.utils.data.Subset(dataset, train_idx)
     val_subset   = torch.utils.data.Subset(dataset, val_idx)
 
-    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True,
+    # batch_size is per-GPU — use manual DistributedSampler so Fabric doesn't
+    # divide it again by num_processes.
+    train_sampler = torch.utils.data.distributed.DistributedSampler(
+        train_subset, num_replicas=fabric.world_size, rank=fabric.global_rank, shuffle=True,
+    )
+    val_sampler = torch.utils.data.distributed.DistributedSampler(
+        val_subset, num_replicas=fabric.world_size, rank=fabric.global_rank, shuffle=False,
+    )
+    train_loader = DataLoader(train_subset, batch_size=batch_size, sampler=train_sampler,
                               collate_fn=collate_fn, num_workers=num_workers,
                               persistent_workers=True, prefetch_factor=4, pin_memory=True)
-    val_loader   = DataLoader(val_subset,   batch_size=batch_size, shuffle=False,
+    val_loader   = DataLoader(val_subset, batch_size=batch_size, sampler=val_sampler,
                               collate_fn=collate_fn, num_workers=num_workers,
                               persistent_workers=False,
                               prefetch_factor=2 if num_workers > 0 else None, pin_memory=True)
-    train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
-    train_sampler = train_loader.sampler
+    train_loader, val_loader = fabric.setup_dataloaders(
+        train_loader, val_loader, use_distributed_sampler=False
+    )
 
     # -------------------------------------------------------------------------
     # Model + optimizer + scheduler
     # -------------------------------------------------------------------------
     model = Cophyloformer(
-        pair_dim=32, axial_layers=axial_layers,
+        hidden_dim=hidden_dim, pair_dim=32, axial_layers=axial_layers,
         use_opm=use_opm, use_dist_matrix=use_dist_matrix,
         gradient_checkpointing=grad_ckpt,
         num_cross_layers=cross_layers,
@@ -336,11 +352,15 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # WandB
     # -------------------------------------------------------------------------
     if fabric.is_global_zero:
+        run_name = os.environ.get("WANDB_NAME", "run")
+        if start_epoch > 0:
+            run_name = f"{run_name}_resume_ep{start_epoch}"
         wandb.init(
             entity=os.environ.get("WANDB_ENTITY", "cophylo_team"),
             project=os.environ.get("WANDB_PROJECT", "CoPhyloformer"),
-            name=os.environ.get("WANDB_NAME", "run"),
+            name=run_name,
             group=os.environ.get("WANDB_NAME", "run"),
+            id=wandb.util.generate_id(),
             mode=os.environ.get("WANDB_MODE", "offline"),
             config={
                 **hparams,

@@ -61,15 +61,17 @@ export WANDB_MODE=offline    # "online", "offline", or "disabled"
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300     
 
-
-# Training settings
-export USE_OPM=0
-export USE_DIST_MATRIX=1
+# Architecture
+export HIDDEN_DIM=128
 export AXIAL_LAYERS=4
 export CROSS_LAYERS=2
+export USE_OPM=0
+export USE_DIST_MATRIX=1
 export GRADIENT_CHECKPOINTING=1
-export MID_EPOCH_VALS=8
-export NUM_WORKERS=8
+
+# Training settings
+export MID_EPOCH_VALS=2
+export NUM_WORKERS=16
 export CKPT_DIR=checkpoints
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"

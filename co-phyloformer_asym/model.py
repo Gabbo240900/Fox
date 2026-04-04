@@ -125,7 +125,7 @@ class ColAttnPairBias(nn.Module):
 
     # Maximum residue positions to process at once in column attention.
     # Smaller = less peak memory, slightly more overhead.
-    COL_ATTN_CHUNK = 64
+    COL_ATTN_CHUNK = 32
 
     def forward(
         self,

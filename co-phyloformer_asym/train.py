@@ -47,7 +47,7 @@ def unwrap_model(model):
         m = m.module
     return m
 
-def encode_sequence(sequence, max_len=256):
+def encode_sequence(sequence, max_len=128):
     encoded = [AA_TO_INDEX.get(aa, UNK_ID) for aa in sequence[:max_len]]
     encoded += [PAD_ID] * (max_len - len(encoded))
     return torch.tensor(encoded, dtype=torch.long)
@@ -249,8 +249,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded/"
     epochs         = 5
-    batch_size     = 32
-    grad_accum     = 8
+    batch_size     = 64   # per GPU
+    grad_accum     = 4
     lr             = 2e-4
     wd             = 0.05
     huber_delta    = 1.0
@@ -311,7 +311,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
     train_loader = DataLoader(train_subset, batch_size=batch_size, sampler=train_sampler,
                               collate_fn=collate_fn, num_workers=num_workers,
                               persistent_workers=True, prefetch_factor=4, pin_memory=True)
-    val_loader   = DataLoader(val_subset, batch_size=batch_size, sampler=val_sampler,
+    val_loader   = DataLoader(val_subset, batch_size=batch_size * 2, sampler=val_sampler,
                               collate_fn=collate_fn, num_workers=num_workers,
                               persistent_workers=False,
                               prefetch_factor=2 if num_workers > 0 else None, pin_memory=True)

@@ -63,8 +63,8 @@ export WANDB__SERVICE_WAIT=300
 
 # Architecture
 export HIDDEN_DIM=128
-export AXIAL_LAYERS=4
-export CROSS_LAYERS=2
+export AXIAL_LAYERS=6
+export CROSS_LAYERS=3
 export USE_OPM=0
 export USE_DIST_MATRIX=1
 export GRADIENT_CHECKPOINTING=1

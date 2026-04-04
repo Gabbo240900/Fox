@@ -55,10 +55,24 @@ set -x
 # STEP 3: Training phase 
 export WANDB_ENTITY=cophylo_team           
 export WANDB_PROJECT=CoPhyloformer
-export WANDB_NAME=100H_training_20epochs
+export WANDB_NAME=100H_training_asym
 export WANDB_MODE=offline    # "online", "offline", or "disabled" 
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300     
+
+
+# Architecture
+export HIDDEN_DIM=128
+export AXIAL_LAYERS=4
+export CROSS_LAYERS=2
+export USE_OPM=0
+export USE_DIST_MATRIX=1
+export GRADIENT_CHECKPOINTING=1
+
+# Training settings
+export MID_EPOCH_VALS=2
+export NUM_WORKERS=16
+export CKPT_DIR=checkpoints
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
 srun python train.py

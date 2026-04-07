@@ -555,4 +555,4 @@ class Cophyloformer(nn.Module):
             attended_pairs = attended_pairs * (1 + scale) + shift
 
         logits = self.event_head(attended_pairs)
-        return torch.sigmoid(logits)
+        return torch.softmax(logits, dim=-1)

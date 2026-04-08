@@ -301,6 +301,7 @@ class MSAEncoder(nn.Module):
         use_opm: bool = False,
         use_dist_matrix: bool = False,
         gradient_checkpointing: bool = False,
+        cls_dim: int = 512,
     ):
         super().__init__()
         self.pair_dim        = pair_dim
@@ -328,6 +329,14 @@ class MSAEncoder(nn.Module):
 
         self.norm = nn.LayerNorm(hidden_dim)
 
+        # Learned CLS: cross-attends to per-leaf embeddings, projects up to cls_dim.
+        # Keeps the expensive MSA encoder at hidden_dim while the summary token
+        # that feeds the cross-attention operates at the larger cls_dim.
+        self.cls_query = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        self.cls_attn  = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True, bias=False)
+        self.cls_norm  = nn.LayerNorm(hidden_dim)
+        self.cls_proj  = nn.Linear(hidden_dim, cls_dim)
+
     def forward(self, x, dist_matrix: Optional[torch.Tensor] = None):
 
         x_ids = x
@@ -352,13 +361,15 @@ class MSAEncoder(nn.Module):
         x, _     = torch.max(x_masked, dim=2)
         x        = self.norm(x)
 
-        # Mean-pool over valid leaves for global representation → (B, hidden_dim)
-        leaf_present = (x_ids != 22).any(dim=2)           # (B, N)
-        x_leaves     = x.masked_fill(~leaf_present.unsqueeze(-1), 0.0)
-        n_leaves     = leaf_present.float().sum(dim=1, keepdim=True).clamp(min=1.0)
-        global_repr  = x_leaves.sum(dim=1) / n_leaves     # (B, hidden_dim)
+        # Learned CLS: query cross-attends to per-leaf embeddings, projects to cls_dim
+        leaf_present = (x_ids != 22).any(dim=2)              # (B, N)
+        leaf_pad     = ~leaf_present                          # True = padded leaf
+        cls_q        = self.cls_query.expand(B, -1, -1)      # (B, 1, hidden_dim)
+        cls_out, _   = self.cls_attn(cls_q, x, x, key_padding_mask=leaf_pad, need_weights=False)
+        cls_out      = self.cls_norm(cls_out + cls_q)         # residual + norm
+        global_repr  = self.cls_proj(cls_out.squeeze(1))      # (B, cls_dim)
 
-        return x, global_repr  # per-leaf embeddings + global
+        return x, global_repr  # per-leaf embeddings (hidden_dim) + CLS (cls_dim)
 
 
 class Cophyloformer(nn.Module):
@@ -372,9 +383,11 @@ class Cophyloformer(nn.Module):
         use_dist_matrix: bool = False,
         gradient_checkpointing: bool = False,
         num_cross_layers: int = 2,
+        cls_dim: int = 512,
     ):
         super().__init__()
         self.hidden_dim      = hidden_dim
+        self.cls_dim         = cls_dim
         self.pair_dim        = pair_dim
         self.num_heads       = num_heads
         self.embedding_dim   = hidden_dim
@@ -386,6 +399,7 @@ class Cophyloformer(nn.Module):
             use_opm=use_opm,
             use_dist_matrix=use_dist_matrix,
             gradient_checkpointing=gradient_checkpointing,
+            cls_dim=cls_dim,
         )
         self.parasite_encoder = MSAEncoder(
             hidden_dim, pair_dim, num_heads,
@@ -393,59 +407,66 @@ class Cophyloformer(nn.Module):
             use_opm=use_opm,
             use_dist_matrix=use_dist_matrix,
             gradient_checkpointing=gradient_checkpointing,
+            cls_dim=cls_dim,
         )
 
+        # Project per-leaf pair embeddings from hidden_dim → cls_dim so the
+        # cross-attention sequence is uniformly at cls_dim throughout.
+        self.pair_proj_h = nn.Linear(hidden_dim, cls_dim)
+        self.pair_proj_p = nn.Linear(hidden_dim, cls_dim)
+
         # ── Cross-attention (Co-phyloformer specific, no equivalent in Phyloformer-2) ──
+        # Operates at cls_dim: the CLS token and projected pairs are all cls_dim.
         self.num_cross_layers = num_cross_layers
 
         # Simultaneous bidirectional cross-attention
         self.cross_attn_h2p = nn.ModuleList([
-            nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True, dropout=0.1)
+            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=0.1)
             for _ in range(self.num_cross_layers)
         ])
         self.cross_attn_p2h = nn.ModuleList([
-            nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True, dropout=0.1)
+            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=0.1)
             for _ in range(self.num_cross_layers)
         ])
-        self.cross_norms_h  = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
-        self.cross_norms_p  = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
-        self.cross_norms_h2 = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
-        self.cross_norms_p2 = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
+        self.cross_norms_h  = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
+        self.cross_norms_p  = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
+        self.cross_norms_h2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
+        self.cross_norms_p2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
         self.cross_ffns_h = nn.ModuleList([
-            nn.Sequential(nn.Linear(hidden_dim, hidden_dim * 4), nn.GELU(), nn.Linear(hidden_dim * 4, hidden_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
         self.cross_ffns_p = nn.ModuleList([
-            nn.Sequential(nn.Linear(hidden_dim, hidden_dim * 4), nn.GELU(), nn.Linear(hidden_dim * 4, hidden_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
 
         # Self-attention to consolidate after each cross-attention step
         self.self_attn_h  = nn.ModuleList([
-            nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True, dropout=0.1)
+            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=0.1)
             for _ in range(self.num_cross_layers)
         ])
         self.self_attn_p  = nn.ModuleList([
-            nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True, dropout=0.1)
+            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=0.1)
             for _ in range(self.num_cross_layers)
         ])
-        self.self_norms_h  = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
-        self.self_norms_p  = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
-        self.self_norms_h2 = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
-        self.self_norms_p2 = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(self.num_cross_layers)])
+        self.self_norms_h  = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
+        self.self_norms_p  = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
+        self.self_norms_h2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
+        self.self_norms_p2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
         self.self_ffns_h = nn.ModuleList([
-            nn.Sequential(nn.Linear(hidden_dim, hidden_dim * 4), nn.GELU(), nn.Linear(hidden_dim * 4, hidden_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
         self.self_ffns_p = nn.ModuleList([
-            nn.Sequential(nn.Linear(hidden_dim, hidden_dim * 4), nn.GELU(), nn.Linear(hidden_dim * 4, hidden_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
 
-        self.pair_pool_score_h = nn.Linear(hidden_dim, 1)
-        self.pair_pool_score_p = nn.Linear(hidden_dim, 1)
+        self.pair_pool_score_h = nn.Linear(cls_dim, 1)
+        self.pair_pool_score_p = nn.Linear(cls_dim, 1)
 
-        self.concat_dim = 4 * hidden_dim
+        self.concat_dim = 4 * cls_dim
 
         self.sim_time_fc = nn.Sequential(
             nn.Linear(1, self.concat_dim),
@@ -464,11 +485,11 @@ class Cophyloformer(nn.Module):
 
         self.event_head = nn.Sequential(
             nn.LayerNorm(self.concat_dim),
-            nn.Linear(self.concat_dim, hidden_dim * 2),
+            nn.Linear(self.concat_dim, cls_dim * 2),
             nn.GELU(),
-            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Linear(cls_dim * 2, cls_dim),
             nn.GELU(),
-            nn.Linear(hidden_dim, 4),
+            nn.Linear(cls_dim, 4),
         )
 
     def forward(self, host_msa, parasite_msa, mappings, sim_time,
@@ -507,7 +528,11 @@ class Cophyloformer(nn.Module):
         host_gather = host_gather.masked_fill((host_idx == -1).unsqueeze(-1), 0)
         para_gather = para_gather.masked_fill((para_idx == -1).unsqueeze(-1), 0)
 
-        host_seq     = torch.cat([host_cls.unsqueeze(1),     host_gather], dim=1)  # (B, L, D)
+        # Project per-leaf pair embeddings from hidden_dim → cls_dim
+        host_gather = self.pair_proj_h(host_gather)   # (B, max_pairs, cls_dim)
+        para_gather = self.pair_proj_p(para_gather)   # (B, max_pairs, cls_dim)
+
+        host_seq     = torch.cat([host_cls.unsqueeze(1),     host_gather], dim=1)  # (B, L, cls_dim)
         parasite_seq = torch.cat([parasite_cls.unsqueeze(1), para_gather], dim=1)
 
         pair_present = torch.ones((batch_size, L), device=device, dtype=torch.bool)

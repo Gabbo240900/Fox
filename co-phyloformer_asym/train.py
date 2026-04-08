@@ -33,7 +33,7 @@ use_opm         = os.environ.get("USE_OPM", "0").strip() == "1"
 use_dist_matrix = os.environ.get("USE_DIST_MATRIX", "0").strip() == "1"
 axial_layers     = int(os.environ.get("AXIAL_LAYERS", "2"))
 cross_layers     = int(os.environ.get("CROSS_LAYERS", "1"))
-hidden_dim       = int(os.environ.get("HIDDEN_DIM", "512"))
+hidden_dim       = int(os.environ.get("HIDDEN_DIM", "256"))
 grad_ckpt        = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
 
 AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY-"
@@ -249,7 +249,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded/"
     epochs         = 5
-    batch_size     = 64   # per GPU
+    batch_size     = 128   # per GPU
     grad_accum     = 4
     lr             = 1e-4
     wd             = 0.05
@@ -275,6 +275,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
         "use_opm":         use_opm,
         "use_dist_matrix": use_dist_matrix,
         "pair_dim":        64,
+        "cls_dim":         512,
         "mid_epoch_vals":  mid_epoch_vals,
         "ckpt_dir":        ckpt_dir,
     }
@@ -323,7 +324,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # Model + optimizer + scheduler
     # -------------------------------------------------------------------------
     model = Cophyloformer(
-        hidden_dim=hidden_dim, pair_dim=64, axial_layers=axial_layers,
+        hidden_dim=hidden_dim, pair_dim=64, cls_dim=512, axial_layers=axial_layers,
         use_opm=use_opm, use_dist_matrix=use_dist_matrix,
         gradient_checkpointing=grad_ckpt,
         num_cross_layers=cross_layers,

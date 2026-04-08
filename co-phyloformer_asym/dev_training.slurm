@@ -62,7 +62,7 @@ export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300
 
 # Architecture
-export HIDDEN_DIM=128
+export HIDDEN_DIM=512
 export AXIAL_LAYERS=6
 export CROSS_LAYERS=3
 export USE_OPM=0

@@ -66,7 +66,7 @@ export CROSS_LAYERS=2
 export USE_OPM=0
 export USE_DIST_MATRIX=1
 export GRADIENT_CHECKPOINTING=0
-export USE_FLEX_ATTENTION=1
+export USE_FLEX_ATTENTION=0
 
 # Training settings
 export MID_EPOCH_VALS=2

@@ -5,13 +5,11 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from typing import Optional
 
-try:
-    from torch.nn.attention.flex_attention import flex_attention as _flex_attn
-    _COMPILED_FLEX = _flex_attn  # bare flex_attention; torch.compile causes Triton kernel arg overflow with large pair bias tensors
-    _FLEX_LOADED = True
-except (ImportError, Exception):
-    _COMPILED_FLEX = None
-    _FLEX_LOADED = False
+_COMPILED_FLEX = None
+_FLEX_LOADED = False
+# flex_attention disabled: without torch.compile the vmap backward OOMs on large B*S dimensions;
+# with torch.compile it hits Triton compilation bugs across PyTorch 2.5/2.6.
+# The chunked torch path (forward_torch) is the reliable fallback.
 
 class MSAEmbedder(nn.Module):
     VOCAB_SIZE = 23  # 0-19 AAs, 20=gap, 21=UNK, 22=PAD

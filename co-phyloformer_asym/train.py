@@ -37,6 +37,8 @@ cross_layers     = int(os.environ.get("CROSS_LAYERS", "1"))
 hidden_dim       = int(os.environ.get("HIDDEN_DIM", "256"))
 grad_ckpt        = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
 use_flex         = os.environ.get("USE_FLEX_ATTENTION", "0").strip() == "1"  # requires PyTorch >= 2.5
+host_max_leaves  = int(os.environ.get("HOST_MAX_LEAVES", "50"))  # host trees have max 50 leaves
+para_max_leaves  = int(os.environ.get("PARA_MAX_LEAVES", "64"))  # parasite trees have max 128, avg 82; cap for memory
 
 AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY-"
 AA_TO_INDEX = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
@@ -117,12 +119,12 @@ def collate_fn(batch):
         print("[Warning] all samples in batch were invalid, returning None")
         return None
 
-    def pad(msas, pad_val=PAD_ID):
-        max_n = max(m.shape[0] for m in msas)
-        return torch.stack([F.pad(m, (0, 0, 0, max_n - m.shape[0]), value=pad_val) for m in msas])
+    def pad(msas, cap, pad_val=PAD_ID):
+        max_n = min(max(m.shape[0] for m in msas), cap)
+        return torch.stack([F.pad(m[:max_n], (0, 0, 0, max(0, max_n - m.shape[0])), value=pad_val) for m in msas])
 
-    host_msas = pad([s["host_msa"] for s in batch])
-    para_msas = pad([s["parasite_msa"] for s in batch])
+    host_msas = pad([s["host_msa"] for s in batch], host_max_leaves)
+    para_msas = pad([s["parasite_msa"] for s in batch], para_max_leaves)
     out = {
         "host_msa":     host_msas,
         "parasite_msa": para_msas,

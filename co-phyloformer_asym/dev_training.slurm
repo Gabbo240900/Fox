@@ -73,6 +73,8 @@ export MID_EPOCH_VALS=2
 export NUM_WORKERS=16
 export CKPT_DIR=checkpoints
 export BATCH_SIZE=32
+export HOST_MAX_LEAVES=50
+export PARA_MAX_LEAVES=128
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"

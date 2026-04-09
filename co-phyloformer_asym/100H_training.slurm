@@ -79,4 +79,14 @@ export PARA_MAX_LEAVES=128
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
-srun python train.py
+
+if [ -f "$CKPT_DIR/last_epoch.ckpt" ]; then
+    echo "[Resume] Resuming from last_epoch.ckpt"
+    srun python train.py resume "$CKPT_DIR/last_epoch.ckpt"
+elif [ -f "$CKPT_DIR/latest.ckpt" ]; then
+    echo "[Resume] Resuming from latest.ckpt (mid-epoch)"
+    srun python train.py resume "$CKPT_DIR/latest.ckpt"
+else
+    echo "[Train] Starting from scratch"
+    srun python train.py train
+fi

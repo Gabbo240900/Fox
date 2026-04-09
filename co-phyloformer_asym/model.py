@@ -7,7 +7,7 @@ from typing import Optional
 
 try:
     from torch.nn.attention.flex_attention import flex_attention as _flex_attn
-    _COMPILED_FLEX = torch.compile(_flex_attn)
+    _COMPILED_FLEX = _flex_attn  # bare flex_attention; torch.compile causes Triton kernel arg overflow with large pair bias tensors
     _FLEX_LOADED = True
 except (ImportError, Exception):
     _COMPILED_FLEX = None

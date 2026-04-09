@@ -417,9 +417,10 @@ def main(fabric: Fabric, ckpt_to_load=None):
         # beginning-of-epoch validation (no checkpoint unless new best)
         best_val = run_mid_val("Begin", epoch, global_step, 0, best_val)
 
-        total_loss  = 0.0
-        num_batches = 0
-        epoch_step  = 0
+        total_loss    = 0.0
+        num_batches   = 0
+        epoch_step    = 0
+        skipped_steps = 0
 
         sum_abs   = torch.zeros(len(EVENT_NAMES), device=device)
         n_samples = 0
@@ -468,6 +469,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
                         pct = int(round(epoch_step / opt_steps_per_epoch * 100))
                         best_val = run_mid_val(f"Val {pct:3d}%", epoch, global_step, epoch_step, best_val)
                 else:
+                    skipped_steps += 1
+                    global_step   += 1  # always advance so validation still triggers
                     if fabric.is_global_zero:
                         print(f"[Warning] non-finite grad norm {gnorm:.2e} at batch {batch_idx+1}, skipping")
                     optimizer.zero_grad(set_to_none=True)
@@ -488,6 +491,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
         if fabric.is_global_zero:
             print(f"  train loss={epoch_loss:.6f}  lr={optimizer.param_groups[0]['lr']:.2e}")
             print("  MAE  " + "  ".join(f"{EVENT_NAMES[i]}: {mae[i]:.4f}" for i in range(len(EVENT_NAMES))))
+            if skipped_steps > 0:
+                print(f"  [Warning] {skipped_steps}/{epoch_step + skipped_steps} optimizer steps skipped (non-finite gradients)")
 
         # end-of-epoch validation + checkpoint
         fabric.barrier()

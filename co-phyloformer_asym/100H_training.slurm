@@ -71,7 +71,7 @@ export USE_DIST_MATRIX=1
 export GRADIENT_CHECKPOINTING=1
 
 # Training settings
-export MID_EPOCH_VALS=4
+export MID_EPOCH_VALS=2
 export NUM_WORKERS=16
 export CKPT_DIR=checkpoints
 

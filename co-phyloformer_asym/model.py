@@ -7,7 +7,7 @@ from typing import Optional
 
 try:
     from torch.nn.attention.flex_attention import flex_attention as _flex_attn
-    _COMPILED_FLEX = _flex_attn  # already a fused Triton kernel; torch.compile wrapper causes Triton re-compilation errors
+    _COMPILED_FLEX = torch.compile(_flex_attn)
     _FLEX_LOADED = True
 except (ImportError, Exception):
     _COMPILED_FLEX = None

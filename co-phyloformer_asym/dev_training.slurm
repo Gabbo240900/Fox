@@ -20,9 +20,9 @@ module purge
 
 module load arch/h100
 
-module load pytorch-gpu/py3/2.5.0
+module load pytorch-gpu/py3/2.6.0
 
-source $WORK/envs/cophylo26/bin/activate
+source $WORK/envs/cophylo_pt26/bin/activate
 
 
 # Use all the CPUs Slurm gave this task

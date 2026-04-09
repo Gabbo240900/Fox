@@ -72,7 +72,7 @@ class GatedRowAttention(nn.Module):
         """Attend over S for a subset of leaves. Leaves are independent so chunking is exact."""
         B, N_c, S, D = x_chunk.shape
         xn = self.norm(x_chunk).view(B * N_c, S, D)
-        pm = pm_chunk.view(B * N_c, S)
+        pm = pm_chunk.reshape(B * N_c, S)
 
         g = torch.sigmoid(self.g_proj(xn))
 

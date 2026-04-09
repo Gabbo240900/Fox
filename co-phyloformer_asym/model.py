@@ -58,7 +58,7 @@ class GatedRowAttention(nn.Module):
 
     # Maximum leaves to process at once. Bounds peak memory at [B*CHUNK, S, 3D].
     # With B=32, CHUNK=32, S=128, D=256: [1024, 128, 768] ≈ 200 MB (bfloat16).
-    ROW_ATTN_CHUNK = 32
+    ROW_ATTN_CHUNK = 16
 
     def __init__(self, dim: int, n_heads: int, dropout: float = 0.0):
         super().__init__()

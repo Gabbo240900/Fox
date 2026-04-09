@@ -5,13 +5,12 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from typing import Optional
 
-try:
-    from torch.nn.attention.flex_attention import flex_attention as _flex_attn
-    _COMPILED_FLEX = torch.compile(_flex_attn)
-    _FLEX_LOADED = True
-except (ImportError, Exception):
-    _COMPILED_FLEX = None
-    _FLEX_LOADED = False
+_COMPILED_FLEX = None
+_FLEX_LOADED = False
+# flex_attention not used: col attention attends over N leaves (typically 15-30),
+# which is too small for flex_attention's fused Triton kernel to be beneficial.
+# The kernel launch + compilation overhead outweighs the gain at small N.
+# The chunked torch path (forward_torch) is the right approach for this use case.
 
 class MSAEmbedder(nn.Module):
     VOCAB_SIZE = 23  # 0-19 AAs, 20=gap, 21=UNK, 22=PAD

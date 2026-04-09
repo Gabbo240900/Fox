@@ -5,11 +5,13 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from typing import Optional
 
-_COMPILED_FLEX = None
-_FLEX_LOADED = False
-# flex_attention disabled: without torch.compile the vmap backward OOMs on large B*S dimensions;
-# with torch.compile it hits Triton compilation bugs across PyTorch 2.5/2.6.
-# The chunked torch path (forward_torch) is the reliable fallback.
+try:
+    from torch.nn.attention.flex_attention import flex_attention as _flex_attn
+    _COMPILED_FLEX = torch.compile(_flex_attn)
+    _FLEX_LOADED = True
+except (ImportError, Exception):
+    _COMPILED_FLEX = None
+    _FLEX_LOADED = False
 
 class MSAEmbedder(nn.Module):
     VOCAB_SIZE = 23  # 0-19 AAs, 20=gap, 21=UNK, 22=PAD
@@ -179,16 +181,25 @@ class ColAttnPairBias(nn.Module):
         pairs: torch.Tensor,        # [B, N, N, pair_dim]
         leaf_pad: torch.Tensor,     # [B, N]  True = leaf is fully PAD
     ) -> torch.Tensor:
-        """FlexAttention path: fuses pair bias into the attention kernel, avoiding
-        the explicit [B*S, H, N, N] scores tensor and the chunking loop.
-        Note: attention-weight dropout is skipped (flex_attention handles softmax
-        internally); this only affects training with dropout > 0."""
+        """FlexAttention path: fuses pair bias into the attention kernel.
+        Captures bias [B, H, N, N] (not [B*S, H, N, N]) to avoid Triton kernel
+        argument overflow and vmap backward OOM. The original batch index is
+        recovered inside score_mod via b_idx // S."""
         B, N, S, D = x.shape
         H, d_h = self.n_heads, self.head_dim
 
         xn   = self.msa_norm(x)
-        b    = self.b_proj(self.pair_norm(pairs))   # [B, N, N, H]
-        bias = b.permute(0, 3, 1, 2)               # [B, H, N, N]
+        b    = self.b_proj(self.pair_norm(pairs))         # [B, N, N, H]
+        bias = b.permute(0, 3, 1, 2).contiguous()         # [B, H, N, N]
+
+        # Bake leaf-PAD penalty into the small [B, H, N, N] bias
+        if leaf_pad.any():
+            lp = leaf_pad.float() * -1e9                   # [B, N]
+            bias = bias + lp[:, None, None, :]             # [B, H, N, N]
+            all_pad = leaf_pad.all(dim=1)                  # [B]
+            if all_pad.any():
+                bias = bias.clone()
+                bias[all_pad, :, :, 0] = 0.0              # NaN guard
 
         # Flatten S into batch: [B*S, N, D]
         xn_s = xn.permute(0, 2, 1, 3).reshape(B * S, N, D)
@@ -201,21 +212,10 @@ class ColAttnPairBias(nn.Module):
         v = _proj(self.v_proj)
         g = torch.sigmoid(_proj(self.g_proj))
 
-        # Expand pair bias to [B*S, H, N, N] and bake PAD penalties in
-        pb = bias.unsqueeze(1).expand(B, S, H, N, N).reshape(B * S, H, N, N).contiguous()
-
-        if leaf_pad.any():
-            lp = leaf_pad.float() * -1e9                              # [B, N]
-            lp = lp.unsqueeze(1).expand(B, S, N).reshape(B * S, N)   # [B*S, N]
-            pb = pb + lp[:, None, None, :]                            # [B*S, H, N, N]
-            # NaN guard: if every key is PAD, unhide key 0 so softmax doesn't NaN
-            all_pad = leaf_pad.all(dim=1)                             # [B]
-            if all_pad.any():
-                all_pad_exp = all_pad.unsqueeze(1).expand(B, S).reshape(B * S)
-                pb[all_pad_exp, :, :, 0] = 0.0
-
+        # b_idx ∈ [0, B*S); b_idx // S recovers the original batch item.
+        # bias is [B, H, N, N] — tiny, safe for both Triton and vmap backward.
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
-            return score + pb[b_idx, h_idx, q_idx, kv_idx]
+            return score + bias[b_idx // S, h_idx, q_idx, kv_idx]
 
         attn_out = _COMPILED_FLEX(q, k, v, score_mod)                # [B*S, H, N, d_h]
         attn_out = (g * attn_out).transpose(1, 2).reshape(B * S, N, D)

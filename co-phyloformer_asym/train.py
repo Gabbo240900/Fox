@@ -23,6 +23,7 @@ torch.backends.cuda.enable_flash_sdp(True)
 torch.backends.cuda.enable_mem_efficient_sdp(True)
 torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision('high')
+torch._dynamo.config.optimize_ddp = False  # flex_attention uses higher-order ops incompatible with DDP optimizer
 
 seed_everything(42)
 

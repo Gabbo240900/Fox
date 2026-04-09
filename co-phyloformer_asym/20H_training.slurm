@@ -72,6 +72,8 @@ export USE_FLEX_ATTENTION=0
 export MID_EPOCH_VALS=2
 export NUM_WORKERS=16
 export CKPT_DIR=checkpoints
+export BATCH_SIZE=32
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
 srun python train.py

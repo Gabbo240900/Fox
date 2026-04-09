@@ -251,7 +251,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded/"
     epochs         = 5
-    batch_size     = 80   # per GPU
+    batch_size     = int(os.environ.get("BATCH_SIZE", "64"))  # per GPU
     grad_accum     = 4
     lr             = 1e-4
     wd             = 0.05

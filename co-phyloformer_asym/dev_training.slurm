@@ -45,7 +45,7 @@ export HF_HOME="$ALL_CCFRWORK/.cache/huggingface"
 export WANDB_CACHE_DIR="$ALL_CCFRWORK/.cache/wandb"
 export WANDB_DATA_DIR="$JOBSCRATCH/wandb_data"
 
-mkdir -p "$WANDB_DATA_DIR" "$WANDB_DIR" "$WANDB_CACHE_DIR"
+mkdir -p "$WANDB_DATA_DIR" "$WANDB_CACHE_DIR"
 mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR" "$HF_HOME"
 
 
@@ -62,9 +62,9 @@ export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300
 
 # Architecture
-export HIDDEN_DIM=512
-export AXIAL_LAYERS=6
-export CROSS_LAYERS=3
+export HIDDEN_DIM=256
+export AXIAL_LAYERS=4
+export CROSS_LAYERS=2
 export USE_OPM=0
 export USE_DIST_MATRIX=1
 export GRADIENT_CHECKPOINTING=1

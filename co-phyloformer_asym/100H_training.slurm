@@ -34,6 +34,7 @@ export PYTHONUNBUFFERED=1
 # NCCL / distributed sanity
 export NCCL_DEBUG=WARN
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export TORCH_NCCL_AVOID_RECORD_STREAMS=1
 export NCCL_P2P_DISABLE=0
 export NCCL_IB_DISABLE=0
 
@@ -45,7 +46,7 @@ export HF_HOME="$ALL_CCFRWORK/.cache/huggingface"
 export WANDB_DATA_DIR="$JOBSCRATCH/wandb_data"
 export WANDB_CACHE_DIR="$JOBSCRATCH/wandb_cache"
 
-mkdir -p "$WANDB_DATA_DIR" "$WANDB_DIR" "$WANDB_CACHE_DIR"
+mkdir -p "$WANDB_DATA_DIR" "$WANDB_CACHE_DIR"
 mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR" "$HF_HOME" 
 
 
@@ -62,7 +63,7 @@ export WANDB__SERVICE_WAIT=300
 
 
 # Architecture
-export HIDDEN_DIM=128
+export HIDDEN_DIM=256
 export AXIAL_LAYERS=4
 export CROSS_LAYERS=2
 export USE_OPM=0
@@ -70,7 +71,7 @@ export USE_DIST_MATRIX=1
 export GRADIENT_CHECKPOINTING=1
 
 # Training settings
-export MID_EPOCH_VALS=2
+export MID_EPOCH_VALS=4
 export NUM_WORKERS=16
 export CKPT_DIR=checkpoints
 

@@ -5,6 +5,14 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from typing import Optional
 
+try:
+    from torch.nn.attention.flex_attention import flex_attention as _flex_attn
+    _COMPILED_FLEX = torch.compile(_flex_attn)
+    _FLEX_LOADED = True
+except (ImportError, Exception):
+    _COMPILED_FLEX = None
+    _FLEX_LOADED = False
+
 class MSAEmbedder(nn.Module):
     VOCAB_SIZE = 23  # 0-19 AAs, 20=gap, 21=UNK, 22=PAD
 
@@ -15,16 +23,36 @@ class MSAEmbedder(nn.Module):
         self.act  = nn.ReLU()
 
     def forward(self, x_ids: torch.Tensor) -> torch.Tensor:
-        """
-        x_ids:   [B, N, S]  integer token ids
-        Returns: [B, N, S, seq_dim]
-        """
         # One-hot encode: [B, N, S] → [B, N, S, VOCAB_SIZE]
         x_oh = F.one_hot(x_ids.long(), num_classes=self.VOCAB_SIZE).to(
             dtype=self.proj.weight.dtype
         )
         # Project + activate: [B, N, S, seq_dim]
         return self.act(self.proj(x_oh))
+
+
+class PairEmbedder(nn.Module):
+    """Initialise pair representations from the MSA (PAD-aware mean pooling over S,
+    then pairwise outer sum), mirroring PF2's PairEmbedder.
+    Gives the pair track a meaningful signal from block 1 instead of starting from zeros."""
+    VOCAB_SIZE = 23
+
+    def __init__(self, pair_dim: int) -> None:
+        super().__init__()
+        self.proj = nn.Linear(self.VOCAB_SIZE, pair_dim, bias=False)
+        self.act  = nn.ReLU()
+
+    def forward(self, x_ids: torch.Tensor) -> torch.Tensor:
+        # x_ids: [B, N, S]
+        pad_mask = (x_ids == 22)                                            # [B, N, S]
+        x_oh = F.one_hot(x_ids.long(), num_classes=self.VOCAB_SIZE).to(
+            dtype=self.proj.weight.dtype
+        )
+        x_emb = self.act(self.proj(x_oh))                                  # [B, N, S, pair_dim]
+        x_emb = x_emb.masked_fill(pad_mask.unsqueeze(-1), 0.0)
+        counts = (~pad_mask).float().sum(dim=2).clamp(min=1).unsqueeze(-1)  # [B, N, 1]
+        x_mean = x_emb.sum(dim=2) / counts                                 # [B, N, pair_dim]
+        return x_mean.unsqueeze(2) + x_mean.unsqueeze(1)                   # [B, N, N, pair_dim]
 
 
 class GatedRowAttention(nn.Module):
@@ -39,10 +67,6 @@ class GatedRowAttention(nn.Module):
         self.out_proj = nn.Linear(dim, dim)
 
     def forward(self, x: torch.Tensor, pad_mask: torch.Tensor) -> torch.Tensor:
-        """
-        x:        [B, N, S, D]
-        pad_mask: [B, N, S]   True = PAD token (ignore)
-        """
         B, N, S, D = x.shape
         xn = self.norm(x).view(B * N, S, D)
         pm = pad_mask.view(B * N, S)
@@ -68,12 +92,14 @@ class GatedRowAttention(nn.Module):
 class ColAttnPairBias(nn.Module):
 
 
-    def __init__(self, dim: int, pair_dim: int, n_heads: int, dropout: float = 0.0):
+    def __init__(self, dim: int, pair_dim: int, n_heads: int, dropout: float = 0.0,
+                 use_flexattention: bool = False):
         super().__init__()
         assert dim % n_heads == 0, "dim must be divisible by n_heads"
         self.n_heads  = n_heads
         self.head_dim = dim // n_heads
         self.scale    = self.head_dim ** -0.5
+        self.use_flex = use_flexattention and _FLEX_LOADED
 
         self.msa_norm  = nn.LayerNorm(dim)
         self.pair_norm = nn.LayerNorm(pair_dim)
@@ -87,11 +113,6 @@ class ColAttnPairBias(nn.Module):
         self.dropout  = nn.Dropout(dropout)
 
     def _attn_chunk(self, xn_chunk, bias, leaf_pad, B, N):
-        """Run column attention on a chunk of S positions.
-
-        xn_chunk: [B, S_c, N, D]   (S_c = chunk size)
-        bias:     [B, H, N, N]     (shared across all S positions)
-        """
         S_c = xn_chunk.shape[1]
         H, d_h, D = self.n_heads, self.head_dim, xn_chunk.shape[-1]
 
@@ -123,11 +144,11 @@ class ColAttnPairBias(nn.Module):
         out      = self.out_proj(attn_out)
         return out.view(B, S_c, N, D)
 
-    # Maximum residue positions to process at once in column attention.
+    # Maximum residue positions to process at once in column attention (torch path).
     # Smaller = less peak memory, slightly more overhead.
     COL_ATTN_CHUNK = 32
 
-    def forward(
+    def forward_torch(
         self,
         x: torch.Tensor,           # [B, N, S, D]
         pairs: torch.Tensor,        # [B, N, N, pair_dim]
@@ -153,6 +174,65 @@ class ColAttnPairBias(nn.Module):
 
         # [B, S, N, D] → [B, N, S, D]
         return out.permute(0, 2, 1, 3).contiguous()
+
+    def forward_flex(
+        self,
+        x: torch.Tensor,           # [B, N, S, D]
+        pairs: torch.Tensor,        # [B, N, N, pair_dim]
+        leaf_pad: torch.Tensor,     # [B, N]  True = leaf is fully PAD
+    ) -> torch.Tensor:
+        """FlexAttention path: fuses pair bias into the attention kernel, avoiding
+        the explicit [B*S, H, N, N] scores tensor and the chunking loop.
+        Note: attention-weight dropout is skipped (flex_attention handles softmax
+        internally); this only affects training with dropout > 0."""
+        B, N, S, D = x.shape
+        H, d_h = self.n_heads, self.head_dim
+
+        xn   = self.msa_norm(x)
+        b    = self.b_proj(self.pair_norm(pairs))   # [B, N, N, H]
+        bias = b.permute(0, 3, 1, 2)               # [B, H, N, N]
+
+        # Flatten S into batch: [B*S, N, D]
+        xn_s = xn.permute(0, 2, 1, 3).reshape(B * S, N, D)
+
+        def _proj(linear):
+            return linear(xn_s).view(B * S, N, H, d_h).transpose(1, 2)  # [B*S, H, N, d_h]
+
+        q = _proj(self.q_proj)
+        k = _proj(self.k_proj)
+        v = _proj(self.v_proj)
+        g = torch.sigmoid(_proj(self.g_proj))
+
+        # Expand pair bias to [B*S, H, N, N] and bake PAD penalties in
+        pb = bias.unsqueeze(1).expand(B, S, H, N, N).reshape(B * S, H, N, N).contiguous()
+
+        if leaf_pad.any():
+            lp = leaf_pad.float() * -1e9                              # [B, N]
+            lp = lp.unsqueeze(1).expand(B, S, N).reshape(B * S, N)   # [B*S, N]
+            pb = pb + lp[:, None, None, :]                            # [B*S, H, N, N]
+            # NaN guard: if every key is PAD, unhide key 0 so softmax doesn't NaN
+            all_pad = leaf_pad.all(dim=1)                             # [B]
+            if all_pad.any():
+                all_pad_exp = all_pad.unsqueeze(1).expand(B, S).reshape(B * S)
+                pb[all_pad_exp, :, :, 0] = 0.0
+
+        def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
+            return score + pb[b_idx, h_idx, q_idx, kv_idx]
+
+        attn_out = _COMPILED_FLEX(q, k, v, score_mod)                # [B*S, H, N, d_h]
+        attn_out = (g * attn_out).transpose(1, 2).reshape(B * S, N, D)
+        out = self.out_proj(attn_out)
+        return out.view(B, S, N, D).permute(0, 2, 1, 3).contiguous()  # [B, N, S, D]
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        pairs: torch.Tensor,
+        leaf_pad: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.use_flex:
+            return self.forward_flex(x, pairs, leaf_pad)
+        return self.forward_torch(x, pairs, leaf_pad)
 
 
 class ConcatPairUpdate(nn.Module):
@@ -234,11 +314,13 @@ class EvoPFBlockLite(nn.Module):
         ff_mult: int = 4,
         dropout: float = 0.0,
         use_opm: bool = False,
+        use_flexattention: bool = False,
     ):
         super().__init__()
 
         # ── MSA track ────────────────────────────────────────────────────────
-        self.col_attn = ColAttnPairBias(seq_dim, pair_dim, n_heads, dropout)
+        self.col_attn = ColAttnPairBias(seq_dim, pair_dim, n_heads, dropout,
+                                        use_flexattention=use_flexattention)
         self.row_attn = GatedRowAttention(seq_dim, n_heads, dropout)
 
         self.msa_norm = nn.LayerNorm(seq_dim)
@@ -253,7 +335,7 @@ class EvoPFBlockLite(nn.Module):
         # use_opm=True  → OuterProductMean (more expressive, higher memory)
         # use_opm=False → ConcatPairUpdate (memory-efficient default)
         self.pair_update = (
-            OuterProductMean(seq_dim, pair_dim, inner_dim=16)
+            OuterProductMean(seq_dim, pair_dim, inner_dim=32)
             if use_opm else
             ConcatPairUpdate(seq_dim, pair_dim, inner_dim=32)
         )
@@ -302,13 +384,15 @@ class MSAEncoder(nn.Module):
         use_dist_matrix: bool = False,
         gradient_checkpointing: bool = False,
         cls_dim: int = 512,
+        use_flexattention: bool = False,
     ):
         super().__init__()
         self.pair_dim        = pair_dim
         self.use_dist_matrix = use_dist_matrix
         self.gradient_checkpointing = gradient_checkpointing
 
-        self.embedder = MSAEmbedder(hidden_dim)
+        self.embedder     = MSAEmbedder(hidden_dim)
+        self.pair_embedder = PairEmbedder(pair_dim)
 
         if use_dist_matrix:
             self.dist_proj = nn.Sequential(
@@ -323,6 +407,7 @@ class MSAEncoder(nn.Module):
                 hidden_dim, num_heads, pair_dim,
                 ff_mult=4, dropout=0.1,
                 use_opm=use_opm,
+                use_flexattention=use_flexattention,
             )
             for _ in range(self.n_evopf_layers)
         ])
@@ -344,10 +429,10 @@ class MSAEncoder(nn.Module):
 
         x = self.embedder(x_ids)  # (B, N, S, hidden_dim)
 
+        # Initialise pairs from MSA content; optionally add distance-matrix signal on top
+        pairs = self.pair_embedder(x_ids)
         if self.use_dist_matrix and dist_matrix is not None:
-            pairs = self.dist_proj(dist_matrix.unsqueeze(-1).to(x.dtype))
-        else:
-            pairs = torch.zeros(B, N, N, self.pair_dim, device=x.device, dtype=x.dtype)
+            pairs = pairs + self.dist_proj(dist_matrix.unsqueeze(-1).to(x.dtype))
 
         for blk in self.evopf_blocks:
             if self.gradient_checkpointing and self.training:
@@ -384,6 +469,7 @@ class Cophyloformer(nn.Module):
         gradient_checkpointing: bool = False,
         num_cross_layers: int = 2,
         cls_dim: int = 512,
+        use_flexattention: bool = False,
     ):
         super().__init__()
         self.hidden_dim      = hidden_dim
@@ -400,6 +486,7 @@ class Cophyloformer(nn.Module):
             use_dist_matrix=use_dist_matrix,
             gradient_checkpointing=gradient_checkpointing,
             cls_dim=cls_dim,
+            use_flexattention=use_flexattention,
         )
         self.parasite_encoder = MSAEncoder(
             hidden_dim, pair_dim, num_heads,
@@ -408,6 +495,7 @@ class Cophyloformer(nn.Module):
             use_dist_matrix=use_dist_matrix,
             gradient_checkpointing=gradient_checkpointing,
             cls_dim=cls_dim,
+            use_flexattention=use_flexattention,
         )
 
         # Project per-leaf pair embeddings from hidden_dim → cls_dim so the

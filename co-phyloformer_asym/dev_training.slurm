@@ -20,11 +20,9 @@ module purge
 
 module load arch/h100
 
-module load pytorch-gpu/py3/2.4.0
+module load pytorch-gpu/py3/2.5.0
 
-module load miniforge/24.9.0
-
-conda activate cophylo
+source $WORK/envs/cophylo26/bin/activate
 
 
 # Use all the CPUs Slurm gave this task
@@ -68,6 +66,7 @@ export CROSS_LAYERS=2
 export USE_OPM=0
 export USE_DIST_MATRIX=1
 export GRADIENT_CHECKPOINTING=1
+export USE_FLEX_ATTENTION=1
 
 # Training settings
 export MID_EPOCH_VALS=2

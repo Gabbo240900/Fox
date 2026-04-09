@@ -35,6 +35,7 @@ axial_layers     = int(os.environ.get("AXIAL_LAYERS", "2"))
 cross_layers     = int(os.environ.get("CROSS_LAYERS", "1"))
 hidden_dim       = int(os.environ.get("HIDDEN_DIM", "256"))
 grad_ckpt        = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
+use_flex         = os.environ.get("USE_FLEX_ATTENTION", "0").strip() == "1"  # requires PyTorch >= 2.5
 
 AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY-"
 AA_TO_INDEX = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
@@ -271,11 +272,12 @@ def main(fabric: Fabric, ckpt_to_load=None):
         "huber_delta":     huber_delta,
         "under_penalty":   under_penalty,
         "tail_weight":     tail_weight,
-        "axial_layers":    axial_layers,
-        "use_opm":         use_opm,
-        "use_dist_matrix": use_dist_matrix,
-        "pair_dim":        64,
-        "cls_dim":         512,
+        "axial_layers":       axial_layers,
+        "use_opm":            use_opm,
+        "use_dist_matrix":    use_dist_matrix,
+        "use_flexattention":  use_flex,
+        "pair_dim":           64,
+        "cls_dim":            512,
         "mid_epoch_vals":  mid_epoch_vals,
         "ckpt_dir":        ckpt_dir,
     }
@@ -328,6 +330,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
         use_opm=use_opm, use_dist_matrix=use_dist_matrix,
         gradient_checkpointing=grad_ckpt,
         num_cross_layers=cross_layers,
+        use_flexattention=use_flex,
     )
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)

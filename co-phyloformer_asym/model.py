@@ -56,9 +56,6 @@ class PairEmbedder(nn.Module):
 
 class GatedRowAttention(nn.Module):
 
-    # Maximum leaves to process at once. Bounds peak memory at [B*CHUNK, S, 3D].
-    # With B=32, CHUNK=32, S=128, D=256: [1024, 128, 768] ≈ 200 MB (bfloat16).
-    ROW_ATTN_CHUNK = 16
 
     def __init__(self, dim: int, n_heads: int, dropout: float = 0.0):
         super().__init__()
@@ -68,14 +65,14 @@ class GatedRowAttention(nn.Module):
         self.g_proj   = nn.Linear(dim, dim)
         self.out_proj = nn.Linear(dim, dim)
 
-    def _attn_chunk(self, x_chunk: torch.Tensor, pm_chunk: torch.Tensor) -> torch.Tensor:
-        """Attend over S for a subset of leaves. Leaves are independent so chunking is exact."""
-        B, N_c, S, D = x_chunk.shape
-        xn = self.norm(x_chunk).view(B * N_c, S, D)
-        pm = pm_chunk.reshape(B * N_c, S)
+    def forward(self, x: torch.Tensor, pad_mask: torch.Tensor) -> torch.Tensor:
+        B, N, S, D = x.shape
+        xn = self.norm(x).view(B * N, S, D)
+        pm = pad_mask.reshape(B * N, S)
 
         g = torch.sigmoid(self.g_proj(xn))
 
+        # NaN guard: fully-PAD leaf rows would produce NaN in softmax
         all_pad = pm.all(dim=1)
         if all_pad.any():
             xn = xn.clone(); pm = pm.clone()
@@ -88,17 +85,7 @@ class GatedRowAttention(nn.Module):
         if all_pad.any():
             out[all_pad] = 0.0
 
-        return out.view(B, N_c, S, D)
-
-    def forward(self, x: torch.Tensor, pad_mask: torch.Tensor) -> torch.Tensor:
-        B, N, S, D = x.shape
-        if N <= self.ROW_ATTN_CHUNK:
-            return self._attn_chunk(x, pad_mask)
-        chunks = []
-        for i in range(0, N, self.ROW_ATTN_CHUNK):
-            chunks.append(self._attn_chunk(x[:, i:i + self.ROW_ATTN_CHUNK],
-                                            pad_mask[:, i:i + self.ROW_ATTN_CHUNK]))
-        return torch.cat(chunks, dim=1)
+        return out.view(B, N, S, D)
 
 
 class ColAttnPairBias(nn.Module):

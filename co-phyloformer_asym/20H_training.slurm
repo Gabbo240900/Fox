@@ -1,24 +1,24 @@
 #!/bin/bash
 
 #SBATCH --job-name=20H_training
-#SBATCH --account=vcu@h100 
+#SBATCH --account=vcu@h100
 #SBATCH --qos=qos_gpu_h100-t3
-#SBATCH --output=error_files/20H_training%j.out 
-#SBATCH --error=error_files/20H_training%j.err 
-#SBATCH --constraint=h100 
+#SBATCH --output=error_files/20H_training%j.out
+#SBATCH --error=error_files/20H_training%j.err
+#SBATCH --constraint=h100
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4    
+#SBATCH --ntasks-per-node=4
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=24
-#SBATCH --time=20:00:00 
+#SBATCH --time=20:00:00
 
 
 
 # ENVIRONMENT SETUP
 
-module purge 
+module purge
 
-module load arch/h100 
+module load arch/h100
 
 module load pytorch-gpu/py3/2.6.0
 
@@ -32,7 +32,6 @@ export PYTHONUNBUFFERED=1
 # NCCL / distributed sanity
 export NCCL_DEBUG=WARN
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
-export TORCH_NCCL_AVOID_RECORD_STREAMS=1
 export NCCL_P2P_DISABLE=0
 export NCCL_IB_DISABLE=0
 
@@ -40,32 +39,33 @@ export NCCL_IB_DISABLE=0
 # Set cache directories to avoid cluster warnings
 export XDG_CACHE_HOME="$ALL_CCFRWORK/.cache"
 export MPLCONFIGDIR="$ALL_CCFRWORK/.cache/mpl"
-export HF_HOME="$ALL_CCFRWORK/.cache/huggingface"  
+export HF_HOME="$ALL_CCFRWORK/.cache/huggingface"
+export WANDB_CACHE_DIR="$ALL_CCFRWORK/.cache/wandb"
 export WANDB_DATA_DIR="$JOBSCRATCH/wandb_data"
-export WANDB_CACHE_DIR="$JOBSCRATCH/wandb_cache"
 
 mkdir -p "$WANDB_DATA_DIR" "$WANDB_CACHE_DIR"
-mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR" "$HF_HOME" 
+mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR" "$HF_HOME"
 
 
-# ECHO 
-set -x 
 
-# STEP 3: Training phase 
-export WANDB_ENTITY=cophylo_team           
+# ECHO
+set -x
+
+# W&B settings
+export WANDB_ENTITY=cophylo_team
 export WANDB_PROJECT=CoPhyloformer
 export WANDB_NAME=20H_asym_new
-export WANDB_MODE=offline    # "online", "offline", or "disabled" 
+export WANDB_MODE=offline
 export WANDB_HTTP_TIMEOUT=120
-export WANDB__SERVICE_WAIT=300     
+export WANDB__SERVICE_WAIT=300
 
 # Architecture
 export HIDDEN_DIM=256
 export AXIAL_LAYERS=4
 export CROSS_LAYERS=2
-export USE_OPM=0
+export USE_OPM=1
 export USE_DIST_MATRIX=1
-export GRADIENT_CHECKPOINTING=0
+export GRADIENT_CHECKPOINTING=1
 export USE_FLEX_ATTENTION=0
 
 # Training settings

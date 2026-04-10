@@ -15,6 +15,7 @@ def run_full_validation(
     val_loss = 0.0
     val_batches = 0
     val_sum_abs = torch.zeros(len(event_names), device=device)
+    val_sum_rel = torch.zeros(len(event_names), device=device)
     val_sample_count = 0
     if event_loss_weights is None:
         event_loss_weights = torch.ones(len(event_names), device=device)
@@ -51,6 +52,7 @@ def run_full_validation(
             val_loss += loss.item()
             val_batches += 1
             val_sum_abs += (outputs - batch["labels"]).abs().sum(dim=0)
+            val_sum_rel += ((outputs - batch["labels"]).abs() / (batch["labels"] + 1e-8)).sum(dim=0)
             val_sample_count += batch["labels"].shape[0]
 
     loss_sum_tensor = fabric.all_reduce(torch.tensor(val_loss, device=device), reduce_op="sum")
@@ -58,18 +60,21 @@ def run_full_validation(
     val_loss = (loss_sum_tensor / torch.clamp(batches_tensor, min=1)).item()
 
     val_sum_abs = fabric.all_reduce(val_sum_abs, reduce_op="sum")
+    val_sum_rel = fabric.all_reduce(val_sum_rel, reduce_op="sum")
     val_sample_count = int(fabric.all_reduce(
         torch.tensor(val_sample_count, device=device), reduce_op="sum"
     ).item())
 
     denom   = max(1, val_sample_count)
     val_mae = (val_sum_abs / denom).cpu().tolist()
+    val_mre = (val_sum_rel / denom).cpu().tolist()
 
     model.train()
 
     return {
         "val_loss": val_loss,
         "val_mae": val_mae,
+        "val_mre": val_mre,
         "val_sample_count": val_sample_count,
     }
 

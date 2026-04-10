@@ -394,7 +394,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
             mae_s = " | ".join(f"{EVENT_NAMES[i]}: {vr['val_mae'][i]:.4f}" for i in range(len(EVENT_NAMES)))
             print(f"  [{label}] loss={vr['val_loss']:.6f}  MAE → {mae_s}  lr={optimizer.param_groups[0]['lr']:.2e}")
             wandb.log({"val/loss_mid": vr["val_loss"],
-                       **{f"val/MAE_mid/{EVENT_NAMES[i]}": vr["val_mae"][i] for i in range(len(EVENT_NAMES))}},
+                       **{f"val/MAE_mid/{EVENT_NAMES[i]}": vr["val_mae"][i] for i in range(len(EVENT_NAMES))},
+                       **{f"val/MRE_mid/{EVENT_NAMES[i]}": vr["val_mre"][i] for i in range(len(EVENT_NAMES))}},
                       step=global_step)
         return save_checkpoint(
             fabric, model, optimizer, scheduler,
@@ -423,6 +424,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
         skipped_steps = 0
 
         sum_abs   = torch.zeros(len(EVENT_NAMES), device=device)
+        sum_rel   = torch.zeros(len(EVENT_NAMES), device=device)
         n_samples = 0
 
         for batch_idx, batch in tqdm(enumerate(train_loader), total=len(train_loader),
@@ -478,15 +480,19 @@ def main(fabric: Fabric, ckpt_to_load=None):
             total_loss  += loss.item()
             num_batches += 1
             with torch.no_grad():
-                sum_abs   += (outputs.detach() - batch["labels"]).abs().sum(dim=0)
+                diff       = (outputs.detach() - batch["labels"]).abs()
+                sum_abs   += diff.sum(dim=0)
+                sum_rel   += (diff / (batch["labels"] + 1e-8)).sum(dim=0)
                 n_samples += outputs.shape[0]
 
         # --- End of epoch ---
         epoch_loss = fabric.all_reduce(torch.tensor(total_loss / max(1, num_batches), device=device),
                                        reduce_op="mean").item()
         global_abs = fabric.all_reduce(sum_abs, reduce_op="sum")
+        global_rel = fabric.all_reduce(sum_rel, reduce_op="sum")
         global_n   = int(fabric.all_reduce(torch.tensor(n_samples, device=device), reduce_op="sum").item())
         mae = (global_abs / max(1, global_n)).cpu().tolist()
+        mre = (global_rel / max(1, global_n)).cpu().tolist()
 
         if fabric.is_global_zero:
             print(f"  train loss={epoch_loss:.6f}  lr={optimizer.param_groups[0]['lr']:.2e}")
@@ -503,19 +509,23 @@ def main(fabric: Fabric, ckpt_to_load=None):
         fabric.barrier()
         val_loss = vr["val_loss"]
         val_mae  = vr["val_mae"]
+        val_mre  = vr["val_mre"]
 
         if fabric.is_global_zero:
             print(f"  val  loss={val_loss:.6f}")
             print("  MAE  " + "  ".join(f"{EVENT_NAMES[i]}: {val_mae[i]:.4f}" for i in range(len(EVENT_NAMES))))
+            print("  MRE  " + "  ".join(f"{EVENT_NAMES[i]}: {val_mre[i]:.4f}" for i in range(len(EVENT_NAMES))))
             ep_step = (epoch + 1) * opt_steps_per_epoch
             wandb.log({
                 "epoch": epoch + 1, "train/loss": epoch_loss,
                 "lr": optimizer.param_groups[0]["lr"],
                 **{f"train/MAE/{EVENT_NAMES[i]}": mae[i] for i in range(len(EVENT_NAMES))},
+                **{f"train/MRE/{EVENT_NAMES[i]}": mre[i] for i in range(len(EVENT_NAMES))},
             }, step=ep_step)
             wandb.log({
                 "epoch": epoch + 1, "val/loss": val_loss,
                 **{f"val/MAE/{EVENT_NAMES[i]}": val_mae[i] for i in range(len(EVENT_NAMES))},
+                **{f"val/MRE/{EVENT_NAMES[i]}": val_mre[i] for i in range(len(EVENT_NAMES))},
             }, step=ep_step + 1)
 
         best_val = save_checkpoint(

@@ -482,7 +482,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
             with torch.no_grad():
                 diff       = (outputs.detach() - batch["labels"]).abs()
                 sum_abs   += diff.sum(dim=0)
-                sum_rel   += (diff / (batch["labels"] + 1e-8)).sum(dim=0)
+                sum_rel   += (diff / batch["labels"].clamp(min=0.01)).sum(dim=0)
                 n_samples += outputs.shape[0]
 
         # --- End of epoch ---

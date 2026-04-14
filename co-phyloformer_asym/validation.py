@@ -52,7 +52,7 @@ def run_full_validation(
             val_loss += loss.item()
             val_batches += 1
             val_sum_abs += (outputs - batch["labels"]).abs().sum(dim=0)
-            val_sum_rel += ((outputs - batch["labels"]).abs() / (batch["labels"] + 1e-8)).sum(dim=0)
+            val_sum_rel += ((outputs - batch["labels"]).abs() / batch["labels"].clamp(min=0.01)).sum(dim=0)
             val_sample_count += batch["labels"].shape[0]
 
     loss_sum_tensor = fabric.all_reduce(torch.tensor(val_loss, device=device), reduce_op="sum")

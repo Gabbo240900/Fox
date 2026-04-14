@@ -251,11 +251,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     # Config
     # -------------------------------------------------------------------------
-    preencoded_dir = os.environ.get(
-        "PREENCODED_DIR",
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "generate_treeducken", "generated_trees", "test"),
-    )
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_treeducken/generated_trees/new_preencoded_pt/"
     epochs         = int(os.environ.get("EPOCHS", "50"))
     batch_size     = int(os.environ.get("BATCH_SIZE", "64"))  # per GPU
     grad_accum     = 4

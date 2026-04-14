@@ -518,11 +518,11 @@ class Cophyloformer(nn.Module):
         self.cross_norms_h2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
         self.cross_norms_p2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
         self.cross_ffns_h = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Linear(cls_dim * 4, cls_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(0.1), nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
         self.cross_ffns_p = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Linear(cls_dim * 4, cls_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(0.1), nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
 
@@ -540,11 +540,11 @@ class Cophyloformer(nn.Module):
         self.self_norms_h2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
         self.self_norms_p2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
         self.self_ffns_h = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Linear(cls_dim * 4, cls_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(0.1), nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
         self.self_ffns_p = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Linear(cls_dim * 4, cls_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(0.1), nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
 

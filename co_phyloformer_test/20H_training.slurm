@@ -54,7 +54,7 @@ set -x
 # W&B settings
 export WANDB_ENTITY=cophylo_team
 export WANDB_PROJECT=CoPhyloformer
-export WANDB_NAME=20H_asym_new
+export WANDB_NAME=20H_treeduck_evopf
 export WANDB_MODE=offline
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300
@@ -69,7 +69,7 @@ export GRADIENT_CHECKPOINTING=1
 export USE_FLEX_ATTENTION=0
 
 # Training settings
-export EPOCHS=50
+export EPOCHS=5
 export MID_EPOCH_VALS=2
 export NUM_WORKERS=16
 export CKPT_DIR=checkpoints

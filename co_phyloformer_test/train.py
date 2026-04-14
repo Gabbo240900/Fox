@@ -1,675 +1,619 @@
-"""
-train.py - Multi-GPU DDP training script for Co-Phyloformer
-==============================================================
-Supports single-GPU, multi-GPU (torchrun), and JeanZay SLURM (srun) runs.
-
-Single GPU:
-    python train.py --data_dir /path/to/Datasets
-
-4 GPUs on one node (torchrun):
-    torchrun --nproc_per_node=4 train.py --data_dir /path/to/Datasets
-
-JeanZay H100 (submitted via slurm_train.sh, uses srun python train.py):
-    sbatch slurm_train.sh
-"""
-
-import os
-import sys
-import argparse
-import random
-import time
-import math
-from contextlib import nullcontext
-from pathlib import Path
-from typing import Tuple
-
-import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
-
-# Optional WandB — gracefully disabled if not installed or WANDB_MODE=disabled
-try:
-    import wandb
-    _WANDB_AVAILABLE = True
-except ImportError:
-    _WANDB_AVAILABLE = False
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-try:
-    from model import CoPhyloformer
-    _MODEL_AVAILABLE = True
-except ImportError as e:
-    print(f"[WARNING] Could not import CoPhyloformer: {e}")
-    _MODEL_AVAILABLE = False
-    CoPhyloformer = None
-
-try:
-    from dataset import get_dataloaders
-    _DATASET_AVAILABLE = True
-except ImportError as e:
-    print(f"[WARNING] Could not import get_dataloaders: {e}")
-    _DATASET_AVAILABLE = False
-    get_dataloaders = None
-
-
-# ---------------------------------------------------------------------------
-# Distributed helpers
-# ---------------------------------------------------------------------------
-
-def init_distributed() -> Tuple[int, int, int]:
-    """Initialise the distributed process group and return (rank, local_rank, world_size).
-
-    Handles two launch patterns:
-    - torchrun: sets RANK / LOCAL_RANK / WORLD_SIZE automatically.
-    - JeanZay srun (srun python train.py): SLURM sets SLURM_PROCID /
-      SLURM_LOCALID / SLURM_NTASKS; MASTER_ADDR / MASTER_PORT must be set
-      by the job script before srun (see slurm_train.sh).
-
-    Returns (0, 0, 1) when no distributed environment is detected so that
-    single-GPU runs require no code changes.
-    """
-    # torchrun path
-    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
-        rank       = int(os.environ["RANK"])
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        world_size = int(os.environ["WORLD_SIZE"])
-
-    # srun path (JeanZay): read SLURM env vars and inject as standard dist vars
-    elif "SLURM_PROCID" in os.environ:
-        rank       = int(os.environ["SLURM_PROCID"])
-        local_rank = int(os.environ.get("SLURM_LOCALID", 0))
-        world_size = int(os.environ["SLURM_NTASKS"])
-        # dist.init_process_group("env://") needs these set
-        os.environ["RANK"]       = str(rank)
-        os.environ["LOCAL_RANK"] = str(local_rank)
-        os.environ["WORLD_SIZE"] = str(world_size)
-
-    else:
-        # Single-process — no DDP
-        return 0, 0, 1
-
-    dist.init_process_group(backend="nccl", init_method="env://")
-    torch.cuda.set_device(local_rank)
-    return rank, local_rank, world_size
-
-
-def is_main(rank: int) -> bool:
-    return rank == 0
-
-
-def barrier(world_size: int) -> None:
-    if world_size > 1:
-        dist.barrier()
-
-
-def all_reduce_mean(tensor: torch.Tensor, world_size: int) -> torch.Tensor:
-    """Average a scalar tensor across all ranks in-place and return it."""
-    if world_size > 1:
-        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
-        tensor.div_(world_size)
-    return tensor
-
-
-# ---------------------------------------------------------------------------
-# Reproducibility
-# ---------------------------------------------------------------------------
-
-def set_seed(seed: int, rank: int = 0) -> None:
-    """Set deterministic seeds. Each rank gets a unique seed offset."""
-    s = seed + rank
-    random.seed(s)
-    np.random.seed(s)
-    torch.manual_seed(s)
-    torch.cuda.manual_seed_all(s)
-    # Allow cuDNN auto-tuner on H100 for speed (non-deterministic but faster).
-    # Set to True / False for fully reproducible (but slower) runs.
-    torch.backends.cudnn.benchmark = True
-
-
-# ---------------------------------------------------------------------------
-# Loss / metrics
-# ---------------------------------------------------------------------------
-
-def kl_loss(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-    """KL divergence loss between predicted and target probability distributions."""
-    log_pred = predictions.clamp(min=1e-9).log()
-    return F.kl_div(log_pred, targets, reduction="batchmean")
-
-
-def mae_per_component(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-    """Per-component MAE. predictions and targets: [N, 4]."""
-    return (predictions - targets).abs().mean(dim=0)
-
-
-# ---------------------------------------------------------------------------
-# Checkpoint helpers
-# ---------------------------------------------------------------------------
-
-def save_checkpoint(
-    path: str,
-    model: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    scheduler,
-    scaler,
-    epoch: int,
-    best_val_loss: float,
-) -> None:
-    # Unwrap DDP if needed
-    raw_model = model.module if hasattr(model, "module") else model
-    torch.save(
-        {
-            "epoch":                epoch,
-            "model_state_dict":     raw_model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
-            "scaler_state_dict":    scaler.state_dict() if scaler is not None else None,
-            "best_val_loss":        best_val_loss,
-        },
-        path,
-    )
-
-
-def load_checkpoint(
-    path: str,
-    model: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    scheduler,
-    scaler,
-    device: torch.device,
-) -> Tuple[int, float]:
-    checkpoint = torch.load(path, map_location=device)
-    raw_model = model.module if hasattr(model, "module") else model
-    raw_model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-    if scaler is not None and checkpoint.get("scaler_state_dict") is not None:
-        scaler.load_state_dict(checkpoint["scaler_state_dict"])
-    start_epoch    = checkpoint["epoch"] + 1
-    best_val_loss  = checkpoint["best_val_loss"]
-    return start_epoch, best_val_loss
-
-
-# ---------------------------------------------------------------------------
-# Single-epoch loop
-# ---------------------------------------------------------------------------
-
-def run_epoch(
-    model: nn.Module,
-    loader,
-    device: torch.device,
-    optimizer=None,
-    scaler=None,
-    scheduler=None,
-    accumulate_grad: int = 8,
-    amp_dtype: torch.dtype = torch.bfloat16,
-    use_amp: bool = True,
-    world_size: int = 1,
-) -> Tuple[float, torch.Tensor, torch.Tensor]:
-    """Run one training or validation epoch.
-
-    Training mode: pass ``optimizer`` (non-None).
-    Validation mode: pass ``optimizer=None``.
-
-    Returns:
-        (mean_loss, all_predictions [N,4], all_targets [N,4]) on CPU.
-    """
-    is_train = optimizer is not None
-    model.train(is_train)
-
-    total_loss = 0.0
-    n_samples  = 0
-    all_preds  = []
-    all_tgts   = []
-    step       = 0
-
-    autocast_ctx = (
-        torch.autocast(device_type="cuda", dtype=amp_dtype)
-        if (use_amp and device.type == "cuda")
-        else nullcontext()
-    )
-
-    if is_train:
-        optimizer.zero_grad()
-
-    no_grad_ctx = nullcontext() if is_train else torch.no_grad()
-
-    # For DistributedSampler: set epoch so each epoch has a different shuffle
-    if is_train and world_size > 1 and hasattr(loader.sampler, "set_epoch"):
-        # epoch is passed via the loader's sampler — caller sets it externally
-        pass
-
-    with no_grad_ctx:
-        for batch in loader:
-            # collate_fn returns a list of dicts — take the first (batch_size=1)
-            sample        = batch[0] if isinstance(batch, list) else batch
-            host_seqs     = sample["host_seqs"]
-            parasite_seqs = sample["parasite_seqs"]
-            mappings      = sample["mappings"]
-            labels        = sample["labels"]
-
-            # Move labels to device
-            labels = labels.to(device, non_blocking=True)
-            if labels.dim() == 2:
-                labels = labels.squeeze(0)
-
-            # Move sequence tensors to device
-            host_seqs = {
-                k: v.to(device, non_blocking=True)
-                for k, v in host_seqs.items()
-            }
-            parasite_seqs = {
-                k: v.to(device, non_blocking=True)
-                for k, v in parasite_seqs.items()
-            }
-
-            # Forward
-            with autocast_ctx:
-                predictions = model(host_seqs, parasite_seqs, mappings)
-                if predictions.dim() == 2:
-                    predictions = predictions.squeeze(0)
-                loss        = kl_loss(predictions, labels)
-                loss_scaled = loss / accumulate_grad
-
-            if is_train:
-                if scaler is not None:
-                    scaler.scale(loss_scaled).backward()
-                else:
-                    loss_scaled.backward()
-
-                if (step + 1) % accumulate_grad == 0:
-                    _optimizer_step(optimizer, scaler, model)
-
-            total_loss += loss.item()
-            n_samples  += 1
-            step       += 1
-
-            all_preds.append(predictions.detach().cpu().float())
-            all_tgts.append(labels.detach().cpu().float())
-
-    # Flush remaining gradients at epoch end
-    if is_train and (step % accumulate_grad != 0):
-        _optimizer_step(optimizer, scaler, model)
-
-    # Average loss across all ranks
-    mean_loss = torch.tensor(total_loss / max(n_samples, 1), device=device)
-    mean_loss = all_reduce_mean(mean_loss, world_size)
-
-    preds_tensor  = torch.stack(all_preds)  if all_preds else torch.empty(0, 4)
-    tgts_tensor   = torch.stack(all_tgts)   if all_tgts  else torch.empty(0, 4)
-
-    return mean_loss.item(), preds_tensor, tgts_tensor
-
-
-def _optimizer_step(optimizer, scaler, model) -> None:
-    """Unscale → clip → step → zero_grad, handling both AMP and non-AMP."""
-    if scaler is not None:
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        scaler.step(optimizer)
-        scaler.update()
-    else:
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-    optimizer.zero_grad()
-
-
-# ---------------------------------------------------------------------------
-# Main training function
-# ---------------------------------------------------------------------------
-
-def train(args: argparse.Namespace) -> None:
-    """Full DDP training procedure for Co-Phyloformer."""
-    if not _MODEL_AVAILABLE:
-        raise RuntimeError("model.py could not be imported.")
-    if not _DATASET_AVAILABLE:
-        raise RuntimeError("dataset.py could not be imported.")
-
-    # ---- Distributed setup -----------------------------------------------
-    rank, local_rank, world_size = init_distributed()
-    main = is_main(rank)
-
-    # ---- Device -------------------------------------------------------------
-    if torch.cuda.is_available():
-        device = torch.device(f"cuda:{local_rank}")
-    else:
-        device = torch.device("cpu")
-
-    if main:
-        print(f"[INFO] world_size={world_size}  rank={rank}  device={device}")
-
-    # ---- Reproducibility ----------------------------------------------------
-    set_seed(args.seed, rank=rank)
-
-    # ---- Mixed precision (BF16 preferred on H100) ---------------------------
-    use_amp   = device.type == "cuda"
-    amp_dtype = torch.bfloat16 if (use_amp and torch.cuda.is_bf16_supported()) else torch.float16
-    # GradScaler is needed for FP16 but NOT for BF16
-    scaler    = (torch.amp.GradScaler("cuda") if amp_dtype == torch.float16 else None)
-    if main and use_amp:
-        print(f"[INFO] AMP enabled — dtype={amp_dtype}")
-
-    # ---- WandB (rank 0 only, honours WANDB_MODE env var) --------------------
-    use_wandb = False
-    if main and _WANDB_AVAILABLE and os.environ.get("WANDB_MODE", "disabled") != "disabled":
-        wandb.init(
-            project = os.environ.get("WANDB_PROJECT", "CoPhyloformer"),
-            entity  = os.environ.get("WANDB_ENTITY",  None),
-            name    = os.environ.get("WANDB_NAME",    None),
-            config  = vars(args),
-            resume  = "allow",
-        )
-        use_wandb = True
-        print(f"[INFO] WandB run: {wandb.run.name}  (mode={os.environ.get('WANDB_MODE')})")
-
-    # ---- Checkpoints --------------------------------------------------------
-    ckpt_dir      = Path(args.checkpoint_dir)
-    best_ckpt     = str(ckpt_dir / "best_model.pt")
-    last_ckpt     = str(ckpt_dir / "last_model.pt")
-    if main:
-        ckpt_dir.mkdir(parents=True, exist_ok=True)
-
-    # ---- Data ---------------------------------------------------------------
-    if main:
-        print(f"[INFO] Loading data from: {args.data_dir}")
-
-    train_loader, val_loader, test_loader = get_dataloaders(
-        data_dir        = args.data_dir,
-        batch_size      = 1,          # variable tree sizes → process one at a time
-        train_frac      = args.train_frac,
-        val_frac        = args.val_frac,
-        seed            = args.seed,
-        max_seq_len     = args.max_seq_len,
-        num_workers     = args.num_workers,
-        pin_memory      = (device.type == "cuda"),
-        persistent_workers = (args.num_workers > 0),
-        prefetch_factor = args.prefetch_factor if args.num_workers > 0 else None,
-        rank            = rank,
-        world_size      = world_size,
-        manifest_file   = args.manifest_file,
-    )
-
-    if main:
-        print(
-            f"[INFO] Splits — train: {len(train_loader.dataset)}  "
-            f"val: {len(val_loader.dataset)}  "
-            f"test: {len(test_loader.dataset)}"
-        )
-
-    # ---- Model --------------------------------------------------------------
-    model = CoPhyloformer(
-        d_model               = args.d_model,
-        nhead                 = args.nhead,
-        num_layers            = args.num_layers,
-        dropout               = args.dropout,
-        gradient_checkpointing = args.gradient_checkpointing,
-    ).to(device)
-
-    # torch.compile for H100 (requires PyTorch >= 2.0)
-    if args.compile and hasattr(torch, "compile"):
-        if main:
-            print("[INFO] Compiling model with torch.compile …")
-        model = torch.compile(model)
-
-    # Wrap in DDP
-    if world_size > 1:
-        model = DDP(
-            model,
-            device_ids           = [local_rank],
-            output_device        = local_rank,
-            find_unused_parameters = False,
-        )
-
-    if main:
-        raw = model.module if hasattr(model, "module") else model
-        n   = sum(p.numel() for p in raw.parameters() if p.requires_grad)
-        print(f"[INFO] Trainable parameters: {n:,}")
-
-    # ---- Optimiser & scheduler ----------------------------------------------
-    optimizer = AdamW(
-        model.parameters(),
-        lr           = args.lr,
-        weight_decay = args.weight_decay,
-        betas        = (0.9, 0.95),   # slightly larger beta2, common for LLM-like models
-        fused        = (device.type == "cuda"),  # fused AdamW is faster on CUDA
-    )
-    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.min_lr)
-
-    # ---- Resume -------------------------------------------------------------
-    start_epoch   = 0
-    best_val_loss = float("inf")
-
-    if args.resume:
-        if not os.path.isfile(args.resume):
-            if main:
-                print(f"[WARNING] Resume checkpoint not found: {args.resume}")
+import torch.optim as optim
+from torch.utils.data import DataLoader, Dataset
+from torch.nn import functional as F
+from torch.optim.lr_scheduler import LambdaLR
+from tqdm import tqdm
+import wandb
+import glob
+import math
+import os
+import random
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from model import Cophyloformer
+from validation import run_full_validation, compute_val_predictions
+from lightning.fabric import Fabric
+from lightning.fabric.utilities.seed import seed_everything
+from lightning.fabric.strategies import DDPStrategy
+from sklearn.model_selection import train_test_split
+
+torch.backends.cuda.enable_flash_sdp(True)
+torch.backends.cuda.enable_mem_efficient_sdp(True)
+torch.backends.cudnn.benchmark = True
+torch.set_float32_matmul_precision('high')
+torch._dynamo.config.optimize_ddp = False  # flex_attention uses higher-order ops incompatible with DDP optimizer
+
+seed_everything(42)
+
+EVENT_NAMES = ["Cospeciations", "Host_spread/Switches"]
+
+# --- env flags ---
+use_opm         = os.environ.get("USE_OPM", "0").strip() == "1"
+use_dist_matrix = os.environ.get("USE_DIST_MATRIX", "0").strip() == "1"
+axial_layers     = int(os.environ.get("AXIAL_LAYERS", "2"))
+cross_layers     = int(os.environ.get("CROSS_LAYERS", "1"))
+hidden_dim       = int(os.environ.get("HIDDEN_DIM", "256"))
+grad_ckpt        = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
+use_flex         = os.environ.get("USE_FLEX_ATTENTION", "0").strip() == "1"  # requires PyTorch >= 2.5
+host_max_leaves  = int(os.environ.get("HOST_MAX_LEAVES", "50"))  # host trees have max 50 leaves
+para_max_leaves  = int(os.environ.get("PARA_MAX_LEAVES", "64"))  # parasite trees have max 128, avg 82; cap for memory
+
+AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY-"
+AA_TO_INDEX = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
+UNK_ID, PAD_ID = 21, 22
+
+def unwrap_model(model):
+    """Safely unwrap Fabric and DDP wrappers to get the base PyTorch model."""
+    m = model
+    while hasattr(m, "module"):
+        m = m.module
+    return m
+
+def encode_sequence(sequence, max_len=128):
+    encoded = [AA_TO_INDEX.get(aa, UNK_ID) for aa in sequence[:max_len]]
+    encoded += [PAD_ID] * (max_len - len(encoded))
+    return torch.tensor(encoded, dtype=torch.long)
+
+
+def jukes_cantor_dist(msa: torch.Tensor) -> torch.Tensor:
+    valid = (msa != PAD_ID)
+    valid_pair = valid.unsqueeze(1) & valid.unsqueeze(0)
+    n_v = valid_pair.sum(dim=2).clamp(min=1).float()
+    mismatch = (msa.unsqueeze(1) != msa.unsqueeze(0)) & valid_pair
+    p = (mismatch.float().sum(dim=2) / n_v).clamp(0.0, 0.74)
+    dist = -0.75 * torch.log(1.0 - (4.0 / 3.0) * p)
+    dist.fill_diagonal_(0.0)
+    return dist
+
+
+class LazyCophyloformerDataset(Dataset):
+    def __init__(self, preencoded_dir, pt_files=None):
+        if pt_files is None:
+            self.pt_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
         else:
-            # Load on main first, then broadcast weights so all ranks are in sync
-            if main:
-                start_epoch, best_val_loss = load_checkpoint(
-                    args.resume, model, optimizer, scheduler, scaler, device
-                )
-                print(f"[INFO] Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
-            if world_size > 1:
-                # Broadcast scalar state from rank 0
-                info = torch.tensor([start_epoch, best_val_loss], device=device)
-                dist.broadcast(info, src=0)
-                start_epoch   = int(info[0].item())
-                best_val_loss = info[1].item()
-                # Broadcast model parameters
-                for p in (model.module if hasattr(model, "module") else model).parameters():
-                    dist.broadcast(p.data, src=0)
+            self.pt_files = list(pt_files)
 
-    # ---- Training loop ------------------------------------------------------
-    EVENTS = ["Speciation", "HGT", "Loss", "Duplication"]
-    patience              = args.patience
-    epochs_no_improve     = 0
+    def __len__(self):
+        return len(self.pt_files)
 
-    if main:
-        print("\n" + "=" * 90)
-        print(f"{'Ep':>5}  {'Train KL':>10}  {'Val KL':>10}  "
-              f"{'Spec MAE':>10}  {'HGT MAE':>9}  "
-              f"{'Loss MAE':>9}  {'Dup MAE':>9}  {'LR':>9}  {'Time':>7}")
-        print("=" * 90)
+    def __getitem__(self, idx):
+        sample = torch.load(self.pt_files[idx], map_location="cpu", weights_only=False)
 
-    for epoch in range(start_epoch, args.epochs):
-        # Set epoch on DistributedSampler so shuffle is different each epoch
-        if world_size > 1 and hasattr(train_loader.sampler, "set_epoch"):
-            train_loader.sampler.set_epoch(epoch)
+        if not sample.get("host_msas") or not sample.get("parasite_msas"):
+            print(f"[Warning] sample {self.pt_files[idx]} missing host or parasite MSAs, skipping")
+            return None
 
-        t0 = time.time()
+        host_list = list(sample["host_msas"].keys())
+        para_list = list(sample["parasite_msas"].keys())
+        h_idx = {n: i for i, n in enumerate(host_list)}
+        p_idx = {n: i for i, n in enumerate(para_list)}
+        mappings = [
+            (h_idx[h], p_idx[p])
+            for p, h in sample["mappings"]
+            if p in p_idx and h in h_idx
+        ]
+        out = {
+            "host_msa":    torch.stack([encode_sequence(s) for s in sample["host_msas"].values()]),
+            "parasite_msa": torch.stack([encode_sequence(s) for s in sample["parasite_msas"].values()]),
+            "mappings": mappings,
+            "labels": torch.tensor(
+                [sample["event_frequencies"].get(e, 0.0) for e in EVENT_NAMES],
+                dtype=torch.float32,
+            ),
+            "sim_time": torch.tensor(
+                [sample["event_frequencies"].get("Sim_time", 1.0)],
+                dtype=torch.float32,
+            ),
+        }
+        if "host_dist" in sample:
+            out["host_dist"] = sample["host_dist"]
+            out["para_dist"] = sample["para_dist"]
+        return out
 
-        # ---- Train ----------------------------------------------------------
-        train_loss, _, _ = run_epoch(
-            model          = model,
-            loader         = train_loader,
-            device         = device,
-            optimizer      = optimizer,
-            scaler         = scaler,
-            scheduler      = scheduler,
-            accumulate_grad = args.accumulate_grad,
-            amp_dtype      = amp_dtype,
-            use_amp        = use_amp,
-            world_size     = world_size,
-        )
 
-        # ---- Validation -----------------------------------------------------
-        val_loss, val_preds, val_tgts = run_epoch(
-            model          = model,
-            loader         = val_loader,
-            device         = device,
-            optimizer      = None,
-            scaler         = None,
-            accumulate_grad = 1,
-            amp_dtype      = amp_dtype,
-            use_amp        = use_amp,
-            world_size     = world_size,
-        )
+def collate_fn(batch):
+    batch = [s for s in batch if s is not None]
+    if len(batch) == 0:
+        print("[Warning] all samples in batch were invalid, returning None")
+        return None
 
+    def pad(msas, cap, pad_val=PAD_ID):
+        max_n = min(max(m.shape[0] for m in msas), cap)
+        return torch.stack([F.pad(m[:max_n], (0, 0, 0, max(0, max_n - m.shape[0])), value=pad_val) for m in msas])
+
+    host_msas = pad([s["host_msa"] for s in batch], host_max_leaves)
+    para_msas = pad([s["parasite_msa"] for s in batch], para_max_leaves)
+    out = {
+        "host_msa":     host_msas,
+        "parasite_msa": para_msas,
+        "labels":       torch.stack([s["labels"] for s in batch]),
+        "mappings":     [s["mappings"] for s in batch],
+        "sim_time":     torch.stack([s["sim_time"] for s in batch]),
+    }
+    if use_dist_matrix:
+        if "host_dist" in batch[0]:
+            def pad_dist(d, n):
+                if d.shape[0] == n:
+                    return d
+                out = torch.zeros(n, n, dtype=d.dtype)
+                out[:d.shape[0], :d.shape[0]] = d
+                return out
+            out["host_dist"] = torch.stack([pad_dist(s["host_dist"], host_msas.shape[1]) for s in batch])
+            out["para_dist"] = torch.stack([pad_dist(s["para_dist"], para_msas.shape[1]) for s in batch])
+        else:
+            out["host_dist"] = torch.stack([jukes_cantor_dist(m) for m in host_msas])
+            out["para_dist"] = torch.stack([jukes_cantor_dist(m) for m in para_msas])
+    return out
+
+
+def cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps, eta_min_ratio=0.1):
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / max(1, warmup_steps)
+        progress = min((step - warmup_steps) / max(1, total_steps - warmup_steps), 1.0)
+        return eta_min_ratio + (1.0 - eta_min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
+    return LambdaLR(optimizer, lr_lambda)
+
+
+def save_checkpoint(fabric, model, optimizer, scheduler, epoch, global_step, epoch_step,
+                    val_loss, hparams, ckpt_dir, best_val, end_of_epoch=False, best_only=False):
+    """Save a checkpoint following the Phyloformer-2 schema.
+
+    Unless best_only=True, always writes latest.ckpt (and last_epoch.ckpt at end of epoch).
+    When val_loss improves, always writes best_val_loss.ckpt.
+    Returns the (possibly updated) best_val.
+    """
+    new_best_val = best_val
+    if fabric.is_global_zero:
+        # Skip building state entirely if best_only and no improvement
+        if best_only and val_loss >= best_val:
+            pass
+        else:
+            state = {
+                "model":      unwrap_model(model).state_dict(),
+                "optimizer":  optimizer.state_dict(),
+                "scheduler":  scheduler.state_dict(),
+                "epoch":      epoch,
+                "step":       global_step,
+                "epoch_step": 0 if end_of_epoch else epoch_step,
+                "val_loss":   val_loss,
+                "hparams":    hparams,
+            }
+            os.makedirs(ckpt_dir, exist_ok=True)
+            if not best_only:
+                torch.save(state, os.path.join(ckpt_dir, "latest.ckpt"))
+                if end_of_epoch:
+                    torch.save(state, os.path.join(ckpt_dir, "last_epoch.ckpt"))
+            if val_loss < best_val:
+                torch.save(state, os.path.join(ckpt_dir, "best_val_loss.ckpt"))
+                new_best_val = val_loss
+                print(f"  [Checkpoint] new best val={new_best_val:.6f} → best_val_loss.ckpt")
+    fabric.barrier()
+    return new_best_val
+
+
+def load_checkpoint(fabric, model, optimizer, scheduler, ckpt):
+    """Restore model, optimizer and scheduler from a checkpoint dict.
+
+    Returns (start_epoch, global_step, epoch_step, best_val).
+    The scheduler is fast-forwarded to the correct step rather than restoring
+    its saved state, so it stays consistent with the freshly-computed schedule.
+    """
+    unwrap_model(model).load_state_dict(ckpt["model"])
+    optimizer.load_state_dict(ckpt["optimizer"])
+    # Fast-forward the scheduler instead of restoring saved state.
+    # Restoring state can misalign progress if total_steps changed between runs.
+    global_step = ckpt["step"] + 1
+    for _ in range(global_step):
         scheduler.step()
-        lr      = scheduler.get_last_lr()[0]
-        elapsed = time.time() - t0
-
-        if main:
-            if val_preds.shape[0] > 0:
-                mae = mae_per_component(val_preds, val_tgts)
-                mae_str = "  ".join(f"{mae[i].item():.4f}" for i in range(4))
-            else:
-                mae_str = "  N/A"
-                mae     = torch.zeros(4)
-
-            print(
-                f"{epoch+1:>5}  {train_loss:>10.6f}  {val_loss:>10.6f}  "
-                f"{mae[0].item():>10.4f}  {mae[1].item():>9.4f}  "
-                f"{mae[2].item():>9.4f}  {mae[3].item():>9.4f}  "
-                f"{lr:>9.2e}  {elapsed:>6.1f}s"
-            )
-
-            # WandB logging
-            if use_wandb:
-                log_dict = {
-                    "epoch":       epoch + 1,
-                    "train/kl_loss": train_loss,
-                    "val/kl_loss":   val_loss,
-                    "lr":            lr,
-                    "val/mae_speciation":  mae[0].item(),
-                    "val/mae_hgt":         mae[1].item(),
-                    "val/mae_loss":        mae[2].item(),
-                    "val/mae_duplication": mae[3].item(),
-                    "val/mae_mean":        mae.mean().item(),
-                }
-                wandb.log(log_dict, step=epoch + 1)
-
-            # Checkpoint
-            save_checkpoint(last_ckpt, model, optimizer, scheduler, scaler, epoch, best_val_loss)
-
-            if val_loss < best_val_loss:
-                best_val_loss   = val_loss
-                epochs_no_improve = 0
-                save_checkpoint(best_ckpt, model, optimizer, scheduler, scaler, epoch, best_val_loss)
-                print(f"         [*] New best val loss: {best_val_loss:.6f}")
-                if use_wandb:
-                    wandb.run.summary["best_val_loss"] = best_val_loss
-                    wandb.run.summary["best_epoch"]    = epoch + 1
-            else:
-                epochs_no_improve += 1
-
-        # Broadcast early-stopping counter to all ranks
-        if world_size > 1:
-            stop_flag = torch.tensor(
-                [epochs_no_improve if main else 0], device=device, dtype=torch.int
-            )
-            dist.broadcast(stop_flag, src=0)
-            epochs_no_improve = stop_flag.item()
-
-        if epochs_no_improve >= patience:
-            if main:
-                print(f"\n[INFO] Early stopping after {patience} epochs without improvement.")
-            break
-
-    if main:
-        print("=" * 90)
-        print(f"[INFO] Training complete. Best val loss: {best_val_loss:.6f}")
-        print(f"[INFO] Best checkpoint: {best_ckpt}")
-
-        # ---- Final test evaluation on rank 0 --------------------------------
-        print("\n[INFO] Evaluating best model on test set …")
-        raw_model = model.module if hasattr(model, "module") else model
-        ckpt = torch.load(best_ckpt, map_location=device)
-        raw_model.load_state_dict(ckpt["model_state_dict"])
-
-        test_loss, test_preds, test_tgts = run_epoch(
-            model       = model,
-            loader      = test_loader,
-            device      = device,
-            optimizer   = None,
-            amp_dtype   = amp_dtype,
-            use_amp     = use_amp,
-            world_size  = 1,   # evaluate only on rank 0 with its full test split
-        )
-        if test_preds.shape[0] > 0:
-            test_mae = mae_per_component(test_preds, test_tgts)
-            print(f"[INFO] Test KL loss: {test_loss:.6f}")
-            for i, name in enumerate(EVENTS):
-                print(f"[INFO]   {name:12s} MAE: {test_mae[i].item():.4f}")
-            if use_wandb:
-                wandb.run.summary.update({
-                    "test/kl_loss":          test_loss,
-                    "test/mae_speciation":   test_mae[0].item(),
-                    "test/mae_hgt":          test_mae[1].item(),
-                    "test/mae_loss":         test_mae[2].item(),
-                    "test/mae_duplication":  test_mae[3].item(),
-                })
-
-        if use_wandb:
-            wandb.finish()
-
-    # ---- Clean up -----------------------------------------------------------
-    if world_size > 1:
-        dist.destroy_process_group()
+    start_epoch = ckpt["epoch"]
+    epoch_step  = ckpt.get("epoch_step", 0)
+    best_val    = ckpt["val_loss"]
+    if fabric.is_global_zero:
+        print(f"[Resume] epoch={start_epoch}  step={global_step}  "
+              f"lr={optimizer.param_groups[0]['lr']:.3e}  best_val={best_val:.6f}")
+    return start_epoch, global_step, epoch_step, best_val
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+def plot_scatter(train_preds, train_labels, val_preds, val_labels, event_names,
+                 save_dir="scatter_plots"):
+    """Combined train+val scatter plots per event, saved to disk and returned as wandb Images."""
+    os.makedirs(save_dir, exist_ok=True)
+    images = {}
+    for i, name in enumerate(event_names):
+        fig, ax = plt.subplots(figsize=(8, 8))
+        tl = train_labels[:, i].numpy()
+        tp = train_preds[:, i].numpy()
+        vl = val_labels[:, i].numpy()
+        vp = val_preds[:, i].numpy()
+        ax.scatter(tl, tp, alpha=0.4, s=10, color="blue", label="Train")
+        ax.scatter(vl, vp, alpha=0.4, s=10, color="orange", label="Validation")
+        lo = min(tl.min(), tp.min(), vl.min(), vp.min())
+        hi = max(tl.max(), tp.max(), vl.max(), vp.max())
+        ax.plot([lo, hi], [lo, hi], "r--", lw=1, label="Perfect prediction")
+        ax.set_xlabel("True Labels")
+        ax.set_ylabel("Predictions")
+        ax.set_title(f"Train vs Val — {name}")
+        ax.legend()
+        ax.grid(True, linestyle="--", linewidth=0.5)
+        fig.tight_layout()
+        png_path = os.path.join(save_dir, f"{name}.png")
+        fig.savefig(png_path, dpi=150)
+        print(f"  [Scatter] saved {png_path}")
+        images[f"scatter/{name}"] = wandb.Image(fig)
+        plt.close(fig)
+    return images
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Train Co-Phyloformer (DDP + BF16, JeanZay H100 ready)",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+
+def main(fabric: Fabric, ckpt_to_load=None):
+    # -------------------------------------------------------------------------
+    # Config
+    # -------------------------------------------------------------------------
+    preencoded_dir = os.environ.get(
+        "PREENCODED_DIR",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "generate_treeducken", "generated_trees", "test"),
+    )
+    epochs         = int(os.environ.get("EPOCHS", "50"))
+    batch_size     = int(os.environ.get("BATCH_SIZE", "64"))  # per GPU
+    grad_accum     = 4
+    lr             = 1e-4
+    wd             = 0.05
+    huber_delta    = 1.0
+    under_penalty  = 2.5
+    tail_weight    = 1.0
+    mid_epoch_vals = int(os.environ.get("MID_EPOCH_VALS", "8"))
+    num_workers    = int(os.environ.get("NUM_WORKERS", "8"))
+    ckpt_dir       = os.environ.get("CKPT_DIR", "checkpoints")
+    device         = fabric.device
+
+    hparams = {
+        "preencoded_dir":  preencoded_dir,
+        "epochs":          epochs,
+        "batch_size":      batch_size,
+        "grad_accum":      grad_accum,
+        "lr":              lr,
+        "wd":              wd,
+        "huber_delta":     huber_delta,
+        "under_penalty":   under_penalty,
+        "tail_weight":     tail_weight,
+        "axial_layers":       axial_layers,
+        "use_opm":            use_opm,
+        "use_dist_matrix":    use_dist_matrix,
+        "use_flexattention":  use_flex,
+        "pair_dim":           64,
+        "cls_dim":            512,
+        "mid_epoch_vals":  mid_epoch_vals,
+        "ckpt_dir":        ckpt_dir,
+    }
+
+    event_loss_weights = torch.tensor([1.0, 1.0], device=device)
+
+    def asymmetric_huber(pred, target):
+        err = target - pred
+        abs_err = err.abs()
+        loss = torch.where(abs_err < huber_delta,
+                           0.5 * abs_err ** 2,
+                           huber_delta * (abs_err - 0.5 * huber_delta))
+        weight = torch.where(err > 0, torch.full_like(err, under_penalty), torch.ones_like(err))
+        return loss * weight
+
+    # -------------------------------------------------------------------------
+    # Data
+    # -------------------------------------------------------------------------
+    dataset = LazyCophyloformerDataset(preencoded_dir)
+    indices = list(range(len(dataset)))
+    train_idx, val_idx = train_test_split(indices, test_size=0.2, random_state=42)
+
+    train_subset = torch.utils.data.Subset(dataset, train_idx)
+    val_subset   = torch.utils.data.Subset(dataset, val_idx)
+
+    # batch_size is per-GPU — use manual DistributedSampler so Fabric doesn't
+    # divide it again by num_processes.
+    train_sampler = torch.utils.data.distributed.DistributedSampler(
+        train_subset, num_replicas=fabric.world_size, rank=fabric.global_rank, shuffle=True,
+    )
+    val_sampler = torch.utils.data.distributed.DistributedSampler(
+        val_subset, num_replicas=fabric.world_size, rank=fabric.global_rank, shuffle=False,
+    )
+    train_loader = DataLoader(train_subset, batch_size=batch_size, sampler=train_sampler,
+                              collate_fn=collate_fn, num_workers=num_workers,
+                              persistent_workers=True, prefetch_factor=4, pin_memory=True)
+    val_loader   = DataLoader(val_subset, batch_size=batch_size * 2, sampler=val_sampler,
+                              collate_fn=collate_fn, num_workers=num_workers,
+                              persistent_workers=False,
+                              prefetch_factor=2 if num_workers > 0 else None, pin_memory=True)
+    train_loader, val_loader = fabric.setup_dataloaders(
+        train_loader, val_loader, use_distributed_sampler=False
     )
 
-    # --- Data ---
-    p.add_argument("--data_dir",       type=str, required=True,
-                   help="Path to Datasets/ folder.")
-    p.add_argument("--manifest_file",  type=str, default=None,
-                   help="Pre-built file list (one .tgl path per line) for 1M+ datasets.")
-    p.add_argument("--max_seq_len",    type=int, default=512,
-                   help="Truncate / pad sequences to this length.")
-    p.add_argument("--train_frac",     type=float, default=0.7)
-    p.add_argument("--val_frac",       type=float, default=0.15)
-    p.add_argument("--num_workers",    type=int, default=4,
-                   help="DataLoader workers per GPU. 0 = main process only.")
-    p.add_argument("--prefetch_factor", type=int, default=2,
-                   help="Batches to prefetch per DataLoader worker.")
+    # -------------------------------------------------------------------------
+    # Model + optimizer + scheduler
+    # -------------------------------------------------------------------------
+    model = Cophyloformer(
+        hidden_dim=hidden_dim, pair_dim=64, cls_dim=512, axial_layers=axial_layers,
+        use_opm=use_opm, use_dist_matrix=use_dist_matrix,
+        gradient_checkpointing=grad_ckpt,
+        num_cross_layers=cross_layers,
+        use_flexattention=use_flex,
+        num_events=len(EVENT_NAMES),
+    )
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
+    model, optimizer = fabric.setup(model, optimizer)
 
-    # --- Training ---
-    p.add_argument("--epochs",          type=int,   default=100)
-    p.add_argument("--lr",              type=float, default=1e-4,
-                   help="Peak learning rate.")
-    p.add_argument("--min_lr",          type=float, default=1e-6,
-                   help="Minimum LR at end of cosine schedule.")
-    p.add_argument("--weight_decay",    type=float, default=1e-2,
-                   help="AdamW weight decay.")
-    p.add_argument("--accumulate_grad", type=int,   default=8,
-                   help="Gradient accumulation steps. Effective batch = world_size × this.")
-    p.add_argument("--patience",        type=int,   default=15,
-                   help="Early-stopping patience (epochs).")
+    opt_steps_per_epoch = math.ceil(len(train_loader) / grad_accum)
+    total_steps         = epochs * opt_steps_per_epoch
+    warmup_steps    = int(0.15 * total_steps)
+    scheduler = cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps, eta_min_ratio=0.1)
 
-    # --- Model ---
-    p.add_argument("--d_model",                type=int,   default=128)
-    p.add_argument("--nhead",                  type=int,   default=8)
-    p.add_argument("--num_layers",             type=int,   default=2)
-    p.add_argument("--dropout",                type=float, default=0.1)
-    p.add_argument("--gradient_checkpointing", action="store_true",
-                   help="Trade compute for memory via activation checkpointing.")
-    p.add_argument("--compile",                action="store_true",
-                   help="Apply torch.compile() for extra speed on H100.")
+    # -------------------------------------------------------------------------
+    # Resume from checkpoint if provided
+    # -------------------------------------------------------------------------
+    start_epoch = 0
+    global_step = 0
+    best_val    = float("inf")
 
-    # --- Misc ---
-    p.add_argument("--seed",           type=int, default=42)
-    p.add_argument("--checkpoint_dir", type=str, default="./checkpoints")
-    p.add_argument("--resume",         type=str, default=None,
-                   help="Path to checkpoint to resume from.")
+    if ckpt_to_load is not None:
+        start_epoch, global_step, _, best_val = load_checkpoint(
+            fabric, model, optimizer, scheduler, ckpt_to_load
+        )
 
-    return p.parse_args()
+    # -------------------------------------------------------------------------
+    # WandB
+    # -------------------------------------------------------------------------
+    if fabric.is_global_zero:
+        run_name = os.environ.get("WANDB_NAME", "run")
+        if start_epoch > 0:
+            run_name = f"{run_name}_resume_ep{start_epoch}"
+        wandb.init(
+            entity=os.environ.get("WANDB_ENTITY", "cophylo_team"),
+            project=os.environ.get("WANDB_PROJECT", "CoPhyloformer"),
+            name=run_name,
+            group=os.environ.get("WANDB_NAME", "run"),
+            id=wandb.util.generate_id(),
+            mode=os.environ.get("WANDB_MODE", "offline"),
+            config={
+                **hparams,
+                "total_steps":  total_steps,
+                "warmup_steps": warmup_steps,
+                "dataset_size": len(dataset),
+                "start_epoch":  start_epoch,
+                "params": sum(p.numel() for p in model.parameters() if p.requires_grad),
+            },
+        )
+
+    # -------------------------------------------------------------------------
+    # Training loop
+    # -------------------------------------------------------------------------
+    def run_mid_val(label, epoch, global_step, epoch_step, best_val):
+        """Run validation, log to wandb, save best_val_loss.ckpt only if improved."""
+        fabric.barrier()
+        vr = run_full_validation(fabric, model, val_loader, asymmetric_huber,
+                                  EVENT_NAMES, device,
+                                  event_loss_weights=event_loss_weights,
+                                  tail_weight_scale=tail_weight)
+        fabric.barrier()
+        if fabric.is_global_zero:
+            mae_s = " | ".join(f"{EVENT_NAMES[i]}: {vr['val_mae'][i]:.4f}" for i in range(len(EVENT_NAMES)))
+            print(f"  [{label}] loss={vr['val_loss']:.6f}  MAE → {mae_s}  lr={optimizer.param_groups[0]['lr']:.2e}")
+            wandb.log({"val/loss_mid": vr["val_loss"],
+                       **{f"val/MAE_mid/{EVENT_NAMES[i]}": vr["val_mae"][i] for i in range(len(EVENT_NAMES))},
+                       **{f"val/MRE_mid/{EVENT_NAMES[i]}": vr["val_mre"][i] for i in range(len(EVENT_NAMES))}},
+                      step=global_step)
+        return save_checkpoint(
+            fabric, model, optimizer, scheduler,
+            epoch, global_step, epoch_step, vr["val_loss"],
+            hparams, ckpt_dir, best_val, end_of_epoch=False, best_only=True,
+        )
+
+    for epoch in range(start_epoch, epochs):
+        train_sampler.set_epoch(epoch)
+
+        # evenly-spaced mid-epoch validation trigger steps
+        mid_val_steps = {
+            math.ceil(k * opt_steps_per_epoch / (mid_epoch_vals + 1))
+            for k in range(1, mid_epoch_vals + 1)
+        }
+
+        if fabric.is_global_zero:
+            print(f"\nEpoch {epoch+1}/{epochs}")
+
+        # beginning-of-epoch validation (no checkpoint unless new best)
+        best_val = run_mid_val("Begin", epoch, global_step, 0, best_val)
+
+        total_loss    = 0.0
+        num_batches   = 0
+        epoch_step    = 0
+        skipped_steps = 0
+
+        sum_abs   = torch.zeros(len(EVENT_NAMES), device=device)
+        sum_rel   = torch.zeros(len(EVENT_NAMES), device=device)
+        n_samples = 0
+
+        for batch_idx, batch in tqdm(enumerate(train_loader), total=len(train_loader),
+                                     desc=f"Epoch {epoch+1}", leave=False):
+            if batch is None:
+                continue
+            batch["host_msa"]     = batch["host_msa"].to(device, non_blocking=True)
+            batch["parasite_msa"] = batch["parasite_msa"].to(device, non_blocking=True)
+            batch["sim_time"]     = batch["sim_time"].to(device, non_blocking=True)
+            batch["labels"]       = batch["labels"].to(device, non_blocking=True)
+            if use_dist_matrix:
+                batch["host_dist"] = batch["host_dist"].to(device, non_blocking=True)
+                batch["para_dist"] = batch["para_dist"].to(device, non_blocking=True)
+
+            if batch_idx % grad_accum == 0:
+                optimizer.zero_grad(set_to_none=True)
+
+            outputs = model(
+                batch["host_msa"], batch["parasite_msa"], batch["mappings"],
+                batch["sim_time"],
+                host_dist=batch.get("host_dist"), para_dist=batch.get("para_dist"),
+            )
+
+            tw = 1.0 + tail_weight * batch["labels"]
+            loss = sum(
+                event_loss_weights[i] * (asymmetric_huber(outputs[:, i], batch["labels"][:, i]) * tw[:, i]).mean()
+                for i in range(len(EVENT_NAMES))
+            )
+            fabric.backward(loss / grad_accum)
+
+            is_accum = ((batch_idx + 1) % grad_accum == 0)
+            is_last  = ((batch_idx + 1) == len(train_loader))
+            if is_accum or is_last:
+                gnorm = fabric.clip_gradients(model, optimizer, max_norm=0.5, error_if_nonfinite=False)
+                if torch.isfinite(gnorm):
+                    optimizer.step()
+                    scheduler.step()
+                    epoch_step  += 1
+                    global_step += 1
+
+                    # mid-epoch validation (no checkpoint unless new best)
+                    if epoch_step in mid_val_steps:
+                        mid_val_steps.discard(epoch_step)
+                        pct = int(round(epoch_step / opt_steps_per_epoch * 100))
+                        best_val = run_mid_val(f"Val {pct:3d}%", epoch, global_step, epoch_step, best_val)
+                else:
+                    skipped_steps += 1
+                    global_step   += 1  # always advance so validation still triggers
+                    if fabric.is_global_zero:
+                        print(f"[Warning] non-finite grad norm {gnorm:.2e} at batch {batch_idx+1}, skipping")
+                    optimizer.zero_grad(set_to_none=True)
+
+            total_loss  += loss.item()
+            num_batches += 1
+            with torch.no_grad():
+                diff       = (outputs.detach() - batch["labels"]).abs()
+                sum_abs   += diff.sum(dim=0)
+                sum_rel   += (diff / batch["labels"].clamp(min=0.01)).sum(dim=0)
+                n_samples += outputs.shape[0]
+
+        # --- End of epoch ---
+        epoch_loss = fabric.all_reduce(torch.tensor(total_loss / max(1, num_batches), device=device),
+                                       reduce_op="mean").item()
+        global_abs = fabric.all_reduce(sum_abs, reduce_op="sum")
+        global_rel = fabric.all_reduce(sum_rel, reduce_op="sum")
+        global_n   = int(fabric.all_reduce(torch.tensor(n_samples, device=device), reduce_op="sum").item())
+        mae = (global_abs / max(1, global_n)).cpu().tolist()
+        mre = (global_rel / max(1, global_n)).cpu().tolist()
+
+        if fabric.is_global_zero:
+            print(f"  train loss={epoch_loss:.6f}  lr={optimizer.param_groups[0]['lr']:.2e}")
+            print("  MAE  " + "  ".join(f"{EVENT_NAMES[i]}: {mae[i]:.4f}" for i in range(len(EVENT_NAMES))))
+            if skipped_steps > 0:
+                print(f"  [Warning] {skipped_steps}/{epoch_step + skipped_steps} optimizer steps skipped (non-finite gradients)")
+
+        # end-of-epoch validation + checkpoint
+        fabric.barrier()
+        vr = run_full_validation(fabric, model, val_loader, asymmetric_huber,
+                                  EVENT_NAMES, device,
+                                  event_loss_weights=event_loss_weights,
+                                  tail_weight_scale=tail_weight)
+        fabric.barrier()
+        val_loss = vr["val_loss"]
+        val_mae  = vr["val_mae"]
+        val_mre  = vr["val_mre"]
+
+        if fabric.is_global_zero:
+            print(f"  val  loss={val_loss:.6f}")
+            print("  MAE  " + "  ".join(f"{EVENT_NAMES[i]}: {val_mae[i]:.4f}" for i in range(len(EVENT_NAMES))))
+            print("  MRE  " + "  ".join(f"{EVENT_NAMES[i]}: {val_mre[i]:.4f}" for i in range(len(EVENT_NAMES))))
+            ep_step = (epoch + 1) * opt_steps_per_epoch
+            wandb.log({
+                "epoch": epoch + 1, "train/loss": epoch_loss,
+                "lr": optimizer.param_groups[0]["lr"],
+                **{f"train/MAE/{EVENT_NAMES[i]}": mae[i] for i in range(len(EVENT_NAMES))},
+                **{f"train/MRE/{EVENT_NAMES[i]}": mre[i] for i in range(len(EVENT_NAMES))},
+            }, step=ep_step)
+            wandb.log({
+                "epoch": epoch + 1, "val/loss": val_loss,
+                **{f"val/MAE/{EVENT_NAMES[i]}": val_mae[i] for i in range(len(EVENT_NAMES))},
+                **{f"val/MRE/{EVENT_NAMES[i]}": val_mre[i] for i in range(len(EVENT_NAMES))},
+            }, step=ep_step + 1)
+
+        best_val = save_checkpoint(
+            fabric, model, optimizer, scheduler,
+            epoch, global_step, epoch_step, val_loss,
+            hparams, ckpt_dir, best_val, end_of_epoch=True,
+        )
+
+    # -------------------------------------------------------------------------
+    # Final save + scatter plots
+    # -------------------------------------------------------------------------
+    if fabric.is_global_zero:
+        torch.save(unwrap_model(model).state_dict(), "cophyloformer_final.pth")
+
+        raw_model = unwrap_model(model)
+        raw_model.eval()
+
+        # val scatter — all val data
+        scatter_val_loader = DataLoader(
+            val_subset, batch_size=batch_size, shuffle=False,
+            collate_fn=collate_fn, num_workers=4, pin_memory=True,
+        )
+        val_preds, val_labels = compute_val_predictions(raw_model, scatter_val_loader, device)
+
+        # train scatter — up to 2000 random samples
+        scatter_n = min(2000, len(train_idx))
+        scatter_idx = random.sample(train_idx, scatter_n)
+        scatter_train_ds = LazyCophyloformerDataset(
+            preencoded_dir,
+            pt_files=[dataset.pt_files[i] for i in scatter_idx],
+        )
+        scatter_train_loader = DataLoader(
+            scatter_train_ds, batch_size=batch_size, shuffle=False,
+            collate_fn=collate_fn, num_workers=4, pin_memory=True,
+        )
+        train_preds, train_labels = compute_val_predictions(raw_model, scatter_train_loader, device)
+
+        if val_preds is not None and train_preds is not None:
+            wandb.log(plot_scatter(train_preds, train_labels, val_preds, val_labels, EVENT_NAMES))
+
+        if val_preds is not None:
+            import csv
+            csv_path = "val_predictions.csv"
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                header = (
+                    [f"true_{n}" for n in EVENT_NAMES]
+                    + [f"pred_{n}" for n in EVENT_NAMES]
+                )
+                writer.writerow(header)
+                for true_row, pred_row in zip(val_labels.tolist(), val_preds.tolist()):
+                    writer.writerow(true_row + pred_row)
+            print(f"  [CSV] saved {csv_path}  ({len(val_labels)} rows)")
+            wandb.save(csv_path)
+
+        wandb.finish()
+        print("Training complete.")
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    train(args)
+    import argparse
+
+    parser = argparse.ArgumentParser("Train Co-Phyloformer")
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("train", description="Train from scratch")
+    resumer = subparsers.add_parser("resume", description="Resume from a checkpoint")
+    resumer.add_argument("checkpoint", help="Path to .ckpt file (latest.ckpt or last_epoch.ckpt)")
+    args = parser.parse_args()
+
+    ckpt_to_load = None
+    if args.command == "resume":
+        ckpt_to_load = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+        # If resuming from an end-of-epoch checkpoint, start from the next epoch
+        if "last_epoch.ckpt" in args.checkpoint:
+            ckpt_to_load["epoch"] += 1
+
+    def _main(fabric: Fabric):
+        main(fabric, ckpt_to_load=ckpt_to_load)
+
+    fabric = Fabric(
+        accelerator="cuda" if torch.cuda.is_available() else "cpu",
+        devices="auto",
+        precision="bf16-mixed",
+        strategy=DDPStrategy(find_unused_parameters=True),
+    )
+    fabric.launch(_main)

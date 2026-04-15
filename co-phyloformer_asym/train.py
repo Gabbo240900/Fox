@@ -259,7 +259,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
     wd             = 0.05
     huber_delta    = 1.0
     under_penalty  = 2.5
-    tail_weight    = 1.0
+    tail_weight    = 2.0
     mid_epoch_vals = int(os.environ.get("MID_EPOCH_VALS", "8"))
     num_workers    = int(os.environ.get("NUM_WORKERS", "8"))
     ckpt_dir       = os.environ.get("CKPT_DIR", "checkpoints")
@@ -273,8 +273,9 @@ def main(fabric: Fabric, ckpt_to_load=None):
         "lr":              lr,
         "wd":              wd,
         "huber_delta":     huber_delta,
-        "under_penalty":   under_penalty,
-        "tail_weight":     tail_weight,
+        "under_penalty":      under_penalty,
+        "tail_weight":        tail_weight,
+        "hgt_loss_weight":    2.0,
         "axial_layers":       axial_layers,
         "use_opm":            use_opm,
         "use_dist_matrix":    use_dist_matrix,
@@ -285,7 +286,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
         "ckpt_dir":        ckpt_dir,
     }
 
-    event_loss_weights = torch.tensor([1.0, 1.5, 1.0, 1.0], device=device)
+    event_loss_weights = torch.tensor([1.0, 2.0, 1.0, 1.0], device=device)
 
     def asymmetric_huber(pred, target):
         err = target - pred

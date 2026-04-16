@@ -54,7 +54,7 @@ set -x
 # W&B settings
 export WANDB_ENTITY=cophylo_team
 export WANDB_PROJECT=CoPhyloformer
-export WANDB_NAME=20H_asym_new
+export WANDB_NAME=35ep_hgt2_tail2_dropout
 export WANDB_MODE=offline
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300
@@ -69,7 +69,7 @@ export GRADIENT_CHECKPOINTING=1
 export USE_FLEX_ATTENTION=0
 
 # Training settings
-export EPOCHS=5
+export EPOCHS=35
 export MID_EPOCH_VALS=2
 export NUM_WORKERS=16
 export CKPT_DIR=checkpoints
@@ -79,14 +79,5 @@ export PARA_MAX_LEAVES=128
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
+srun python train.py train
 
-if [ -f "$CKPT_DIR/last_epoch.ckpt" ]; then
-    echo "[Resume] Resuming from last_epoch.ckpt"
-    srun python train.py resume "$CKPT_DIR/last_epoch.ckpt"
-elif [ -f "$CKPT_DIR/latest.ckpt" ]; then
-    echo "[Resume] Resuming from latest.ckpt (mid-epoch)"
-    srun python train.py resume "$CKPT_DIR/latest.ckpt"
-else
-    echo "[Train] Starting from scratch"
-    srun python train.py train
-fi

@@ -82,9 +82,14 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # ── Resubmit helper ────────────────────────────────────────────────────────────
 # Called either by the USR1 trap (time limit approaching) or after normal exit
 # if the epoch target hasn't been reached yet.
+_RESUBMITTED=0
+
 _resubmit() {
-    echo "[Chain] Resubmitting dev job for continuation..."
-    sbatch "$SLURM_SUBMIT_DIR/dev_training.slurm"
+    if [ $_RESUBMITTED -eq 0 ]; then
+        _RESUBMITTED=1
+        echo "[Chain] Resubmitting dev job for continuation..."
+        sbatch "$SLURM_SUBMIT_DIR/dev_training.slurm"
+    fi
 }
 
 # Trap USR1: fires 2 min before the 2h wall-time limit.
@@ -122,7 +127,7 @@ else:
 
 TARGET_EPOCH=$(( EPOCHS - 1 ))   # epochs are 0-indexed in checkpoint
 
-if [ "$DONE_EPOCH" -lt "$TARGET_EPOCH" ]; then
+if [ $_RESUBMITTED -eq 0 ] && [ "$DONE_EPOCH" -lt "$TARGET_EPOCH" ]; then
     echo "[Chain] Completed epoch $DONE_EPOCH / target $TARGET_EPOCH — resubmitting"
     _resubmit
 else

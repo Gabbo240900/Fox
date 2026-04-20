@@ -79,4 +79,4 @@ export PARA_MAX_LEAVES=128
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
-srun python train.py train
+srun python train.py resume "checkpoints/last_epoch.ckpt"

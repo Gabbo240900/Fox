@@ -171,6 +171,7 @@ def save_checkpoint(fabric, model, optimizer, scheduler, epoch, global_step, epo
         if best_only and val_loss >= best_val:
             pass
         else:
+            new_best_val = min(best_val, val_loss)
             state = {
                 "model":      unwrap_model(model).state_dict(),
                 "optimizer":  optimizer.state_dict(),
@@ -179,6 +180,7 @@ def save_checkpoint(fabric, model, optimizer, scheduler, epoch, global_step, epo
                 "step":       global_step,
                 "epoch_step": 0 if end_of_epoch else epoch_step,
                 "val_loss":   val_loss,
+                "best_val":   new_best_val,
                 "hparams":    hparams,
             }
             os.makedirs(ckpt_dir, exist_ok=True)
@@ -210,7 +212,7 @@ def load_checkpoint(fabric, model, optimizer, scheduler, ckpt):
         scheduler.step()
     start_epoch = ckpt["epoch"]
     epoch_step  = ckpt.get("epoch_step", 0)
-    best_val    = ckpt["val_loss"]
+    best_val    = ckpt.get("best_val", ckpt["val_loss"])
     if fabric.is_global_zero:
         print(f"[Resume] epoch={start_epoch}  step={global_step}  "
               f"lr={optimizer.param_groups[0]['lr']:.3e}  best_val={best_val:.6f}")

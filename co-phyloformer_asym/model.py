@@ -145,7 +145,7 @@ class ColAttnPairBias(nn.Module):
 
     # Maximum residue positions to process at once in column attention (torch path).
     # Smaller = less peak memory, slightly more overhead.
-    COL_ATTN_CHUNK = 32
+    COL_ATTN_CHUNK = 128
 
     def forward_torch(
         self,
@@ -476,16 +476,7 @@ class Cophyloformer(nn.Module):
         self.embedding_dim   = hidden_dim
         self.use_dist_matrix = use_dist_matrix
 
-        self.host_encoder = MSAEncoder(
-            hidden_dim, pair_dim, num_heads,
-            axial_layers=axial_layers,
-            use_opm=use_opm,
-            use_dist_matrix=use_dist_matrix,
-            gradient_checkpointing=gradient_checkpointing,
-            cls_dim=cls_dim,
-            use_flexattention=use_flexattention,
-        )
-        self.parasite_encoder = MSAEncoder(
+        self.encoder = MSAEncoder(
             hidden_dim, pair_dim, num_heads,
             axial_layers=axial_layers,
             use_opm=use_opm,
@@ -581,8 +572,8 @@ class Cophyloformer(nn.Module):
                 host_dist: Optional[torch.Tensor] = None,
                 para_dist: Optional[torch.Tensor] = None):
 
-        host_emb,     host_cls     = self.host_encoder(host_msa, dist_matrix=host_dist)
-        parasite_emb, parasite_cls = self.parasite_encoder(parasite_msa, dist_matrix=para_dist)
+        host_emb,     host_cls     = self.encoder(host_msa, dist_matrix=host_dist)
+        parasite_emb, parasite_cls = self.encoder(parasite_msa, dist_matrix=para_dist)
 
         batch_size = host_msa.shape[0]
         hidden_dim = host_emb.shape[-1]

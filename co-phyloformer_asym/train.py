@@ -34,6 +34,7 @@ cross_layers     = int(os.environ.get("CROSS_LAYERS", "1"))
 hidden_dim       = int(os.environ.get("HIDDEN_DIM", "256"))
 grad_ckpt        = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
 use_flex         = os.environ.get("USE_FLEX_ATTENTION", "0").strip() == "1"  # requires PyTorch >= 2.5
+use_compile      = os.environ.get("USE_COMPILE", "1").strip() == "1"
 host_max_leaves  = int(os.environ.get("HOST_MAX_LEAVES", "50"))  # host trees have max 50 leaves
 para_max_leaves  = int(os.environ.get("PARA_MAX_LEAVES", "64"))  # parasite trees have max 128, avg 82; cap for memory
 
@@ -78,6 +79,28 @@ class LazyCophyloformerDataset(Dataset):
     def __getitem__(self, idx):
         sample = torch.load(self.pt_files[idx], map_location="cpu", weights_only=False)
 
+        # New format: host_msa/para_msa already encoded as tensors, labels as flat dict
+        if "host_msa" in sample and "para_msa" in sample:
+            labels_src = sample["labels"]
+            out = {
+                "host_msa":     sample["host_msa"],
+                "parasite_msa": sample["para_msa"],
+                "mappings":     sample["mappings"],
+                "labels": torch.tensor(
+                    [labels_src.get(e, 0.0) for e in EVENT_NAMES],
+                    dtype=torch.float32,
+                ),
+                "sim_time": torch.tensor(
+                    [labels_src.get("Sim_time", 1.0)],
+                    dtype=torch.float32,
+                ),
+            }
+            if "host_dist" in sample:
+                out["host_dist"] = sample["host_dist"]
+                out["para_dist"] = sample["para_dist"]
+            return out
+
+        # Legacy format: raw string MSAs
         if not sample.get("host_msas") or not sample.get("parasite_msas"):
             print(f"[Warning] sample {self.pt_files[idx]} missing host or parasite MSAs, skipping")
             return None
@@ -92,9 +115,9 @@ class LazyCophyloformerDataset(Dataset):
             if p in p_idx and h in h_idx
         ]
         out = {
-            "host_msa":    torch.stack([encode_sequence(s) for s in sample["host_msas"].values()]),
+            "host_msa":     torch.stack([encode_sequence(s) for s in sample["host_msas"].values()]),
             "parasite_msa": torch.stack([encode_sequence(s) for s in sample["parasite_msas"].values()]),
-            "mappings": mappings,
+            "mappings":     mappings,
             "labels": torch.tensor(
                 [sample["event_frequencies"].get(e, 0.0) for e in EVENT_NAMES],
                 dtype=torch.float32,
@@ -287,7 +310,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
                               persistent_workers=True, prefetch_factor=4, pin_memory=True)
     val_loader   = DataLoader(val_dataset, batch_size=batch_size * 2, sampler=val_sampler,
                               collate_fn=collate_fn, num_workers=num_workers,
-                              persistent_workers=False,
+                              persistent_workers=num_workers > 0,
                               prefetch_factor=2 if num_workers > 0 else None, pin_memory=True)
     train_loader, val_loader = fabric.setup_dataloaders(
         train_loader, val_loader, use_distributed_sampler=False
@@ -303,6 +326,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
         num_cross_layers=cross_layers,
         use_flexattention=use_flex,
     )
+    if use_compile:
+        model = torch.compile(model, dynamic=True)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)
 
@@ -383,9 +408,6 @@ def main(fabric: Fabric, ckpt_to_load=None):
 
         if fabric.is_global_zero:
             print(f"\nEpoch {epoch+1}/{epochs}")
-
-        # beginning-of-epoch validation (no checkpoint unless new best)
-        best_val = run_mid_val("Begin", epoch, global_step, 0, best_val)
 
         total_loss    = 0.0
         num_batches   = 0

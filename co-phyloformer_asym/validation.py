@@ -10,6 +10,7 @@ def run_full_validation(
     device,
     event_loss_weights=None,
     tail_weight_scale=1.0,
+    collect_preds=False,
 ):
     model.eval()
     val_loss = 0.0
@@ -21,6 +22,9 @@ def run_full_validation(
         event_loss_weights = torch.ones(len(event_names), device=device)
     else:
         event_loss_weights = event_loss_weights.to(device=device, dtype=torch.float32)
+
+    preds_list  = [] if collect_preds else None
+    labels_list = [] if collect_preds else None
 
     with torch.no_grad():
         for batch in val_loader:
@@ -55,6 +59,10 @@ def run_full_validation(
             val_sum_rel += ((outputs - batch["labels"]).abs() / batch["labels"].clamp(min=0.01)).sum(dim=0)
             val_sample_count += batch["labels"].shape[0]
 
+            if collect_preds and fabric.is_global_zero:
+                preds_list.append(outputs.cpu())
+                labels_list.append(batch["labels"].cpu())
+
     loss_sum_tensor = fabric.all_reduce(torch.tensor(val_loss, device=device), reduce_op="sum")
     batches_tensor  = fabric.all_reduce(torch.tensor(val_batches, device=device), reduce_op="sum")
     val_loss = (loss_sum_tensor / torch.clamp(batches_tensor, min=1)).item()
@@ -71,12 +79,16 @@ def run_full_validation(
 
     model.train()
 
-    return {
+    result = {
         "val_loss": val_loss,
         "val_mae": val_mae,
         "val_mre": val_mre,
         "val_sample_count": val_sample_count,
     }
+    if collect_preds and fabric.is_global_zero and preds_list:
+        result["val_preds"]  = torch.cat(preds_list)
+        result["val_labels"] = torch.cat(labels_list)
+    return result
 
 
 def compute_val_predictions(model, val_loader, device):

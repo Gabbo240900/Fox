@@ -1,3 +1,4 @@
+import csv
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
@@ -25,6 +26,15 @@ torch._dynamo.config.optimize_ddp = False  # flex_attention uses higher-order op
 seed_everything(42)
 
 EVENT_NAMES = ["Speciation", "HGT", "Loss", "Duplication"]
+TRAIN_PRED_MAX = 2000  # samples collected per epoch for CSV/plots
+
+
+def write_prediction_csv(preds, labels, path):
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([f"true_{n}" for n in EVENT_NAMES] + [f"pred_{n}" for n in EVENT_NAMES])
+        for true_row, pred_row in zip(labels.tolist(), preds.tolist()):
+            writer.writerow(true_row + pred_row)
 
 # --- env flags ---
 use_opm         = os.environ.get("USE_OPM", "0").strip() == "1"
@@ -418,6 +428,10 @@ def main(fabric: Fabric, ckpt_to_load=None):
         sum_rel   = torch.zeros(len(EVENT_NAMES), device=device)
         n_samples = 0
 
+        train_pred_list   = []
+        train_label_list  = []
+        train_pred_count  = 0
+
         for batch_idx, batch in tqdm(enumerate(train_loader), total=len(train_loader),
                                      desc=f"Epoch {epoch+1}", leave=False):
             if batch is None:
@@ -475,6 +489,11 @@ def main(fabric: Fabric, ckpt_to_load=None):
                 sum_abs   += diff.sum(dim=0)
                 sum_rel   += (diff / batch["labels"].clamp(min=0.01)).sum(dim=0)
                 n_samples += outputs.shape[0]
+                if fabric.is_global_zero and train_pred_count < TRAIN_PRED_MAX:
+                    take = min(outputs.shape[0], TRAIN_PRED_MAX - train_pred_count)
+                    train_pred_list.append(outputs.detach()[:take].cpu())
+                    train_label_list.append(batch["labels"][:take].cpu())
+                    train_pred_count += take
 
         # --- End of epoch ---
         epoch_loss = fabric.all_reduce(torch.tensor(total_loss / max(1, num_batches), device=device),
@@ -496,11 +515,21 @@ def main(fabric: Fabric, ckpt_to_load=None):
         vr = run_full_validation(fabric, model, val_loader, asymmetric_huber,
                                   EVENT_NAMES, device,
                                   event_loss_weights=event_loss_weights,
-                                  tail_weight_scale=tail_weight)
+                                  tail_weight_scale=tail_weight,
+                                  collect_preds=True)
         fabric.barrier()
         val_loss = vr["val_loss"]
         val_mae  = vr["val_mae"]
         val_mre  = vr["val_mre"]
+
+        if fabric.is_global_zero and train_pred_list and "val_preds" in vr:
+            train_preds  = torch.cat(train_pred_list)
+            train_labels = torch.cat(train_label_list)
+            write_prediction_csv(train_preds, train_labels,
+                                 os.path.join(ckpt_dir, "train_predictions.csv"))
+            write_prediction_csv(vr["val_preds"], vr["val_labels"],
+                                 os.path.join(ckpt_dir, "val_predictions.csv"))
+            print(f"  [CSV] predictions written to {ckpt_dir}/")
 
         if fabric.is_global_zero:
             print(f"  val  loss={val_loss:.6f}")

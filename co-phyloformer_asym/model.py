@@ -4,7 +4,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from typing import Optional
-from sparsemax import Sparsemax
 
 _COMPILED_FLEX = None
 _FLEX_LOADED = False
@@ -666,6 +665,4 @@ class Cophyloformer(nn.Module):
             attended_pairs = attended_pairs * (1 + scale) + shift
 
         logits = self.event_head(attended_pairs)
-        sparsemax = Sparsemax(dim=-1)
-        return sparsemax(logits)
-
+        return torch.softmax(logits, dim=-1)

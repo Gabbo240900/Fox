@@ -649,11 +649,12 @@ class Cophyloformer(nn.Module):
         attended_pairs = torch.cat([cross_host[:, 0], cross_para[:, 0], host_pooled, para_pooled], dim=-1)
         attended_pairs = self.feature_mixer(attended_pairs)
 
-        if sim_time is not None:
-            gamma_beta = self.sim_time_fc(sim_time)
-            scale, shift = gamma_beta.chunk(2, dim=-1)
-            scale = torch.tanh(scale)
-            attended_pairs = attended_pairs * (1 + scale) + shift
+        if sim_time is None:
+            sim_time = torch.zeros(attended_pairs.shape[0], 1, device=attended_pairs.device, dtype=attended_pairs.dtype)
+        gamma_beta = self.sim_time_fc(sim_time)
+        scale, shift = gamma_beta.chunk(2, dim=-1)
+        scale = torch.tanh(scale)
+        attended_pairs = attended_pairs * (1 + scale) + shift
 
         logits = self.event_head(attended_pairs)
         return torch.softmax(logits, dim=-1)

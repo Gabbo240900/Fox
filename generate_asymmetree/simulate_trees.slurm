@@ -51,7 +51,7 @@ python /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetre
   --substitution LG \
   --gamma GC \
   --iqtree /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/bin/bin_linux/iqtree_2.2.0 \
-  --length 500 \
+  --length 250 \
   --max-attempts 1 \
   --allow-duplicate-sequences \
   --n_cores ${SLURM_CPUS_PER_TASK} \

@@ -8,7 +8,7 @@ import csv
 import random
 
 base_path = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/"
-num_trees = 200000
+num_trees = 300000
 time_grid = [1.5, 2, 2.5, 3, 3.5]
 species_pattern = re.compile(r'(?<=\(|,)(\d+):')
 gene_pattern = re.compile(r'(?<=[\(|,|)])(\d+)(?=(?:<|:))')

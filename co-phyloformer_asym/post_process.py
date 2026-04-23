@@ -195,6 +195,80 @@ def plot_scatter(train_preds, train_labels, val_preds, val_labels, output_dir):
         plt.close(fig)
 
 
+def plot_density(train_preds, train_labels, val_preds, val_labels, output_dir, bins=40):
+    density_dir = output_dir / "density_plots"
+    density_dir.mkdir(parents=True, exist_ok=True)
+
+    for i, name in enumerate(EVENT_NAMES):
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        tl = train_labels[:, i].numpy()
+        tp = train_preds[:, i].numpy()
+        vl = val_labels[:, i].numpy()
+        vp = val_preds[:, i].numpy()
+
+        lo = min(tl.min(), tp.min(), vl.min(), vp.min())
+        hi = max(tl.max(), tp.max(), vl.max(), vp.max())
+        if math.isclose(lo, hi):
+            pad = 1e-6 if lo == 0 else abs(lo) * 0.01
+            lo -= pad
+            hi += pad
+
+        hist_range = (lo, hi)
+
+        ax.hist(
+            tl,
+            bins=bins,
+            range=hist_range,
+            density=True,
+            histtype="step",
+            linewidth=2,
+            color="tab:blue",
+            label="Train true",
+        )
+        ax.hist(
+            tp,
+            bins=bins,
+            range=hist_range,
+            density=True,
+            histtype="step",
+            linewidth=2,
+            color="tab:cyan",
+            label="Train pred",
+        )
+        ax.hist(
+            vl,
+            bins=bins,
+            range=hist_range,
+            density=True,
+            histtype="step",
+            linewidth=2,
+            color="tab:orange",
+            label="Val true",
+        )
+        ax.hist(
+            vp,
+            bins=bins,
+            range=hist_range,
+            density=True,
+            histtype="step",
+            linewidth=2,
+            color="tab:red",
+            label="Val pred",
+        )
+
+        ax.set_xlabel("Value")
+        ax.set_ylabel("Density")
+        ax.set_title(f"Final value density - {name}")
+        ax.grid(True, linestyle="--", linewidth=0.5)
+        ax.legend()
+
+        fig.tight_layout()
+        out_path = density_dir / f"{name}.png"
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+
+
 def write_prediction_csv(preds, labels, output_path):
     with open(output_path, "w", newline="") as f:
         writer = csv.writer(f)
@@ -397,6 +471,7 @@ def main():
         raise RuntimeError("Could not compute predictions; all batches were empty/invalid")
 
     plot_scatter(train_preds, train_labels, val_preds, val_labels, output_dir)
+    plot_density(train_preds, train_labels, val_preds, val_labels, output_dir)
 
     train_csv = output_dir / "train_predictions.csv"
     val_csv = output_dir / "val_predictions.csv"
@@ -427,6 +502,7 @@ def main():
     print(f"[PostProcess] Saved val predictions: {val_csv}")
     print(f"[PostProcess] Saved metrics: {metrics_path}")
     print(f"[PostProcess] Saved scatter plots: {output_dir / 'scatter_plots'}")
+    print(f"[PostProcess] Saved density plots: {output_dir / 'density_plots'}")
 
 
 if __name__ == "__main__":

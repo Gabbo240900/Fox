@@ -230,7 +230,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
     huber_delta    = 1.0
     under_penalty  = 2.5
     tail_weight    = 2.0
-    mid_epoch_vals = int(os.environ.get("MID_EPOCH_VALS", "8"))
+    mid_epoch_vals = int(os.environ.get("MID_EPOCH_VALS", "2"))
     num_workers    = int(os.environ.get("NUM_WORKERS", "8"))
     ckpt_dir       = os.environ.get("CKPT_DIR", "checkpoints")
     device         = fabric.device
@@ -537,6 +537,6 @@ if __name__ == "__main__":
         accelerator="cuda" if torch.cuda.is_available() else "cpu",
         devices="auto",
         precision="bf16-mixed",
-        strategy=DDPStrategy(find_unused_parameters=True),
+        strategy=DDPStrategy(find_unused_parameters=False),
     )
     fabric.launch(_main)

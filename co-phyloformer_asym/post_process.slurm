@@ -17,7 +17,7 @@
 module purge
 
 module load miniforge/24.9.0
-conda activate cophylo
+source $WORK/envs/cophylo_pt26/bin/activate
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 export PYTHONUNBUFFERED=1

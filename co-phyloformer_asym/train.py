@@ -8,16 +8,13 @@ import wandb
 import glob
 import math
 import os
-import random
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 from model import Cophyloformer
-from validation import run_full_validation, compute_val_predictions
+from validation import run_full_validation
 from lightning.fabric import Fabric
 from lightning.fabric.utilities.seed import seed_everything
 from lightning.fabric.strategies import DDPStrategy
-from sklearn.model_selection import train_test_split
+
+# train plot on top of validation or use density plot to see better the results 
 
 torch.backends.cuda.enable_flash_sdp(True)
 torch.backends.cuda.enable_mem_efficient_sdp(True)
@@ -219,41 +216,12 @@ def load_checkpoint(fabric, model, optimizer, scheduler, ckpt):
     return start_epoch, global_step, epoch_step, best_val
 
 
-def plot_scatter(train_preds, train_labels, val_preds, val_labels, event_names,
-                 save_dir="scatter_plots"):
-    """Combined train+val scatter plots per event, saved to disk and returned as wandb Images."""
-    os.makedirs(save_dir, exist_ok=True)
-    images = {}
-    for i, name in enumerate(event_names):
-        fig, ax = plt.subplots(figsize=(8, 8))
-        tl = train_labels[:, i].numpy()
-        tp = train_preds[:, i].numpy()
-        vl = val_labels[:, i].numpy()
-        vp = val_preds[:, i].numpy()
-        ax.scatter(tl, tp, alpha=0.4, s=10, color="blue", label="Train")
-        ax.scatter(vl, vp, alpha=0.4, s=10, color="orange", label="Validation")
-        lo = min(tl.min(), tp.min(), vl.min(), vp.min())
-        hi = max(tl.max(), tp.max(), vl.max(), vp.max())
-        ax.plot([lo, hi], [lo, hi], "r--", lw=1, label="Perfect prediction")
-        ax.set_xlabel("True Labels")
-        ax.set_ylabel("Predictions")
-        ax.set_title(f"Train vs Val — {name}")
-        ax.legend()
-        ax.grid(True, linestyle="--", linewidth=0.5)
-        fig.tight_layout()
-        png_path = os.path.join(save_dir, f"{name}.png")
-        fig.savefig(png_path, dpi=150)
-        print(f"  [Scatter] saved {png_path}")
-        images[f"scatter/{name}"] = wandb.Image(fig)
-        plt.close(fig)
-    return images
-
-
 def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     # Config
     # -------------------------------------------------------------------------
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded/"
+    train_preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/train_preencoded"
+    val_preencoded_dir   = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/val_preencoded"
     epochs         = int(os.environ.get("EPOCHS", "50"))
     batch_size     = int(os.environ.get("BATCH_SIZE", "64"))  # per GPU
     grad_accum     = 4
@@ -268,7 +236,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
     device         = fabric.device
 
     hparams = {
-        "preencoded_dir":  preencoded_dir,
+        "train_preencoded_dir": train_preencoded_dir,
+        "val_preencoded_dir":   val_preencoded_dir,
         "epochs":          epochs,
         "batch_size":      batch_size,
         "grad_accum":      grad_accum,
@@ -302,25 +271,21 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     # Data
     # -------------------------------------------------------------------------
-    dataset = LazyCophyloformerDataset(preencoded_dir)
-    indices = list(range(len(dataset)))
-    train_idx, val_idx = train_test_split(indices, test_size=0.2, random_state=42)
-
-    train_subset = torch.utils.data.Subset(dataset, train_idx)
-    val_subset   = torch.utils.data.Subset(dataset, val_idx)
+    train_dataset = LazyCophyloformerDataset(train_preencoded_dir)
+    val_dataset   = LazyCophyloformerDataset(val_preencoded_dir)
 
     # batch_size is per-GPU — use manual DistributedSampler so Fabric doesn't
     # divide it again by num_processes.
     train_sampler = torch.utils.data.distributed.DistributedSampler(
-        train_subset, num_replicas=fabric.world_size, rank=fabric.global_rank, shuffle=True,
+        train_dataset, num_replicas=fabric.world_size, rank=fabric.global_rank, shuffle=True,
     )
     val_sampler = torch.utils.data.distributed.DistributedSampler(
-        val_subset, num_replicas=fabric.world_size, rank=fabric.global_rank, shuffle=False,
+        val_dataset, num_replicas=fabric.world_size, rank=fabric.global_rank, shuffle=False,
     )
-    train_loader = DataLoader(train_subset, batch_size=batch_size, sampler=train_sampler,
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler,
                               collate_fn=collate_fn, num_workers=num_workers,
                               persistent_workers=True, prefetch_factor=4, pin_memory=True)
-    val_loader   = DataLoader(val_subset, batch_size=batch_size * 2, sampler=val_sampler,
+    val_loader   = DataLoader(val_dataset, batch_size=batch_size * 2, sampler=val_sampler,
                               collate_fn=collate_fn, num_workers=num_workers,
                               persistent_workers=False,
                               prefetch_factor=2 if num_workers > 0 else None, pin_memory=True)
@@ -376,7 +341,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
                 **hparams,
                 "total_steps":  total_steps,
                 "warmup_steps": warmup_steps,
-                "dataset_size": len(dataset),
+                "train_dataset_size": len(train_dataset),
+                "val_dataset_size": len(val_dataset),
                 "start_epoch":  start_epoch,
                 "params": sum(p.numel() for p in model.parameters() if p.requires_grad),
             },
@@ -538,54 +504,13 @@ def main(fabric: Fabric, ckpt_to_load=None):
         )
 
     # -------------------------------------------------------------------------
-    # Final save + scatter plots
+    # Final save
     # -------------------------------------------------------------------------
     if fabric.is_global_zero:
         torch.save(unwrap_model(model).state_dict(), "cophyloformer_final.pth")
-
-        raw_model = unwrap_model(model)
-        raw_model.eval()
-
-        # val scatter — all val data
-        scatter_val_loader = DataLoader(
-            val_subset, batch_size=batch_size, shuffle=False,
-            collate_fn=collate_fn, num_workers=4, pin_memory=True,
-        )
-        val_preds, val_labels = compute_val_predictions(raw_model, scatter_val_loader, device)
-
-        # train scatter — up to 2000 random samples
-        scatter_n = min(2000, len(train_idx))
-        scatter_idx = random.sample(train_idx, scatter_n)
-        scatter_train_ds = LazyCophyloformerDataset(
-            preencoded_dir,
-            pt_files=[dataset.pt_files[i] for i in scatter_idx],
-        )
-        scatter_train_loader = DataLoader(
-            scatter_train_ds, batch_size=batch_size, shuffle=False,
-            collate_fn=collate_fn, num_workers=4, pin_memory=True,
-        )
-        train_preds, train_labels = compute_val_predictions(raw_model, scatter_train_loader, device)
-
-        if val_preds is not None and train_preds is not None:
-            wandb.log(plot_scatter(train_preds, train_labels, val_preds, val_labels, EVENT_NAMES))
-
-        if val_preds is not None:
-            import csv
-            csv_path = "val_predictions.csv"
-            with open(csv_path, "w", newline="") as f:
-                writer = csv.writer(f)
-                header = (
-                    [f"true_{n}" for n in EVENT_NAMES]
-                    + [f"pred_{n}" for n in EVENT_NAMES]
-                )
-                writer.writerow(header)
-                for true_row, pred_row in zip(val_labels.tolist(), val_preds.tolist()):
-                    writer.writerow(true_row + pred_row)
-            print(f"  [CSV] saved {csv_path}  ({len(val_labels)} rows)")
-            wandb.save(csv_path)
-
         wandb.finish()
         print("Training complete.")
+        print("Run post_process.py on CPU to generate scatter plots and prediction CSV files.")
 
 
 if __name__ == "__main__":

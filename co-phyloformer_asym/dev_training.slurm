@@ -70,7 +70,7 @@ export GRADIENT_CHECKPOINTING=1
 export USE_FLEX_ATTENTION=0
 
 # Training settings
-export EPOCHS=35
+export EPOCHS=5
 export MID_EPOCH_VALS=2
 export NUM_WORKERS=16
 export CKPT_DIR=checkpoints

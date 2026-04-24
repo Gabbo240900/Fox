@@ -75,8 +75,8 @@ export MID_EPOCH_VALS=2
 export NUM_WORKERS=16
 export CKPT_DIR=checkpoints
 export BATCH_SIZE=80
-export HOST_MAX_LEAVES=50
-export PARA_MAX_LEAVES=128
+export HOST_MAX_LEAVES=51
+export PARA_MAX_LEAVES=142
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ── Resubmit helper ────────────────────────────────────────────────────────────

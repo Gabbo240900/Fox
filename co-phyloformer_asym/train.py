@@ -45,7 +45,7 @@ grad_ckpt        = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
 use_flex         = os.environ.get("USE_FLEX_ATTENTION", "0").strip() == "1"  # requires PyTorch >= 2.5
 use_compile      = os.environ.get("USE_COMPILE", "1").strip() == "1"
 host_max_leaves  = int(os.environ.get("HOST_MAX_LEAVES", "50"))  # host trees have max 50 leaves
-para_max_leaves  = int(os.environ.get("PARA_MAX_LEAVES", "64"))  # parasite trees have max 128, avg 82; cap for memory
+para_max_leaves  = int(os.environ.get("PARA_MAX_LEAVES", "128"))  # parasite trees have max 128, avg 82; cap for memory
 
 PAD_ID = 22
 

@@ -68,13 +68,20 @@ export USE_OPM=1
 export USE_DIST_MATRIX=1
 export GRADIENT_CHECKPOINTING=1
 export USE_FLEX_ATTENTION=0
+export DROPOUT=0.05
 
 # Training settings
 export EPOCHS=5
-export MID_EPOCH_VALS=2
+export MID_EPOCH_VALS=1
 export NUM_WORKERS=16
 export CKPT_DIR=checkpoints
 export BATCH_SIZE=80
+export GRAD_ACCUM=4
+export LR=1e-4
+export WEIGHT_DECAY=0.01
+export HGT_LOSS_WEIGHT=1.5
+export TAIL_WEIGHT=1.0
+export UNDER_PENALTY=1.5
 export HOST_MAX_LEAVES=51
 export PARA_MAX_LEAVES=142
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True

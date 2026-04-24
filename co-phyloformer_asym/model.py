@@ -382,6 +382,7 @@ class MSAEncoder(nn.Module):
         gradient_checkpointing: bool = False,
         cls_dim: int = 512,
         use_flexattention: bool = False,
+        dropout: float = 0.1,
     ):
         super().__init__()
         self.pair_dim        = pair_dim
@@ -402,7 +403,7 @@ class MSAEncoder(nn.Module):
         self.evopf_blocks   = nn.ModuleList([
             EvoPFBlockLite(
                 hidden_dim, num_heads, pair_dim,
-                ff_mult=4, dropout=0.1,
+                ff_mult=4, dropout=dropout,
                 use_opm=use_opm,
                 use_flexattention=use_flexattention,
             )
@@ -467,6 +468,7 @@ class Cophyloformer(nn.Module):
         num_cross_layers: int = 2,
         cls_dim: int = 512,
         use_flexattention: bool = False,
+        dropout: float = 0.1,
     ):
         super().__init__()
         self.hidden_dim      = hidden_dim
@@ -484,6 +486,7 @@ class Cophyloformer(nn.Module):
             gradient_checkpointing=gradient_checkpointing,
             cls_dim=cls_dim,
             use_flexattention=use_flexattention,
+            dropout=dropout,
         )
 
         # Project per-leaf pair embeddings from hidden_dim → cls_dim so the
@@ -497,11 +500,11 @@ class Cophyloformer(nn.Module):
 
         # Simultaneous bidirectional cross-attention
         self.cross_attn_h2p = nn.ModuleList([
-            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=0.1)
+            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=dropout)
             for _ in range(self.num_cross_layers)
         ])
         self.cross_attn_p2h = nn.ModuleList([
-            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=0.1)
+            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=dropout)
             for _ in range(self.num_cross_layers)
         ])
         self.cross_norms_h  = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
@@ -509,21 +512,21 @@ class Cophyloformer(nn.Module):
         self.cross_norms_h2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
         self.cross_norms_p2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
         self.cross_ffns_h = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(0.1), nn.Linear(cls_dim * 4, cls_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
         self.cross_ffns_p = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(0.1), nn.Linear(cls_dim * 4, cls_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(),  nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
 
         # Self-attention to consolidate after each cross-attention step
         self.self_attn_h  = nn.ModuleList([
-            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=0.1)
+            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=dropout)
             for _ in range(self.num_cross_layers)
         ])
         self.self_attn_p  = nn.ModuleList([
-            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=0.1)
+            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=dropout)
             for _ in range(self.num_cross_layers)
         ])
         self.self_norms_h  = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
@@ -531,11 +534,11 @@ class Cophyloformer(nn.Module):
         self.self_norms_h2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
         self.self_norms_p2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
         self.self_ffns_h = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(0.1), nn.Linear(cls_dim * 4, cls_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
         self.self_ffns_p = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(0.1), nn.Linear(cls_dim * 4, cls_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(),  nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
 
@@ -554,7 +557,7 @@ class Cophyloformer(nn.Module):
             nn.Linear(self.concat_dim, self.concat_dim),
             nn.GELU(),
             nn.LayerNorm(self.concat_dim),
-            nn.Dropout(0.1),
+            nn.Dropout(dropout),
             nn.Linear(self.concat_dim, self.concat_dim),
             nn.GELU(),
         )

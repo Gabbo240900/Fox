@@ -46,6 +46,7 @@ use_flex         = os.environ.get("USE_FLEX_ATTENTION", "0").strip() == "1"  # r
 use_compile      = os.environ.get("USE_COMPILE", "1").strip() == "1"
 host_max_leaves  = int(os.environ.get("HOST_MAX_LEAVES", "51"))  # host trees have max 50 leaves
 para_max_leaves  = int(os.environ.get("PARA_MAX_LEAVES", "142"))  # parasite trees have max 128, avg 82; cap for memory
+dropout          = float(os.environ.get("DROPOUT", "0.1"))
 
 PAD_ID = 22
 
@@ -194,13 +195,14 @@ def main(fabric: Fabric, ckpt_to_load=None):
     val_preencoded_dir   = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/val_preencoded"
     epochs         = int(os.environ.get("EPOCHS", "50"))
     batch_size     = int(os.environ.get("BATCH_SIZE", "64"))  # per GPU
-    grad_accum     = 4
-    lr             = 1e-4
-    wd             = 0.05
-    huber_delta    = 1.0
-    under_penalty  = 2.5
-    tail_weight    = 2.0
-    mid_epoch_vals = int(os.environ.get("MID_EPOCH_VALS", "2"))
+    grad_accum     = int(os.environ.get("GRAD_ACCUM", "4"))
+    lr             = float(os.environ.get("LR", "1e-4"))
+    wd             = float(os.environ.get("WEIGHT_DECAY", "0.05"))
+    huber_delta    = float(os.environ.get("HUBER_DELTA", "1.0"))
+    under_penalty  = float(os.environ.get("UNDER_PENALTY", "2.5"))
+    tail_weight    = float(os.environ.get("TAIL_WEIGHT", "2.0"))
+    hgt_loss_weight = float(os.environ.get("HGT_LOSS_WEIGHT", "2.0"))
+    mid_epoch_vals = int(os.environ.get("MID_EPOCH_VALS", "1"))
     num_workers    = int(os.environ.get("NUM_WORKERS", "8"))
     ckpt_dir       = os.environ.get("CKPT_DIR", "checkpoints")
     device         = fabric.device
@@ -216,7 +218,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
         "huber_delta":     huber_delta,
         "under_penalty":      under_penalty,
         "tail_weight":        tail_weight,
-        "hgt_loss_weight":    2.0,
+        "hgt_loss_weight":    hgt_loss_weight,
+        "dropout":            dropout,
         "axial_layers":       axial_layers,
         "use_opm":            use_opm,
         "use_flexattention":  use_flex,
@@ -226,7 +229,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
         "ckpt_dir":        ckpt_dir,
     }
 
-    event_loss_weights = torch.tensor([1.0, 2.0, 1.0, 1.0], device=device)
+    event_loss_weights = torch.tensor([1.0, hgt_loss_weight, 1.0, 1.0], device=device)
 
     def asymmetric_huber(pred, target):
         err = target - pred
@@ -271,6 +274,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
         gradient_checkpointing=grad_ckpt,
         num_cross_layers=cross_layers,
         use_flexattention=use_flex,
+        dropout=dropout,
     )
     if use_compile:
         model = torch.compile(model, dynamic=True)
@@ -382,21 +386,24 @@ def main(fabric: Fabric, ckpt_to_load=None):
             if batch_idx % grad_accum == 0:
                 optimizer.zero_grad(set_to_none=True)
 
-            outputs = model(
-                batch["host_msa"], batch["parasite_msa"], batch["mappings"],
-                batch["sim_time"],
-                host_dist=batch["host_dist"], para_dist=batch["para_dist"],
-            )
-
-            tw = 1.0 + tail_weight * batch["labels"]
-            loss = sum(
-                event_loss_weights[i] * (asymmetric_huber(outputs[:, i], batch["labels"][:, i]) * tw[:, i]).mean()
-                for i in range(len(EVENT_NAMES))
-            )
-            fabric.backward(loss / grad_accum)
-
             is_accum = ((batch_idx + 1) % grad_accum == 0)
             is_last  = ((batch_idx + 1) == len(train_loader))
+            sync_gradients = is_accum or is_last
+
+            with fabric.no_backward_sync(model, enabled=not sync_gradients):
+                outputs = model(
+                    batch["host_msa"], batch["parasite_msa"], batch["mappings"],
+                    batch["sim_time"],
+                    host_dist=batch["host_dist"], para_dist=batch["para_dist"],
+                )
+
+                tw = 1.0 + tail_weight * batch["labels"]
+                loss = sum(
+                    event_loss_weights[i] * (asymmetric_huber(outputs[:, i], batch["labels"][:, i]) * tw[:, i]).mean()
+                    for i in range(len(EVENT_NAMES))
+                )
+                fabric.backward(loss / grad_accum)
+
             if is_accum or is_last:
                 gnorm = fabric.clip_gradients(model, optimizer, max_norm=0.5, error_if_nonfinite=False)
                 if torch.isfinite(gnorm):

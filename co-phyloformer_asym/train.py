@@ -38,7 +38,6 @@ def write_prediction_csv(preds, labels, path):
 
 # --- env flags ---
 use_opm         = os.environ.get("USE_OPM", "0").strip() == "1"
-use_dist_matrix = os.environ.get("USE_DIST_MATRIX", "0").strip() == "1"
 axial_layers     = int(os.environ.get("AXIAL_LAYERS", "2"))
 cross_layers     = int(os.environ.get("CROSS_LAYERS", "1"))
 hidden_dim       = int(os.environ.get("HIDDEN_DIM", "256"))
@@ -48,9 +47,7 @@ use_compile      = os.environ.get("USE_COMPILE", "1").strip() == "1"
 host_max_leaves  = int(os.environ.get("HOST_MAX_LEAVES", "50"))  # host trees have max 50 leaves
 para_max_leaves  = int(os.environ.get("PARA_MAX_LEAVES", "64"))  # parasite trees have max 128, avg 82; cap for memory
 
-AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY-"
-AA_TO_INDEX = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
-UNK_ID, PAD_ID = 21, 22
+PAD_ID = 22
 
 def unwrap_model(model):
     """Safely unwrap Fabric and DDP wrappers to get the base PyTorch model."""
@@ -58,23 +55,6 @@ def unwrap_model(model):
     while hasattr(m, "module"):
         m = m.module
     return m
-
-def encode_sequence(sequence, max_len=128):
-    encoded = [AA_TO_INDEX.get(aa, UNK_ID) for aa in sequence[:max_len]]
-    encoded += [PAD_ID] * (max_len - len(encoded))
-    return torch.tensor(encoded, dtype=torch.long)
-
-
-def jukes_cantor_dist(msa: torch.Tensor) -> torch.Tensor:
-    valid = (msa != PAD_ID)
-    valid_pair = valid.unsqueeze(1) & valid.unsqueeze(0)
-    n_v = valid_pair.sum(dim=2).clamp(min=1).float()
-    mismatch = (msa.unsqueeze(1) != msa.unsqueeze(0)) & valid_pair
-    p = (mismatch.float().sum(dim=2) / n_v).clamp(0.0, 0.74)
-    dist = -0.75 * torch.log(1.0 - (4.0 / 3.0) * p)
-    dist.fill_diagonal_(0.0)
-    return dist
-
 
 class LazyCophyloformerDataset(Dataset):
     def __init__(self, preencoded_dir, pt_files=None):
@@ -88,59 +68,22 @@ class LazyCophyloformerDataset(Dataset):
 
     def __getitem__(self, idx):
         sample = torch.load(self.pt_files[idx], map_location="cpu", weights_only=False)
-
-        # New format: host_msa/para_msa already encoded as tensors, labels as flat dict
-        if "host_msa" in sample and "para_msa" in sample:
-            labels_src = sample["labels"]
-            out = {
-                "host_msa":     sample["host_msa"],
-                "parasite_msa": sample["para_msa"],
-                "mappings":     sample["mappings"],
-                "labels": torch.tensor(
-                    [labels_src.get(e, 0.0) for e in EVENT_NAMES],
-                    dtype=torch.float32,
-                ),
-                "sim_time": torch.tensor(
-                    [labels_src.get("Sim_time", 1.0)],
-                    dtype=torch.float32,
-                ),
-            }
-            if "host_dist" in sample:
-                out["host_dist"] = sample["host_dist"]
-                out["para_dist"] = sample["para_dist"]
-            return out
-
-        # Legacy format: raw string MSAs
-        if not sample.get("host_msas") or not sample.get("parasite_msas"):
-            print(f"[Warning] sample {self.pt_files[idx]} missing host or parasite MSAs, skipping")
-            return None
-
-        host_list = list(sample["host_msas"].keys())
-        para_list = list(sample["parasite_msas"].keys())
-        h_idx = {n: i for i, n in enumerate(host_list)}
-        p_idx = {n: i for i, n in enumerate(para_list)}
-        mappings = [
-            (h_idx[h], p_idx[p])
-            for p, h in sample["mappings"]
-            if p in p_idx and h in h_idx
-        ]
-        out = {
-            "host_msa":     torch.stack([encode_sequence(s) for s in sample["host_msas"].values()]),
-            "parasite_msa": torch.stack([encode_sequence(s) for s in sample["parasite_msas"].values()]),
-            "mappings":     mappings,
+        labels_src = sample["labels"]
+        return {
+            "host_msa":     sample["host_msa"],
+            "parasite_msa": sample["para_msa"],
+            "mappings":     sample["mappings"],
             "labels": torch.tensor(
-                [sample["event_frequencies"].get(e, 0.0) for e in EVENT_NAMES],
+                [labels_src.get(e, 0.0) for e in EVENT_NAMES],
                 dtype=torch.float32,
             ),
             "sim_time": torch.tensor(
-                [sample["event_frequencies"].get("Sim_time", 1.0)],
+                [labels_src.get("Sim_time", 1.0)],
                 dtype=torch.float32,
             ),
+            "host_dist": sample["host_dist"],
+            "para_dist":  sample["para_dist"],
         }
-        if "host_dist" in sample:
-            out["host_dist"] = sample["host_dist"]
-            out["para_dist"] = sample["para_dist"]
-        return out
 
 
 def collate_fn(batch):
@@ -155,27 +98,21 @@ def collate_fn(batch):
 
     host_msas = pad([s["host_msa"] for s in batch], host_max_leaves)
     para_msas = pad([s["parasite_msa"] for s in batch], para_max_leaves)
-    out = {
+    def pad_dist(d, n):
+        if d.shape[0] == n:
+            return d
+        out = torch.zeros(n, n, dtype=d.dtype)
+        out[:d.shape[0], :d.shape[0]] = d
+        return out
+    return {
         "host_msa":     host_msas,
         "parasite_msa": para_msas,
         "labels":       torch.stack([s["labels"] for s in batch]),
         "mappings":     [s["mappings"] for s in batch],
         "sim_time":     torch.stack([s["sim_time"] for s in batch]),
+        "host_dist":    torch.stack([pad_dist(s["host_dist"], host_msas.shape[1]) for s in batch]),
+        "para_dist":    torch.stack([pad_dist(s["para_dist"], para_msas.shape[1]) for s in batch]),
     }
-    if use_dist_matrix:
-        if "host_dist" in batch[0]:
-            def pad_dist(d, n):
-                if d.shape[0] == n:
-                    return d
-                out = torch.zeros(n, n, dtype=d.dtype)
-                out[:d.shape[0], :d.shape[0]] = d
-                return out
-            out["host_dist"] = torch.stack([pad_dist(s["host_dist"], host_msas.shape[1]) for s in batch])
-            out["para_dist"] = torch.stack([pad_dist(s["para_dist"], para_msas.shape[1]) for s in batch])
-        else:
-            out["host_dist"] = torch.stack([jukes_cantor_dist(m) for m in host_msas])
-            out["para_dist"] = torch.stack([jukes_cantor_dist(m) for m in para_msas])
-    return out
 
 
 def cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps, eta_min_ratio=0.1):
@@ -282,7 +219,6 @@ def main(fabric: Fabric, ckpt_to_load=None):
         "hgt_loss_weight":    2.0,
         "axial_layers":       axial_layers,
         "use_opm":            use_opm,
-        "use_dist_matrix":    use_dist_matrix,
         "use_flexattention":  use_flex,
         "pair_dim":           64,
         "cls_dim":            512,
@@ -331,7 +267,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     model = Cophyloformer(
         hidden_dim=hidden_dim, pair_dim=64, cls_dim=512, axial_layers=axial_layers,
-        use_opm=use_opm, use_dist_matrix=use_dist_matrix,
+        use_opm=use_opm, use_dist_matrix=True,
         gradient_checkpointing=grad_ckpt,
         num_cross_layers=cross_layers,
         use_flexattention=use_flex,
@@ -440,9 +376,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
             batch["parasite_msa"] = batch["parasite_msa"].to(device, non_blocking=True)
             batch["sim_time"]     = batch["sim_time"].to(device, non_blocking=True)
             batch["labels"]       = batch["labels"].to(device, non_blocking=True)
-            if use_dist_matrix:
-                batch["host_dist"] = batch["host_dist"].to(device, non_blocking=True)
-                batch["para_dist"] = batch["para_dist"].to(device, non_blocking=True)
+            batch["host_dist"]    = batch["host_dist"].to(device, non_blocking=True)
+            batch["para_dist"]    = batch["para_dist"].to(device, non_blocking=True)
 
             if batch_idx % grad_accum == 0:
                 optimizer.zero_grad(set_to_none=True)
@@ -450,7 +385,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
             outputs = model(
                 batch["host_msa"], batch["parasite_msa"], batch["mappings"],
                 batch["sim_time"],
-                host_dist=batch.get("host_dist"), para_dist=batch.get("para_dist"),
+                host_dist=batch["host_dist"], para_dist=batch["para_dist"],
             )
 
             tw = 1.0 + tail_weight * batch["labels"]

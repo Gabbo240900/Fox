@@ -1,7 +1,0 @@
-+ find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/associations/ -mindepth 1 -delete
-+ find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/Datasets/ -mindepth 1 -delete
-+ find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/gene_trees/ -mindepth 1 -delete
-+ find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/species_trees/ -mindepth 1 -delete
-+ find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/reconciliations/ -mindepth 1 -delete
-+ python /lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generate_trees.py
-slurmstepd: error: *** JOB 1134530 ON r2i0n22 CANCELLED AT 2026-03-17T18:57:57 ***

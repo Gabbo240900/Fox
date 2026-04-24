@@ -13,8 +13,9 @@
 
 
 module purge
-module load r/4.4.1
-module load miniforge/24.9.0
+
+module load arch/h100
+
 module load pytorch-gpu/py3/2.6.0
 
 source $WORK/envs/cophylo_pt26/bin/activate

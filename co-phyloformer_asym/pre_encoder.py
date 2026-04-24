@@ -14,7 +14,7 @@ AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY-"
 AA_TO_INDEX = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
 UNK_ID = 21
 PAD_ID = 22
-MAX_SEQ_LEN = 128
+MAX_SEQ_LEN = 250
 
 
 def encode_sequence(sequence, max_len=MAX_SEQ_LEN):

@@ -17,5 +17,5 @@ module load pytorch-gpu/py3/2.4.0
 module load miniforge/24.9.0
 conda activate cophylo
 
-python analyze_data.py /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded\
-  --exts .pt --out_dir plots/
+python analyze_data.py /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/Datasets\
+  --exts .tgl --out_dir plots/

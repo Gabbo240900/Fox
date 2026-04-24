@@ -47,7 +47,6 @@ mkdir -p "$WANDB_DATA_DIR" "$WANDB_CACHE_DIR"
 mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR" "$HF_HOME"
 
 
-
 # ECHO
 set -x
 
@@ -63,17 +62,18 @@ export WANDB__SERVICE_WAIT=300
 export HIDDEN_DIM=256
 export AXIAL_LAYERS=4
 export CROSS_LAYERS=2
-export USE_OPM=1
+export USE_OPM=0
 export USE_DIST_MATRIX=1
-export GRADIENT_CHECKPOINTING=1
+export GRADIENT_CHECKPOINTING=0
 export USE_FLEX_ATTENTION=0
+export USE_COMPILE=0
 export DROPOUT=0.05
 
 # Training settings
 export EPOCHS=35
 export MID_EPOCH_VALS=1
 export NUM_WORKERS=16
-export CKPT_DIR=checkpoints
+export CKPT_DIR=checkpoints_fast
 export BATCH_SIZE=80
 export GRAD_ACCUM=4
 export LR=1e-4

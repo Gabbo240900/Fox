@@ -43,7 +43,7 @@ cross_layers     = int(os.environ.get("CROSS_LAYERS", "1"))
 hidden_dim       = int(os.environ.get("HIDDEN_DIM", "256"))
 grad_ckpt        = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
 use_flex         = os.environ.get("USE_FLEX_ATTENTION", "0").strip() == "1"  # requires PyTorch >= 2.5
-use_compile      = os.environ.get("USE_COMPILE", "1").strip() == "1"
+use_compile      = os.environ.get("USE_COMPILE", "0").strip() == "1"
 host_max_leaves  = int(os.environ.get("HOST_MAX_LEAVES", "51"))  # host trees have max 50 leaves
 para_max_leaves  = int(os.environ.get("PARA_MAX_LEAVES", "142"))  # parasite trees have max 128, avg 82; cap for memory
 dropout          = float(os.environ.get("DROPOUT", "0.1"))
@@ -223,6 +223,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
         "axial_layers":       axial_layers,
         "use_opm":            use_opm,
         "use_flexattention":  use_flex,
+        "use_compile":        use_compile,
         "pair_dim":           64,
         "cls_dim":            512,
         "mid_epoch_vals":  mid_epoch_vals,
@@ -256,7 +257,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
     )
     train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler,
                               collate_fn=collate_fn, num_workers=num_workers,
-                              persistent_workers=True, prefetch_factor=4, pin_memory=True)
+                              persistent_workers=num_workers > 0,
+                              prefetch_factor=4 if num_workers > 0 else None, pin_memory=True)
     val_loader   = DataLoader(val_dataset, batch_size=batch_size * 2, sampler=val_sampler,
                               collate_fn=collate_fn, num_workers=num_workers,
                               persistent_workers=num_workers > 0,

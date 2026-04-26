@@ -155,16 +155,25 @@ def _scan_pt(path: str) -> dict:
     import torch
     sample = torch.load(path, map_location="cpu", weights_only=False)
 
-    host_msas  = sample.get("host_msas", {})
-    para_msas  = sample.get("parasite_msas", {})
-    freqs      = sample.get("event_frequencies", {})
+    def _msa_shape(dict_key: str, tensor_keys: tuple[str, ...]) -> tuple[int, int]:
+        msas = sample.get(dict_key)
+        if isinstance(msas, dict):
+            first = next(iter(msas.values()), None)
+            if first is None:
+                return 0, 0
+            return (
+                len(msas),
+                len(first) if isinstance(first, str) else int(first.shape[-1]),
+            )
+        for key in tensor_keys:
+            tensor = sample.get(key)
+            if tensor is not None:
+                return int(tensor.shape[0]), int(tensor.shape[-1])
+        return 0, 0
 
-    # Alignment length from first sequence string (if stored as strings)
-    def _seq_len(msas: dict) -> int:
-        first = next(iter(msas.values()), None)
-        if first is None:
-            return 0
-        return len(first) if isinstance(first, str) else int(first.shape[-1])
+    host_taxa, host_len = _msa_shape("host_msas", ("host_msa",))
+    para_taxa, para_len = _msa_shape("parasite_msas", ("parasite_msa", "para_msa"))
+    freqs = sample.get("event_frequencies") or sample.get("labels") or {}
 
     events: Dict[str, float] = {}
     for e in EVENT_NAMES:
@@ -176,10 +185,10 @@ def _scan_pt(path: str) -> dict:
         events[e] = float(v) if v is not None and not (isinstance(v, float) and math.isnan(v)) else float("nan")
 
     return {
-        "host_taxa":    len(host_msas),
-        "host_len":     _seq_len(host_msas),
-        "parasite_taxa": len(para_msas),
-        "parasite_len": _seq_len(para_msas),
+        "host_taxa":    host_taxa,
+        "host_len":     host_len,
+        "parasite_taxa": para_taxa,
+        "parasite_len": para_len,
         "events":       events,
     }
 

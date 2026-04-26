@@ -23,23 +23,32 @@ _OLD_KEYS = {
 
 # ── .pt parsing ──────────────────────────────────────────────────────────────
 
+def _msa_shape(sample: dict, dict_key: str, tensor_keys: Tuple[str, ...]) -> Tuple[int, int]:
+    """Return (taxa_count, seq_len) for raw dict MSAs or encoded tensor MSAs."""
+    msas = sample.get(dict_key)
+    if isinstance(msas, dict):
+        first = next(iter(msas.values()), None)
+        if first is None:
+            return 0, 0
+        if isinstance(first, str):
+            return len(msas), len(first)
+        return len(msas), int(first.shape[-1])
+
+    for key in tensor_keys:
+        tensor = sample.get(key)
+        if tensor is not None:
+            return int(tensor.shape[0]), int(tensor.shape[-1])
+
+    return 0, 0
+
+
 def scan_pt(path: str) -> dict:
     """Load a pre-encoded .pt file and extract structural + label metadata."""
     sample = torch.load(path, map_location="cpu", weights_only=False)
 
-    host_msas = sample.get("host_msas", {})
-    para_msas = sample.get("parasite_msas", {})
-    freqs     = sample.get("event_frequencies", {})
-
-    def _seq_len(msas: dict) -> int:
-        first = next(iter(msas.values()), None)
-        if first is None:
-            return 0
-        # sequences stored as strings
-        if isinstance(first, str):
-            return len(first)
-        # sequences stored as tensors
-        return int(first.shape[-1])
+    host_taxa, host_len = _msa_shape(sample, "host_msas", ("host_msa",))
+    para_taxa, para_len = _msa_shape(sample, "parasite_msas", ("parasite_msa", "para_msa"))
+    freqs = sample.get("event_frequencies") or sample.get("labels") or {}
 
     events: Dict[str, float] = {}
     for e in EVENT_NAMES:
@@ -53,10 +62,10 @@ def scan_pt(path: str) -> dict:
             events[e] = float(v)
 
     return {
-        "host_taxa":     len(host_msas),
-        "parasite_taxa": len(para_msas),
-        "host_len":      _seq_len(host_msas),
-        "parasite_len":  _seq_len(para_msas),
+        "host_taxa":     host_taxa,
+        "parasite_taxa": para_taxa,
+        "host_len":      host_len,
+        "parasite_len":  para_len,
         "events":        events,
     }
 

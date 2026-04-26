@@ -13,9 +13,8 @@
 set -x
 module purge
 module load arch/h100
-module load pytorch-gpu/py3/2.4.0
-module load miniforge/24.9.0
-conda activate cophylo
+module load pytorch-gpu/py3/2.6.0
+source $WORK/envs/cophylo_pt26/bin/activate
 
 python filter_data.py /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded --min_taxa 5 \
   --max_taxa 142

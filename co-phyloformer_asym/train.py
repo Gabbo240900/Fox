@@ -47,8 +47,11 @@ use_compile      = os.environ.get("USE_COMPILE", "0").strip() == "1"
 host_max_leaves  = int(os.environ.get("HOST_MAX_LEAVES", "51"))  # host trees have max 50 leaves
 para_max_leaves  = int(os.environ.get("PARA_MAX_LEAVES", "142"))  # parasite trees have max 128, avg 82; cap for memory
 dropout          = float(os.environ.get("DROPOUT", "0.1"))
+use_bucketed_batches = os.environ.get("USE_BUCKETED_BATCHES", "1").strip() == "1"
+bucket_size      = int(os.environ.get("BUCKET_SIZE", "8"))
 
 PAD_ID = 22
+BUCKET_META_NAME = "bucket_meta.tsv"
 
 def unwrap_model(model):
     """Safely unwrap Fabric and DDP wrappers to get the base PyTorch model."""
@@ -63,9 +66,55 @@ class LazyCophyloformerDataset(Dataset):
             self.pt_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
         else:
             self.pt_files = list(pt_files)
+        self.bucket_keys = None
 
     def __len__(self):
         return len(self.pt_files)
+
+    def _bucket_meta_path(self):
+        return os.path.join(os.path.dirname(self.pt_files[0]), BUCKET_META_NAME) if self.pt_files else None
+
+    def _load_bucket_keys_from_metadata(self):
+        meta_path = self._bucket_meta_path()
+        if meta_path is None or not os.path.exists(meta_path):
+            return False
+
+        sizes = {}
+        with open(meta_path, "r", newline="") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            for row in reader:
+                sizes[row["file"]] = (
+                    int(row["host_leaves"]),
+                    int(row["para_leaves"]),
+                    int(row["mapping_count"]),
+                )
+
+        keys = []
+        for pt_path in self.pt_files:
+            meta = sizes.get(os.path.basename(pt_path))
+            if meta is None:
+                return False
+            host_n, para_n, mapping_n = meta
+            keys.append((
+                min(para_n, para_max_leaves) // bucket_size,
+                min(host_n, host_max_leaves) // bucket_size,
+                mapping_n // bucket_size,
+            ))
+        self.bucket_keys = keys
+        return True
+
+    def build_bucket_keys(self):
+        if self._load_bucket_keys_from_metadata():
+            return
+
+        keys = []
+        for pt_path in tqdm(self.pt_files, desc=f"Bucket scan {os.path.basename(os.path.normpath(os.path.dirname(pt_path)))}", leave=False):
+            sample = torch.load(pt_path, map_location="cpu", weights_only=False)
+            host_n = min(int(sample["host_msa"].shape[0]), host_max_leaves)
+            para_n = min(int(sample["para_msa"].shape[0]), para_max_leaves)
+            mapping_n = int(len(sample["mappings"]))
+            keys.append((para_n // bucket_size, host_n // bucket_size, mapping_n // bucket_size))
+        self.bucket_keys = keys
 
     def __getitem__(self, idx):
         sample = torch.load(self.pt_files[idx], map_location="cpu", weights_only=False)
@@ -85,6 +134,63 @@ class LazyCophyloformerDataset(Dataset):
             "host_dist": sample["host_dist"],
             "para_dist":  sample["para_dist"],
         }
+
+
+class BucketedDistributedBatchSampler:
+    def __init__(self, dataset, batch_size, num_replicas, rank, shuffle=True, drop_last=False, seed=42):
+        if dataset.bucket_keys is None:
+            raise ValueError("BucketedDistributedBatchSampler requires dataset.bucket_keys")
+        self.dataset = dataset
+        self.batch_size = int(batch_size)
+        self.num_replicas = int(num_replicas)
+        self.rank = int(rank)
+        self.shuffle = bool(shuffle)
+        self.drop_last = bool(drop_last)
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+
+    def _global_batches(self):
+        buckets = {}
+        for idx, key in enumerate(self.dataset.bucket_keys):
+            buckets.setdefault(key, []).append(idx)
+
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch)
+        bucket_items = list(buckets.items())
+        if self.shuffle and len(bucket_items) > 1:
+            order = torch.randperm(len(bucket_items), generator=g).tolist()
+            bucket_items = [bucket_items[i] for i in order]
+
+        batches = []
+        for _, indices in bucket_items:
+            if self.shuffle and len(indices) > 1:
+                order = torch.randperm(len(indices), generator=g).tolist()
+                indices = [indices[i] for i in order]
+            for start in range(0, len(indices), self.batch_size):
+                batch = indices[start:start + self.batch_size]
+                if len(batch) == self.batch_size or (batch and not self.drop_last):
+                    batches.append(batch)
+
+        if self.shuffle and len(batches) > 1:
+            order = torch.randperm(len(batches), generator=g).tolist()
+            batches = [batches[i] for i in order]
+
+        if batches:
+            remainder = len(batches) % self.num_replicas
+            if remainder:
+                batches.extend(batches[:self.num_replicas - remainder])
+        return batches
+
+    def __iter__(self):
+        batches = self._global_batches()
+        yield from batches[self.rank::self.num_replicas]
+
+    def __len__(self):
+        batches = self._global_batches()
+        return len(batches[self.rank::self.num_replicas])
 
 
 def collate_fn(batch):
@@ -224,6 +330,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
         "use_opm":            use_opm,
         "use_flexattention":  use_flex,
         "use_compile":        use_compile,
+        "use_bucketed_batches": use_bucketed_batches,
+        "bucket_size":        bucket_size,
         "pair_dim":           64,
         "cls_dim":            512,
         "mid_epoch_vals":  mid_epoch_vals,
@@ -247,22 +355,50 @@ def main(fabric: Fabric, ckpt_to_load=None):
     train_dataset = LazyCophyloformerDataset(train_preencoded_dir)
     val_dataset   = LazyCophyloformerDataset(val_preencoded_dir)
 
-    # batch_size is per-GPU — use manual DistributedSampler so Fabric doesn't
-    # divide it again by num_processes.
-    train_sampler = torch.utils.data.distributed.DistributedSampler(
-        train_dataset, num_replicas=fabric.world_size, rank=fabric.global_rank, shuffle=True,
-    )
-    val_sampler = torch.utils.data.distributed.DistributedSampler(
-        val_dataset, num_replicas=fabric.world_size, rank=fabric.global_rank, shuffle=False,
-    )
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler,
-                              collate_fn=collate_fn, num_workers=num_workers,
-                              persistent_workers=num_workers > 0,
-                              prefetch_factor=4 if num_workers > 0 else None, pin_memory=True)
-    val_loader   = DataLoader(val_dataset, batch_size=batch_size * 2, sampler=val_sampler,
-                              collate_fn=collate_fn, num_workers=num_workers,
-                              persistent_workers=num_workers > 0,
-                              prefetch_factor=2 if num_workers > 0 else None, pin_memory=True)
+    if use_bucketed_batches:
+        if fabric.is_global_zero:
+            train_dataset.build_bucket_keys()
+            val_dataset.build_bucket_keys()
+        fabric.barrier()
+        if not fabric.is_global_zero:
+            train_dataset.build_bucket_keys()
+            val_dataset.build_bucket_keys()
+
+        train_sampler = BucketedDistributedBatchSampler(
+            train_dataset, batch_size=batch_size,
+            num_replicas=fabric.world_size, rank=fabric.global_rank,
+            shuffle=True, seed=42,
+        )
+        val_sampler = BucketedDistributedBatchSampler(
+            val_dataset, batch_size=batch_size * 2,
+            num_replicas=fabric.world_size, rank=fabric.global_rank,
+            shuffle=False, seed=42,
+        )
+        train_loader = DataLoader(train_dataset, batch_sampler=train_sampler,
+                                  collate_fn=collate_fn, num_workers=num_workers,
+                                  persistent_workers=num_workers > 0,
+                                  prefetch_factor=4 if num_workers > 0 else None, pin_memory=True)
+        val_loader = DataLoader(val_dataset, batch_sampler=val_sampler,
+                                collate_fn=collate_fn, num_workers=num_workers,
+                                persistent_workers=num_workers > 0,
+                                prefetch_factor=2 if num_workers > 0 else None, pin_memory=True)
+    else:
+        # batch_size is per-GPU — use manual DistributedSampler so Fabric doesn't
+        # divide it again by num_processes.
+        train_sampler = torch.utils.data.distributed.DistributedSampler(
+            train_dataset, num_replicas=fabric.world_size, rank=fabric.global_rank, shuffle=True,
+        )
+        val_sampler = torch.utils.data.distributed.DistributedSampler(
+            val_dataset, num_replicas=fabric.world_size, rank=fabric.global_rank, shuffle=False,
+        )
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler,
+                                  collate_fn=collate_fn, num_workers=num_workers,
+                                  persistent_workers=num_workers > 0,
+                                  prefetch_factor=4 if num_workers > 0 else None, pin_memory=True)
+        val_loader   = DataLoader(val_dataset, batch_size=batch_size * 2, sampler=val_sampler,
+                                  collate_fn=collate_fn, num_workers=num_workers,
+                                  persistent_workers=num_workers > 0,
+                                  prefetch_factor=2 if num_workers > 0 else None, pin_memory=True)
     train_loader, val_loader = fabric.setup_dataloaders(
         train_loader, val_loader, use_distributed_sampler=False
     )

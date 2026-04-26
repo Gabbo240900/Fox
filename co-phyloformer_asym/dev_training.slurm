@@ -68,6 +68,8 @@ export USE_DIST_MATRIX=1
 export GRADIENT_CHECKPOINTING=0
 export USE_FLEX_ATTENTION=0
 export USE_COMPILE=0
+export USE_BUCKETED_BATCHES=1
+export BUCKET_SIZE=8
 export DROPOUT=0.05
 
 # Training settings

@@ -297,8 +297,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     # Config
     # -------------------------------------------------------------------------
-    train_preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/train_preencoded"
-    val_preencoded_dir   = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/val_preencoded"
+    train_preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_train"
+    val_preencoded_dir   = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_val"
     epochs         = int(os.environ.get("EPOCHS", "50"))
     batch_size     = int(os.environ.get("BATCH_SIZE", "64"))  # per GPU
     grad_accum     = int(os.environ.get("GRAD_ACCUM", "4"))

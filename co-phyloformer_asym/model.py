@@ -125,20 +125,27 @@ class ColAttnPairBias(nn.Module):
         v = _proj(self.v_proj)
         g = torch.sigmoid(_proj(self.g_proj))
 
-        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B*S_c, H, N, N]
-        scores = scores.view(B, S_c, H, N, N) + bias.unsqueeze(1)   # broadcast
-
+        attn_mask = bias.unsqueeze(1).expand(B, S_c, H, N, N).reshape(B * S_c, H, N, N)
+        attn_mask = attn_mask.to(dtype=q.dtype)
         if leaf_pad.any():
-            km = leaf_pad[:, None, None, None, :]
-            scores = scores.masked_fill(km, -1e9)
+            km = leaf_pad[:, None, None, None, :].expand(B, S_c, H, N, N).reshape(B * S_c, H, N, N)
+            attn_mask = attn_mask.masked_fill(km, torch.finfo(q.dtype).min)
             all_leaves_pad = leaf_pad.all(dim=1)
             if all_leaves_pad.any():
-                scores[all_leaves_pad, :, :, :, 0] = 0.0
+                attn_mask = attn_mask.view(B, S_c, H, N, N)
+                attn_mask[all_leaves_pad, :, :, :, 0] = 0.0
+                attn_mask = attn_mask.view(B * S_c, H, N, N)
 
-        scores = scores.view(B * S_c, H, N, N)
-        attn   = self.dropout(torch.softmax(scores.float(), dim=-1).to(dtype=q.dtype))
-
-        attn_out = g * torch.matmul(attn, v)
+        dropout_p = self.dropout.p if self.training else 0.0
+        attn_out = F.scaled_dot_product_attention(
+            q.contiguous(),
+            k.contiguous(),
+            v.contiguous(),
+            attn_mask=attn_mask.contiguous(),
+            dropout_p=dropout_p,
+            is_causal=False,
+        )
+        attn_out = g * attn_out
         attn_out = attn_out.transpose(1, 2).contiguous().view(B * S_c, N, D)
         out      = self.out_proj(attn_out)
         return out.view(B, S_c, N, D)
@@ -624,16 +631,40 @@ class Cophyloformer(nn.Module):
 
         for i in range(self.num_cross_layers):
             # simultaneous bidirectional cross-attention (both on pre-update representations)
-            h_attn, _ = self.cross_attn_h2p[i](self.cross_norms_h[i](cross_host), cross_para, cross_para, key_padding_mask=kv_pad_mask)
-            p_attn, _ = self.cross_attn_p2h[i](self.cross_norms_p[i](cross_para), cross_host, cross_host, key_padding_mask=kv_pad_mask)
+            h_attn, _ = self.cross_attn_h2p[i](
+                self.cross_norms_h[i](cross_host),
+                cross_para,
+                cross_para,
+                key_padding_mask=kv_pad_mask,
+                need_weights=False,
+            )
+            p_attn, _ = self.cross_attn_p2h[i](
+                self.cross_norms_p[i](cross_para),
+                cross_host,
+                cross_host,
+                key_padding_mask=kv_pad_mask,
+                need_weights=False,
+            )
             cross_host = cross_host + h_attn
             cross_host = cross_host + self.cross_ffns_h[i](self.cross_norms_h2[i](cross_host))
             cross_para = cross_para + p_attn
             cross_para = cross_para + self.cross_ffns_p[i](self.cross_norms_p2[i](cross_para))
 
             # self-attention so each side consolidates what it learned from the other
-            h_self, _ = self.self_attn_h[i](self.self_norms_h[i](cross_host), cross_host, cross_host, key_padding_mask=kv_pad_mask)
-            p_self, _ = self.self_attn_p[i](self.self_norms_p[i](cross_para), cross_para, cross_para, key_padding_mask=kv_pad_mask)
+            h_self, _ = self.self_attn_h[i](
+                self.self_norms_h[i](cross_host),
+                cross_host,
+                cross_host,
+                key_padding_mask=kv_pad_mask,
+                need_weights=False,
+            )
+            p_self, _ = self.self_attn_p[i](
+                self.self_norms_p[i](cross_para),
+                cross_para,
+                cross_para,
+                key_padding_mask=kv_pad_mask,
+                need_weights=False,
+            )
             cross_host = cross_host + h_self
             cross_host = cross_host + self.self_ffns_h[i](self.self_norms_h2[i](cross_host))
             cross_para = cross_para + p_self

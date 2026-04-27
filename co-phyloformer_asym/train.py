@@ -310,6 +310,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
     hgt_loss_weight = float(os.environ.get("HGT_LOSS_WEIGHT", "2.0"))
     mid_epoch_vals = int(os.environ.get("MID_EPOCH_VALS", "1"))
     num_workers    = int(os.environ.get("NUM_WORKERS", "8"))
+    val_batch_mult = int(os.environ.get("VAL_BATCH_MULT", "1"))
     ckpt_dir       = os.environ.get("CKPT_DIR", "checkpoints")
     device         = fabric.device
 
@@ -335,6 +336,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
         "pair_dim":           64,
         "cls_dim":            512,
         "mid_epoch_vals":  mid_epoch_vals,
+        "val_batch_mult":  val_batch_mult,
         "ckpt_dir":        ckpt_dir,
     }
 
@@ -370,7 +372,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
             shuffle=True, seed=42,
         )
         val_sampler = BucketedDistributedBatchSampler(
-            val_dataset, batch_size=batch_size * 2,
+            val_dataset, batch_size=batch_size * val_batch_mult,
             num_replicas=fabric.world_size, rank=fabric.global_rank,
             shuffle=False, seed=42,
         )
@@ -395,7 +397,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
                                   collate_fn=collate_fn, num_workers=num_workers,
                                   persistent_workers=num_workers > 0,
                                   prefetch_factor=4 if num_workers > 0 else None, pin_memory=True)
-        val_loader   = DataLoader(val_dataset, batch_size=batch_size * 2, sampler=val_sampler,
+        val_loader   = DataLoader(val_dataset, batch_size=batch_size * val_batch_mult, sampler=val_sampler,
                                   collate_fn=collate_fn, num_workers=num_workers,
                                   persistent_workers=num_workers > 0,
                                   prefetch_factor=2 if num_workers > 0 else None, pin_memory=True)

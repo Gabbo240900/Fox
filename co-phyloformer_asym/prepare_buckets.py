@@ -40,8 +40,8 @@ def main():
         "--dirs",
         nargs="+",
         default=[
-            "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/train_preencoded",
-            "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/val_preencoded",
+            "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_train",
+            "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_val",
         ],
         help="One or more preencoded directories containing .pt samples",
     )

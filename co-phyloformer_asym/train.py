@@ -44,6 +44,7 @@ hidden_dim       = int(os.environ.get("HIDDEN_DIM", "256"))
 grad_ckpt        = os.environ.get("GRADIENT_CHECKPOINTING", "0").strip() == "1"
 use_flex         = os.environ.get("USE_FLEX_ATTENTION", "0").strip() == "1"  # requires PyTorch >= 2.5
 use_compile      = os.environ.get("USE_COMPILE", "0").strip() == "1"
+find_unused_parameters = os.environ.get("FIND_UNUSED_PARAMETERS", "1").strip() == "1"
 host_max_leaves  = int(os.environ.get("HOST_MAX_LEAVES", "51"))  # host trees have max 50 leaves
 para_max_leaves  = int(os.environ.get("PARA_MAX_LEAVES", "142"))  # parasite trees have max 128, avg 82; cap for memory
 dropout          = float(os.environ.get("DROPOUT", "0.1"))
@@ -331,6 +332,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
         "use_opm":            use_opm,
         "use_flexattention":  use_flex,
         "use_compile":        use_compile,
+        "find_unused_parameters": find_unused_parameters,
         "use_bucketed_batches": use_bucketed_batches,
         "bucket_size":        bucket_size,
         "pair_dim":           64,
@@ -670,6 +672,6 @@ if __name__ == "__main__":
         accelerator="cuda" if torch.cuda.is_available() else "cpu",
         devices="auto",
         precision="bf16-mixed",
-        strategy=DDPStrategy(find_unused_parameters=False),
+        strategy=DDPStrategy(find_unused_parameters=find_unused_parameters),
     )
     fabric.launch(_main)

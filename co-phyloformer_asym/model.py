@@ -319,8 +319,10 @@ class EvoPFBlockLite(nn.Module):
         dropout: float = 0.0,
         use_opm: bool = False,
         use_flexattention: bool = False,
+        update_pair_track: bool = True,
     ):
         super().__init__()
+        self.update_pair_track = update_pair_track
 
         # ── MSA track ────────────────────────────────────────────────────────
         self.col_attn = ColAttnPairBias(seq_dim, pair_dim, n_heads, dropout,
@@ -352,6 +354,9 @@ class EvoPFBlockLite(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(pair_dim * ff_mult, pair_dim),
         )
+        if not self.update_pair_track:
+            for module in (self.pair_update, self.pair_attn, self.pair_norm, self.pair_ff):
+                module.requires_grad_(False)
 
     def forward(
         self,
@@ -368,10 +373,11 @@ class EvoPFBlockLite(nn.Module):
         x = x + self.row_attn(x, pad_mask)             # 2. row attention
         x = x + self.msa_ff(self.msa_norm(x))          # 3. MSA FFN
 
-        # ── Pair track ───────────────────────────────────────────────────────
-        pairs = pairs + self.pair_update(x)             # 4. update from MSA
-        pairs = pairs + self.pair_attn(pairs)           # 5. pair attention
-        pairs = pairs + self.pair_ff(self.pair_norm(pairs))  # 6. pair FFN
+        if self.update_pair_track:
+            # Pair updates are consumed by the next block's column attention.
+            pairs = pairs + self.pair_update(x)             # 4. update from MSA
+            pairs = pairs + self.pair_attn(pairs)           # 5. pair attention
+            pairs = pairs + self.pair_ff(self.pair_norm(pairs))  # 6. pair FFN
 
         return x, pairs
 
@@ -413,8 +419,9 @@ class MSAEncoder(nn.Module):
                 ff_mult=4, dropout=dropout,
                 use_opm=use_opm,
                 use_flexattention=use_flexattention,
+                update_pair_track=(i < self.n_evopf_layers - 1),
             )
-            for _ in range(self.n_evopf_layers)
+            for i in range(self.n_evopf_layers)
         ])
 
         self.norm = nn.LayerNorm(hidden_dim)

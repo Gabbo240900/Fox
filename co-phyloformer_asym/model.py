@@ -22,12 +22,9 @@ class MSAEmbedder(nn.Module):
         self.act  = nn.ReLU()
 
     def forward(self, x_ids: torch.Tensor) -> torch.Tensor:
-        # One-hot encode: [B, N, S] → [B, N, S, VOCAB_SIZE]
-        x_oh = F.one_hot(x_ids.long(), num_classes=self.VOCAB_SIZE).to(
-            dtype=self.proj.weight.dtype
-        )
-        # Project + activate: [B, N, S, seq_dim]
-        return self.act(self.proj(x_oh))
+        # Equivalent to one_hot(x) @ self.proj.weight.T, without materializing
+        # the large [B, N, S, VOCAB_SIZE] one-hot tensor.
+        return self.act(F.embedding(x_ids.long(), self.proj.weight.t()))
 
 
 class PairEmbedder(nn.Module):
@@ -44,10 +41,9 @@ class PairEmbedder(nn.Module):
     def forward(self, x_ids: torch.Tensor) -> torch.Tensor:
         # x_ids: [B, N, S]
         pad_mask = (x_ids == 22)                                            # [B, N, S]
-        x_oh = F.one_hot(x_ids.long(), num_classes=self.VOCAB_SIZE).to(
-            dtype=self.proj.weight.dtype
-        )
-        x_emb = self.act(self.proj(x_oh))                                  # [B, N, S, pair_dim]
+        # Equivalent to one_hot(x) @ self.proj.weight.T, without materializing
+        # the large [B, N, S, VOCAB_SIZE] one-hot tensor.
+        x_emb = self.act(F.embedding(x_ids.long(), self.proj.weight.t()))   # [B, N, S, pair_dim]
         x_emb = x_emb.masked_fill(pad_mask.unsqueeze(-1), 0.0)
         counts = (~pad_mask).float().sum(dim=2).clamp(min=1).unsqueeze(-1)  # [B, N, 1]
         x_mean = x_emb.sum(dim=2) / counts                                 # [B, N, pair_dim]

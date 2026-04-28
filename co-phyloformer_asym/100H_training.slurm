@@ -12,8 +12,6 @@
 #SBATCH --cpus-per-task=24
 #SBATCH --time=100:00:00
 
-
-
 # ENVIRONMENT SETUP
 
 module purge
@@ -53,22 +51,23 @@ set -x
 # W&B settings
 export WANDB_ENTITY=cophylo_team
 export WANDB_PROJECT=CoPhyloformer
-export WANDB_NAME=35ep_hgt2_tail2_dropout
+export WANDB_NAME=35ep_100H_training_asym
 export WANDB_MODE=offline
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300
 
 # Architecture
 export HIDDEN_DIM=256
-export AXIAL_LAYERS=4
+export AXIAL_LAYERS=2
 export CROSS_LAYERS=2
 export USE_OPM=0
 export USE_DIST_MATRIX=1
-export GRADIENT_CHECKPOINTING=1
-export USE_FLEX_ATTENTION=0
+export GRADIENT_CHECKPOINTING=0
+export USE_FLEX_ATTENTION=1
 export USE_COMPILE=0
+export FIND_UNUSED_PARAMETERS=0
 export USE_BUCKETED_BATCHES=1
-export BUCKET_SIZE=8
+export BUCKET_SIZE=4
 export DROPOUT=0.05
 
 # Training settings
@@ -76,8 +75,8 @@ export EPOCHS=35
 export MID_EPOCH_VALS=1
 export NUM_WORKERS=16
 export CKPT_DIR=checkpoints_fast
-export BATCH_SIZE=16
-export GRAD_ACCUM=1
+export BATCH_SIZE=32
+export GRAD_ACCUM=4
 export VAL_BATCH_MULT=1
 export LR=1e-4
 export WEIGHT_DECAY=0.01
@@ -90,5 +89,13 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
 
-
-srun python train.py train
+if [ -f "$CKPT_DIR/last_epoch.ckpt" ]; then
+    echo "[Resume] Resuming from last_epoch.ckpt"
+    srun python train.py resume "$CKPT_DIR/last_epoch.ckpt"
+elif [ -f "$CKPT_DIR/latest.ckpt" ]; then
+    echo "[Resume] Resuming from latest.ckpt (mid-epoch)"
+    srun python train.py resume "$CKPT_DIR/latest.ckpt"
+else
+    echo "[Train] Starting from scratch"
+    srun python train.py train
+fi

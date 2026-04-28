@@ -60,11 +60,11 @@ export WANDB__SERVICE_WAIT=300
 
 # Architecture
 export HIDDEN_DIM=256
-export AXIAL_LAYERS=4
-export CROSS_LAYERS=2
+export AXIAL_LAYERS=2
+export CROSS_LAYERS=1
 export USE_OPM=0
 export USE_DIST_MATRIX=1
-export GRADIENT_CHECKPOINTING=1
+export GRADIENT_CHECKPOINTING=0
 export USE_FLEX_ATTENTION=0
 export USE_COMPILE=0
 export FIND_UNUSED_PARAMETERS=0
@@ -77,7 +77,7 @@ export EPOCHS=5
 export MID_EPOCH_VALS=1
 export NUM_WORKERS=16
 export CKPT_DIR=checkpoints_fast
-export BATCH_SIZE=16
+export BATCH_SIZE=32
 export GRAD_ACCUM=1
 export VAL_BATCH_MULT=1
 export LR=1e-4

@@ -184,10 +184,7 @@ def encode_sequence(sequence, max_len=128):
 def main(fabric: Fabric):
     # Load Data
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    preencoded_dir = os.environ.get(
-        "ASYMMETREE_PREENCODED_DIR",
-        os.path.join(repo_root, "generate_asymmetree", "generated_trees", "test"),
-    )
+    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_train/"
     # Build file list once, then create train/val datasets with different masking policies.
     dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0)
     # Train/Validation Split

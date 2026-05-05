@@ -45,24 +45,11 @@ start_time = time.time()  # Record start time
 class LazyCophyloformerDataset(Dataset):
     def __init__(self, preencoded_dir, mask_prob=0.1, pt_files=None):
         self.mask_prob = float(mask_prob)
+        self.preencoded_dir = preencoded_dir
         if pt_files is None:
-            all_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
-            valid_files = []
-            for pt_path in all_files:
-                try:
-                    sample = torch.load(pt_path, map_location="cpu", weights_only=False)
-                    if len(sample.get("host_msas", {})) == 0:
-                        continue
-                    if len(sample.get("parasite_msas", {})) == 0:
-                        continue
-                    valid_files.append(pt_path)
-                except Exception:
-                    # Corrupt/unreadable file -> skip deterministically
-                    continue
-            self.pt_files = valid_files
+            self.pt_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
         else:
             self.pt_files = list(pt_files)
-        self.preencoded_dir = preencoded_dir
 
     def __len__(self):
         return len(self.pt_files)
@@ -81,41 +68,62 @@ class LazyCophyloformerDataset(Dataset):
             masked[random_mask] = mask_token
             return masked
 
-        # Should never happen thanks to pre-filtering in __init__
-        if len(sample.get("host_msas", {})) == 0 or len(sample.get("parasite_msas", {})) == 0:
-            raise ValueError(f"Invalid sample with empty MSAs: {pt_path}")
+        if "host_msa" in sample and "para_msa" in sample:
+            host_msa = sample["host_msa"].long()
+            parasite_msa = sample["para_msa"].long()
+            labels_dict = sample.get("labels", {})
+            labels = torch.tensor(
+                [labels_dict.get(event, 0.0) for event in event_names],
+                dtype=torch.float32,
+            )
+            sim_time = torch.tensor([labels_dict.get("Sim_time", 1.0)], dtype=torch.float32)
+            return {
+                "host_msa": mask_sequence(host_msa, mask_prob=self.mask_prob),
+                "parasite_msa": mask_sequence(parasite_msa, mask_prob=self.mask_prob),
+                "mappings": sample.get("mappings", []),
+                "labels": labels,
+                "sim_time": sim_time,
+            }
 
-        host_list = list(sample["host_msas"].keys())
-        parasite_list = list(sample["parasite_msas"].keys())
-        
-        parasite_idx_map = {name: i for i, name in enumerate(parasite_list)}
-        host_idx_map = {name: i for i, name in enumerate(host_list)}
-        valid_mappings = [
-            (host_idx_map[h], parasite_idx_map[p])
-            for p, h in sample["mappings"]
-            if p in parasite_idx_map and h in host_idx_map
-        ]
+        if "host_msas" in sample and "parasite_msas" in sample:
+            if len(sample.get("host_msas", {})) == 0 or len(sample.get("parasite_msas", {})) == 0:
+                raise ValueError(f"Invalid sample with empty MSAs: {pt_path}")
 
-        labels = torch.tensor(
-            [sample["event_frequencies"].get(event, 0.0) for event in event_names],
-            dtype=torch.float32,
+            host_list = list(sample["host_msas"].keys())
+            parasite_list = list(sample["parasite_msas"].keys())
+            
+            parasite_idx_map = {name: i for i, name in enumerate(parasite_list)}
+            host_idx_map = {name: i for i, name in enumerate(host_list)}
+            valid_mappings = [
+                (host_idx_map[h], parasite_idx_map[p])
+                for p, h in sample["mappings"]
+                if p in parasite_idx_map and h in host_idx_map
+            ]
+
+            labels = torch.tensor(
+                [sample["event_frequencies"].get(event, 0.0) for event in event_names],
+                dtype=torch.float32,
+            )
+
+            sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 1.0)], dtype=torch.float32)
+            return {
+                "host_msa": torch.stack([
+                    mask_sequence(encode_sequence(seq), mask_prob=self.mask_prob)
+                    for seq in sample["host_msas"].values()
+                ]),
+                "parasite_msa": torch.stack([
+                    mask_sequence(encode_sequence(seq), mask_prob=self.mask_prob)
+                    for seq in sample["parasite_msas"].values()
+                ]),
+                "mappings": valid_mappings,
+                "labels": labels,
+                "sim_time": sim_time,
+            }
+
+        raise KeyError(
+            f"Unsupported preencoded sample schema in {pt_path}. "
+            f"Expected keys host_msa/para_msa/labels, got {sorted(sample.keys())}."
         )
-
-        
-        sim_time = torch.tensor([sample["event_frequencies"].get("Sim_time", 1.0)], dtype=torch.float32)
-        return {
-            "host_msa": torch.stack([
-                mask_sequence(encode_sequence(seq), mask_prob=self.mask_prob)
-                for seq in sample["host_msas"].values()
-            ]),
-            "parasite_msa": torch.stack([
-                mask_sequence(encode_sequence(seq), mask_prob=self.mask_prob)
-                for seq in sample["parasite_msas"].values()
-            ]),
-            "mappings": valid_mappings,
-            "labels": labels,
-            "sim_time": sim_time  
-        }
 def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir, filename, batch_idx=None):
     """Save model and optimizer state."""
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -184,9 +192,25 @@ def encode_sequence(sequence, max_len=128):
 def main(fabric: Fabric):
     # Load Data
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_train/"
+    preencoded_dir = os.environ.get(
+        "ASYMMETREE_PREENCODED_DIR",
+        "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_train/",
+    )
     # Build file list once, then create train/val datasets with different masking policies.
     dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0)
+    if fabric.global_rank == 0:
+        print(
+            f"Preencoded dataset: dir={preencoded_dir!r}, "
+            f"exists={os.path.isdir(preencoded_dir)}, pt_files={len(dataset)}",
+            flush=True,
+        )
+    if len(dataset) < 2:
+        raise ValueError(
+            "Need at least 2 preencoded .pt samples before train/validation split. "
+            f"Found {len(dataset)} in {preencoded_dir!r}. "
+            f"Directory exists: {os.path.isdir(preencoded_dir)}. "
+            "Check ASYMMETREE_PREENCODED_DIR and make sure it points to the large new_train directory."
+        )
     # Train/Validation Split
     indices = list(range(len(dataset)))
     train_indices, val_indices = train_test_split(

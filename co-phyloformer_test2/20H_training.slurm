@@ -60,7 +60,7 @@ export WANDB_NAME=20H_asymmetree_old_msa
 export WANDB_MODE=offline    # "online", "offline", or "disabled" 
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300     
-export ASYMMETREE_PREENCODED_DIR=/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/test/
+export ASYMMETREE_PREENCODED_DIR=/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_train/
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
 srun python train.py

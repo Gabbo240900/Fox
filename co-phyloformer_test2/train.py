@@ -236,7 +236,7 @@ def main(fabric: Fabric, resume_ckpt_path=None):
     device = fabric.device
     epochs = 5
 
-    batch_size = 16
+    batch_size = 32
 
     # -----------------------------
     # Gradient accumulation

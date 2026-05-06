@@ -59,7 +59,18 @@ export WANDB_NAME=100H_asymmetree_old_msa
 export WANDB_MODE=offline    # "online", "offline", or "disabled" 
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300     
-export ASYMMETREE_PREENCODED_DIR=/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_train/
+export ASYMMETREE_TRAIN_PREENCODED_DIR=/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_train
+export ASYMMETREE_VAL_PREENCODED_DIR=/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_val
+export CKPT_DIR=checkpoints
 
 echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
-srun python train.py
+if [ -f "$CKPT_DIR/last_epoch.ckpt" ]; then
+    echo "[Resume] Resuming from last_epoch.ckpt"
+    srun python train.py resume "$CKPT_DIR/last_epoch.ckpt"
+elif [ -f "$CKPT_DIR/latest.ckpt" ]; then
+    echo "[Resume] Resuming from latest.ckpt"
+    srun python train.py resume "$CKPT_DIR/latest.ckpt"
+else
+    echo "[Train] Starting from scratch"
+    srun python train.py train
+fi

@@ -11,7 +11,6 @@ import time
 import numpy as np
 import os
 from plot import plot_event_metric_over_epochs, plot_epoch_loss_curve, plot_labels_vs_predictions
-from sklearn.model_selection import train_test_split
 from transformers import get_cosine_schedule_with_warmup
 from tqdm import tqdm
 from itertools import islice
@@ -124,29 +123,36 @@ class LazyCophyloformerDataset(Dataset):
             f"Unsupported preencoded sample schema in {pt_path}. "
             f"Expected keys host_msa/para_msa/labels, got {sorted(sample.keys())}."
         )
-def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir, filename, batch_idx=None):
+def save_checkpoint(model, optimizer, scheduler, epoch, val_loss, checkpoint_dir, filename,
+                    batch_idx=None, end_of_epoch=False, best_val_loss=None):
     """Save model and optimizer state."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint = {
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
         'epoch': epoch,
         'val_loss': val_loss,
+        'best_val_loss': best_val_loss if best_val_loss is not None else val_loss,
+        'end_of_epoch': end_of_epoch,
     }
     if batch_idx is not None:
         checkpoint['batch_idx'] = batch_idx
     torch.save(checkpoint, os.path.join(checkpoint_dir, filename))
 
-def load_checkpoint(model, optimizer, checkpoint_path, map_location=None):
+def load_checkpoint(model, optimizer, scheduler, checkpoint_path, map_location=None):
     """Load model and optimizer state from checkpoint."""
     checkpoint = torch.load(checkpoint_path, map_location=map_location)
     model.load_state_dict(checkpoint['model_state_dict'])
     if optimizer is not None and 'optimizer_state_dict' in checkpoint:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    if scheduler is not None and checkpoint.get('scheduler_state_dict') is not None:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     epoch = checkpoint.get('epoch', 0)
-    val_loss = checkpoint.get('val_loss', float('inf'))
+    val_loss = checkpoint.get('best_val_loss', checkpoint.get('val_loss', float('inf')))
     batch_idx = checkpoint.get('batch_idx', None)
-    return epoch, val_loss, batch_idx
+    end_of_epoch = checkpoint.get('end_of_epoch', batch_idx is None)
+    return epoch, val_loss, batch_idx, end_of_epoch
 
 def collate_fn(batch):
     """Pads MSA sequences dynamically to match batch size."""
@@ -189,45 +195,44 @@ def encode_sequence(sequence, max_len=128):
     encoded += [PAD_ID] * (max_len - len(encoded))
     return torch.tensor(encoded, dtype=torch.long)
 
-def main(fabric: Fabric):
+def main(fabric: Fabric, resume_ckpt_path=None):
     # Load Data
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    preencoded_dir = os.environ.get(
-        "ASYMMETREE_PREENCODED_DIR",
-        "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_train/",
+    train_preencoded_dir = os.environ.get(
+        "ASYMMETREE_TRAIN_PREENCODED_DIR",
+        "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_train",
     )
-    # Build file list once, then create train/val datasets with different masking policies.
-    dataset = LazyCophyloformerDataset(preencoded_dir, mask_prob=0.0)
+    val_preencoded_dir = os.environ.get(
+        "ASYMMETREE_VAL_PREENCODED_DIR",
+        "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_val",
+    )
+    train_dataset = LazyCophyloformerDataset(train_preencoded_dir, mask_prob=0.1)
+    val_dataset = LazyCophyloformerDataset(val_preencoded_dir, mask_prob=0.0)
     if fabric.global_rank == 0:
         print(
-            f"Preencoded dataset: dir={preencoded_dir!r}, "
-            f"exists={os.path.isdir(preencoded_dir)}, pt_files={len(dataset)}",
+            f"Train preencoded dataset: dir={train_preencoded_dir!r}, "
+            f"exists={os.path.isdir(train_preencoded_dir)}, pt_files={len(train_dataset)}",
             flush=True,
         )
-    if len(dataset) < 2:
-        raise ValueError(
-            "Need at least 2 preencoded .pt samples before train/validation split. "
-            f"Found {len(dataset)} in {preencoded_dir!r}. "
-            f"Directory exists: {os.path.isdir(preencoded_dir)}. "
-            "Check ASYMMETREE_PREENCODED_DIR and make sure it points to the large new_train directory."
+        print(
+            f"Validation preencoded dataset: dir={val_preencoded_dir!r}, "
+            f"exists={os.path.isdir(val_preencoded_dir)}, pt_files={len(val_dataset)}",
+            flush=True,
         )
-    # Train/Validation Split
-    indices = list(range(len(dataset)))
-    train_indices, val_indices = train_test_split(
-        indices, test_size=0.2, random_state=42, shuffle=True
-    )
-    train_dataset = LazyCophyloformerDataset(
-        preencoded_dir,
-        mask_prob=0.1,
-        pt_files=dataset.pt_files
-    )
-    val_dataset = LazyCophyloformerDataset(
-        preencoded_dir,
-        mask_prob=0.0,
-        pt_files=dataset.pt_files
-    )
-    train_subset = torch.utils.data.Subset(train_dataset, train_indices)
-    val_subset   = torch.utils.data.Subset(val_dataset, val_indices)
+    if len(train_dataset) < 1:
+        raise ValueError(
+            "Need at least 1 preencoded .pt sample for training. "
+            f"Found {len(train_dataset)} in {train_preencoded_dir!r}. "
+            f"Directory exists: {os.path.isdir(train_preencoded_dir)}. "
+            "Check ASYMMETREE_TRAIN_PREENCODED_DIR and make sure it points to new_train."
+        )
+    if len(val_dataset) < 1:
+        raise ValueError(
+            "Need at least 1 preencoded .pt sample for validation. "
+            f"Found {len(val_dataset)} in {val_preencoded_dir!r}. "
+            f"Directory exists: {os.path.isdir(val_preencoded_dir)}. "
+            "Check ASYMMETREE_VAL_PREENCODED_DIR and make sure it points to new_val."
+        )
     device = fabric.device
     epochs = 5
 
@@ -242,7 +247,7 @@ def main(fabric: Fabric):
     # DDP-safe sampling
     # -----------------------------
     train_sampler = DistributedSampler(
-        train_subset,
+        train_dataset,
         num_replicas=fabric.world_size,
         rank=fabric.global_rank,
         shuffle=True,
@@ -250,14 +255,14 @@ def main(fabric: Fabric):
     )
 
     val_sampler = DistributedSampler(
-        val_subset,
+        val_dataset,
         num_replicas=fabric.world_size,
         rank=fabric.global_rank,
         shuffle=False,
     )
 
     train_loader = DataLoader(
-        train_subset,
+        train_dataset,
         batch_size=batch_size,
         sampler=train_sampler,
         shuffle=False,  # IMPORTANT: do not use shuffle with a sampler
@@ -270,7 +275,7 @@ def main(fabric: Fabric):
 
     # Create validation loader (also sharded for balanced work across ranks)
     val_loader = DataLoader(
-        val_subset,
+        val_dataset,
         batch_size=batch_size,
         sampler=val_sampler,
         shuffle=False,
@@ -312,25 +317,6 @@ def main(fabric: Fabric):
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     model, optimizer = fabric.setup(model, optimizer)
 
-    # Resume from checkpoint logic
-    checkpoint_dir = "checkpoints"
-    resume_ckpt_path = os.environ.get("RESUME_CKPT", None)
-    start_epoch = 0
-    start_batch = 0
-    best_val_loss = float('inf')
-    if resume_ckpt_path is not None and os.path.exists(resume_ckpt_path):
-        if fabric.is_global_zero:
-            print(f"[Checkpoint] Loading checkpoint from {resume_ckpt_path}")
-        loaded_epoch, loaded_val_loss, loaded_batch_idx = load_checkpoint(model, optimizer, resume_ckpt_path, map_location=fabric.device)
-        # If batch_idx is present, resume from that batch in the epoch
-        start_epoch = loaded_epoch
-        start_batch = (loaded_batch_idx + 1) if loaded_batch_idx is not None else 0
-        best_val_loss = loaded_val_loss
-        if fabric.is_global_zero:
-            print(f"[Checkpoint] Resumed from epoch {loaded_epoch}, best_val_loss {loaded_val_loss}, batch_idx {loaded_batch_idx}")
-
-
-
     # Scheduler should count *optimizer steps* (not micro-batches)
     steps_per_epoch = math.ceil(len(train_loader) / grad_accum_steps)
     total_steps = epochs * steps_per_epoch
@@ -341,6 +327,35 @@ def main(fabric: Fabric):
         num_warmup_steps=warmup_steps,
         num_training_steps=total_steps,
     )
+
+    # Resume from checkpoint logic
+    checkpoint_dir = os.environ.get("CKPT_DIR", "checkpoints")
+    resume_ckpt_path = resume_ckpt_path or os.environ.get("RESUME_CKPT", None)
+    start_epoch = 0
+    start_batch = 0
+    best_val_loss = float('inf')
+    if resume_ckpt_path is not None and os.path.exists(resume_ckpt_path):
+        if fabric.is_global_zero:
+            print(f"[Checkpoint] Loading checkpoint from {resume_ckpt_path}")
+        loaded_epoch, loaded_val_loss, loaded_batch_idx, loaded_end_of_epoch = load_checkpoint(
+            model,
+            optimizer,
+            lr_scheduler,
+            resume_ckpt_path,
+            map_location=fabric.device,
+        )
+        if loaded_end_of_epoch:
+            start_epoch = loaded_epoch + 1
+            start_batch = 0
+        else:
+            start_epoch = loaded_epoch
+            start_batch = (loaded_batch_idx + 1) if loaded_batch_idx is not None else 0
+        best_val_loss = loaded_val_loss
+        if fabric.is_global_zero:
+            print(
+                f"[Checkpoint] Resumed from epoch {loaded_epoch}, best_val_loss {loaded_val_loss}, "
+                f"batch_idx {loaded_batch_idx}, end_of_epoch {loaded_end_of_epoch}"
+            )
 
     entity = os.environ.get("WANDB_ENTITY", "cophylo_team")
     project = os.environ.get("WANDB_PROJECT", "CoPhyloformer")
@@ -367,7 +382,8 @@ def main(fabric: Fabric):
                 "batch_size": batch_size,
                 "learning_rate": lr,
                 "weight_decay": wd,
-                "dataset_dir": preencoded_dir,
+                "train_dataset_dir": train_preencoded_dir,
+                "val_dataset_dir": val_preencoded_dir,
                 "scheduler": "linear_warmup",
                 "total_steps": total_steps,
                 "warmup_steps": warmup_steps,
@@ -375,7 +391,8 @@ def main(fabric: Fabric):
                 "event_loss_weights": event_loss_weights.tolist(),
                 "tail_weight_scale": tail_weight_scale,
                 "model_name": model.__class__.__name__,
-                "dataset_size": len(dataset),  
+                "train_dataset_size": len(train_dataset),
+                "val_dataset_size": len(val_dataset),
                 **model_config                 
             },
         )
@@ -406,8 +423,8 @@ def main(fabric: Fabric):
     for epoch in range(start_epoch, epochs):
         # Ensure each epoch uses a different (but synchronized) shuffle order across ranks
         train_sampler.set_epoch(epoch)
-        effective_steps_per_epoch = len(train_loader) // grad_accum_steps
-        val_checkpoints = {int(p * effective_steps_per_epoch) for p in [0.10, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]}
+        # One mid-epoch validation plus the existing end-of-epoch validation below.
+        val_checkpoints = {max(1, math.ceil(len(train_loader) / 2))}
         num_events = len(event_names)
         sum_abs_err = torch.zeros(num_events, device=device)
         sum_sq_err  = torch.zeros(num_events, device=device)
@@ -494,32 +511,47 @@ def main(fabric: Fabric):
                         **{f"val/MRE_step/{event_names[i]}": val_results["val_mre"][i] for i in range(len(event_names))},
                         **{f"val/sMAPE_step/{event_names[i]}": val_results["val_smape"][i] for i in range(len(event_names))}
                     })
-                    ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
-                    save_checkpoint(
-                        model,
-                        optimizer,
-                        epoch,
-                        val_results["val_loss"],
-                        checkpoint_dir,
-                        ckpt_name,
-                        batch_idx=batch_idx
-                    )
-                    print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
                     # --- Save BEST-OVERALL validation checkpoint (mid-epoch) ---
                     if val_results["val_loss"] < best_val_loss:
                         best_val_loss = val_results["val_loss"]
                         val_predictions_data = val_results
-                        ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
+                        best_ckpt_name = f"best_overall_val_epoch{epoch+1}_step{current_step}.pth"
                         save_checkpoint(
                             model,
                             optimizer,
+                            lr_scheduler,
                             epoch,
                             best_val_loss,
                             checkpoint_dir,
-                            ckpt_name,
-                            batch_idx=batch_idx
+                            best_ckpt_name,
+                            batch_idx=batch_idx,
+                            best_val_loss=best_val_loss,
                         )
                         print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
+                    ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
+                    save_checkpoint(
+                        model,
+                        optimizer,
+                        lr_scheduler,
+                        epoch,
+                        val_results["val_loss"],
+                        checkpoint_dir,
+                        ckpt_name,
+                        batch_idx=batch_idx,
+                        best_val_loss=best_val_loss,
+                    )
+                    save_checkpoint(
+                        model,
+                        optimizer,
+                        lr_scheduler,
+                        epoch,
+                        val_results["val_loss"],
+                        checkpoint_dir,
+                        "latest.ckpt",
+                        batch_idx=batch_idx,
+                        best_val_loss=best_val_loss,
+                    )
+                    print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
 
             total_loss += total_loss_tensor.item()
             num_batches += 1
@@ -654,6 +686,42 @@ def main(fabric: Fabric):
         val_smape_history.append(val_smape)
 
         if fabric.is_global_zero:
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                save_checkpoint(
+                    model,
+                    optimizer,
+                    lr_scheduler,
+                    epoch,
+                    best_val_loss,
+                    checkpoint_dir,
+                    f"best_overall_val_epoch{epoch+1}_end.pth",
+                    end_of_epoch=True,
+                    best_val_loss=best_val_loss,
+                )
+                print(f"[Checkpoint] New BEST validation loss at epoch end: {best_val_loss:.6f}")
+            save_checkpoint(
+                model,
+                optimizer,
+                lr_scheduler,
+                epoch,
+                val_loss,
+                checkpoint_dir,
+                "latest.ckpt",
+                end_of_epoch=True,
+                best_val_loss=best_val_loss,
+            )
+            save_checkpoint(
+                model,
+                optimizer,
+                lr_scheduler,
+                epoch,
+                val_loss,
+                checkpoint_dir,
+                "last_epoch.ckpt",
+                end_of_epoch=True,
+                best_val_loss=best_val_loss,
+            )
             print(f"Validation Loss: {val_loss:.6f}")
             print("---- Validation Summary ----")
             print(f"Best Validation Loss (so far): {best_val_loss:.6f}")
@@ -772,6 +840,20 @@ def main(fabric: Fabric):
         wandb.finish()
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser("Train Co-Phyloformer")
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("train", description="Train from scratch")
+    resumer = subparsers.add_parser("resume", description="Resume from a checkpoint")
+    resumer.add_argument("checkpoint", help="Path to .ckpt or .pth checkpoint")
+    args = parser.parse_args()
+
+    resume_ckpt_path = args.checkpoint if args.command == "resume" else None
+
+    def _main(fabric: Fabric):
+        main(fabric, resume_ckpt_path=resume_ckpt_path)
+
     fabric = Fabric(
         accelerator="cuda" if torch.cuda.is_available() else "cpu",
         devices="auto",
@@ -780,4 +862,4 @@ if __name__ == "__main__":
             find_unused_parameters=True,
         )
     )
-    fabric.launch(main)
+    fabric.launch(_main)

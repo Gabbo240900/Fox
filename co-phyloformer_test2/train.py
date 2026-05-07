@@ -10,7 +10,7 @@ from torch.nn import functional as F
 import time
 import numpy as np
 import os
-from plot import plot_event_metric_over_epochs, plot_epoch_loss_curve, plot_labels_vs_predictions
+from plot import plot_event_metric_over_epochs, plot_epoch_loss_curve
 from transformers import get_cosine_schedule_with_warmup
 from tqdm import tqdm
 from itertools import islice
@@ -124,7 +124,8 @@ class LazyCophyloformerDataset(Dataset):
             f"Expected keys host_msa/para_msa/labels, got {sorted(sample.keys())}."
         )
 def save_checkpoint(model, optimizer, scheduler, epoch, val_loss, checkpoint_dir, filename,
-                    batch_idx=None, end_of_epoch=False, best_val_loss=None):
+                    batch_idx=None, end_of_epoch=False, best_val_loss=None,
+                    epoch_losses=None, val_loss_history=None):
     """Save model and optimizer state."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint = {
@@ -135,6 +136,8 @@ def save_checkpoint(model, optimizer, scheduler, epoch, val_loss, checkpoint_dir
         'val_loss': val_loss,
         'best_val_loss': best_val_loss if best_val_loss is not None else val_loss,
         'end_of_epoch': end_of_epoch,
+        'epoch_losses': epoch_losses if epoch_losses is not None else [],
+        'val_loss_history': val_loss_history if val_loss_history is not None else [],
     }
     if batch_idx is not None:
         checkpoint['batch_idx'] = batch_idx
@@ -152,7 +155,9 @@ def load_checkpoint(model, optimizer, scheduler, checkpoint_path, map_location=N
     val_loss = checkpoint.get('best_val_loss', checkpoint.get('val_loss', float('inf')))
     batch_idx = checkpoint.get('batch_idx', None)
     end_of_epoch = checkpoint.get('end_of_epoch', batch_idx is None)
-    return epoch, val_loss, batch_idx, end_of_epoch
+    epoch_losses = checkpoint.get('epoch_losses', [])
+    val_loss_history = checkpoint.get('val_loss_history', [])
+    return epoch, val_loss, batch_idx, end_of_epoch, epoch_losses, val_loss_history
 
 def collate_fn(batch):
     """Pads MSA sequences dynamically to match batch size."""
@@ -194,6 +199,14 @@ def encode_sequence(sequence, max_len=128):
     encoded = [aa_to_index.get(aa, UNK_ID) for aa in sequence[:max_len]]
     encoded += [PAD_ID] * (max_len - len(encoded))
     return torch.tensor(encoded, dtype=torch.long)
+
+def write_prediction_csv(preds, labels, path):
+    import csv
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([f"true_{n}" for n in event_names] + [f"pred_{n}" for n in event_names])
+        for true_row, pred_row in zip(labels.tolist(), preds.tolist()):
+            writer.writerow(true_row + pred_row)
 
 def main(fabric: Fabric, resume_ckpt_path=None):
     # Load Data
@@ -334,10 +347,12 @@ def main(fabric: Fabric, resume_ckpt_path=None):
     start_epoch = 0
     start_batch = 0
     best_val_loss = float('inf')
+    epoch_losses = []
+    val_loss_history = []
     if resume_ckpt_path is not None and os.path.exists(resume_ckpt_path):
         if fabric.is_global_zero:
             print(f"[Checkpoint] Loading checkpoint from {resume_ckpt_path}")
-        loaded_epoch, loaded_val_loss, loaded_batch_idx, loaded_end_of_epoch = load_checkpoint(
+        loaded_epoch, loaded_val_loss, loaded_batch_idx, loaded_end_of_epoch, loaded_epoch_losses, loaded_val_loss_history = load_checkpoint(
             model,
             optimizer,
             lr_scheduler,
@@ -351,10 +366,13 @@ def main(fabric: Fabric, resume_ckpt_path=None):
             start_epoch = loaded_epoch
             start_batch = (loaded_batch_idx + 1) if loaded_batch_idx is not None else 0
         best_val_loss = loaded_val_loss
+        epoch_losses = loaded_epoch_losses
+        val_loss_history = loaded_val_loss_history
         if fabric.is_global_zero:
             print(
                 f"[Checkpoint] Resumed from epoch {loaded_epoch}, best_val_loss {loaded_val_loss}, "
-                f"batch_idx {loaded_batch_idx}, end_of_epoch {loaded_end_of_epoch}"
+                f"batch_idx {loaded_batch_idx}, end_of_epoch {loaded_end_of_epoch}, "
+                f"loss history: {len(epoch_losses)} epochs"
             )
 
     entity = os.environ.get("WANDB_ENTITY", "cophylo_team")
@@ -405,7 +423,6 @@ def main(fabric: Fabric, resume_ckpt_path=None):
         wandb.watch(getattr(model, "module", model), log="all", log_freq=100)
 
 
-    epoch_losses = []
     mae_history = []
     mse_history = []
     mre_history = []
@@ -414,7 +431,7 @@ def main(fabric: Fabric, resume_ckpt_path=None):
     val_mse_history = []
     val_mre_history = []
     val_smape_history = []
-    val_loss_history = []
+    # epoch_losses and val_loss_history initialized above (empty or restored from checkpoint)
 
     val_predictions_data = []
     best_step_predictions = None
@@ -526,6 +543,8 @@ def main(fabric: Fabric, resume_ckpt_path=None):
                             best_ckpt_name,
                             batch_idx=batch_idx,
                             best_val_loss=best_val_loss,
+                            epoch_losses=epoch_losses,
+                            val_loss_history=val_loss_history,
                         )
                         print(f"[Checkpoint] New BEST validation loss at step {current_step}: {best_val_loss:.6f}")
                     ckpt_name = f"val_checkpoint_epoch{epoch+1}_step{current_step}.pth"
@@ -539,6 +558,8 @@ def main(fabric: Fabric, resume_ckpt_path=None):
                         ckpt_name,
                         batch_idx=batch_idx,
                         best_val_loss=best_val_loss,
+                        epoch_losses=epoch_losses,
+                        val_loss_history=val_loss_history,
                     )
                     save_checkpoint(
                         model,
@@ -550,6 +571,8 @@ def main(fabric: Fabric, resume_ckpt_path=None):
                         "latest.ckpt",
                         batch_idx=batch_idx,
                         best_val_loss=best_val_loss,
+                        epoch_losses=epoch_losses,
+                        val_loss_history=val_loss_history,
                     )
                     print(f"[Checkpoint] Saved validation checkpoint: {ckpt_name}")
 
@@ -698,6 +721,8 @@ def main(fabric: Fabric, resume_ckpt_path=None):
                     f"best_overall_val_epoch{epoch+1}_end.pth",
                     end_of_epoch=True,
                     best_val_loss=best_val_loss,
+                    epoch_losses=epoch_losses,
+                    val_loss_history=val_loss_history,
                 )
                 print(f"[Checkpoint] New BEST validation loss at epoch end: {best_val_loss:.6f}")
             save_checkpoint(
@@ -710,6 +735,8 @@ def main(fabric: Fabric, resume_ckpt_path=None):
                 "latest.ckpt",
                 end_of_epoch=True,
                 best_val_loss=best_val_loss,
+                epoch_losses=epoch_losses,
+                val_loss_history=val_loss_history,
             )
             save_checkpoint(
                 model,
@@ -721,6 +748,8 @@ def main(fabric: Fabric, resume_ckpt_path=None):
                 "last_epoch.ckpt",
                 end_of_epoch=True,
                 best_val_loss=best_val_loss,
+                epoch_losses=epoch_losses,
+                val_loss_history=val_loss_history,
             )
             print(f"Validation Loss: {val_loss:.6f}")
             print("---- Validation Summary ----")
@@ -742,101 +771,41 @@ def main(fabric: Fabric, resume_ckpt_path=None):
     if fabric.is_global_zero:
         torch.save(model.state_dict(), "cophyloformer_custom_model.pth")
 
-        end_time = time.time()  # Record end time
-        elapsed_time = end_time - start_time  # Compute elapsed time
-
+        elapsed_time = time.time() - start_time
         print(f"Execution time: {elapsed_time:.4f} seconds")
-        # --- Combined Train + Val LOSS curve ---
+
+        # --- Loss curve (train + val over all epochs, including resumed history) ---
         plot_epoch_loss_curve(
             train_losses=epoch_losses,
             val_losses=val_loss_history,
             filename="combined_loss.png",
             use_log_scale=True
         )
+        wandb.log({"plots/loss_curve": wandb.Image("combined_loss.png")})
 
-        # --- Combined Train + Val METRIC curves (MAE, MSE, MRE, sMAPE) ---
-        plot_event_metric_over_epochs(
-            train_metrics=mae_history,
-            val_metrics=val_mae_history,
-            event_names=event_names,
-            metric_name="MAE"
-        )
-        plot_event_metric_over_epochs(
-            train_metrics=mse_history,
-            val_metrics=val_mse_history,
-            event_names=event_names,
-            metric_name="MSE"
-        )
-        plot_event_metric_over_epochs(
-            train_metrics=mre_history,
-            val_metrics=val_mre_history,
-            event_names=event_names,
-            metric_name="MRE"
-        )
-        plot_event_metric_over_epochs(
-            train_metrics=smape_history,
-            val_metrics=val_smape_history,
-            event_names=event_names,
-            metric_name="sMAPE"
-        )
-
-        # Save final epoch predictions to a CSV file
-        import csv
-
-        output_path = "final_predictions.csv"
-
-        # Compute full validation predictions properly
+        # --- Save train + val prediction CSVs for post_process.py ---
         val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
 
-        rows = []
-        for i in range(len(val_preds_tensor)):
-            row = {"Sample_Index": i}
-            for event_idx, event in enumerate(event_names):
-                row[f"{event}_Pred"] = float(val_preds_tensor[i, event_idx])
-                row[f"{event}_GT"] = float(val_labels_tensor[i, event_idx])
-            rows.append(row)
+        train_preds_tensor  = torch.tensor(
+            [[row[f"{e}_Pred"] for e in event_names] for row in all_train_prediction_data]
+        )
+        train_labels_tensor = torch.tensor(
+            [[row[f"{e}_GT"]   for e in event_names] for row in all_train_prediction_data]
+        )
+        train_csv = os.path.join(checkpoint_dir, "train_predictions.csv")
+        val_csv   = os.path.join(checkpoint_dir, "val_predictions.csv")
+        write_prediction_csv(train_preds_tensor, train_labels_tensor, train_csv)
+        write_prediction_csv(val_preds_tensor,   val_labels_tensor,   val_csv)
+        print(f"Predictions saved to {train_csv} / {val_csv}")
+        print(f"Run post_process.py --output-dir . --train-csv {train_csv} --val-csv {val_csv}")
 
-        with open(output_path, mode="w", newline="") as csv_file:
-            fieldnames = ["Sample_Index"]
-            for event in event_names:
-                fieldnames.extend([f"{event}_Pred", f"{event}_GT"])
-            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-
-        print(f"Final predictions saved to {output_path}")
-
-
-        # --- Combined Train + Val Scatter Plots (Pred vs GT) ---
-        val_preds_tensor, val_labels_tensor = compute_val_predictions(model, val_loader, device)
-
-
-        plot_logs = {"plots/loss_curve": wandb.Image("combined_loss.png")}
-        for event_idx, event in enumerate(event_names):
-            plot_filename = f"combined_label_vs_pred_{event.lower()}.png"
-            plot_labels_vs_predictions(
-                train_labels=[row[f"{event}_GT"] for row in all_train_prediction_data],
-                train_preds=[row[f"{event}_Pred"] for row in all_train_prediction_data],
-                val_labels=val_labels_tensor[:, event_idx].numpy(),
-                val_preds=val_preds_tensor[:, event_idx].numpy(),
-                event_name=event,
-                filename=plot_filename,
-            )
-            plot_logs[f"plots/labels_vs_preds_{event}"] = wandb.Image(plot_filename)
-
-        wandb.log(plot_logs)
-
-        # Save and log model as a W&B model artifact
+        # Save and log model artifact
         model_path = "cophyloformer_custom_model.pth"
         if os.path.exists(model_path):
             artifact = wandb.Artifact("cophyloformer", type="model")
             artifact.add_file(model_path)
-            # Also include final predictions CSV as an associated file
-            if os.path.exists("final_predictions.csv"):
-                artifact.add_file("final_predictions.csv")
             run.log_artifact(artifact, aliases=["latest", f"epoch-{epochs}"])
 
-        # Finish W&B run
         wandb.finish()
 
 if __name__ == "__main__":

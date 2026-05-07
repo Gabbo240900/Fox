@@ -15,8 +15,8 @@ def plot_event_metric_over_epochs(train_metrics, val_metrics, event_names, metri
         plt.grid(True, linestyle='--', linewidth=0.5)
         plt.xticks(range(0, len(train_np[i]) + 1, 10))
         plt.tight_layout()
-        plt.savefig(f"{metric_name.lower()}_{name.replace('/', '_')}_combined.png")
-        plt.show()
+        plt.savefig(f"{metric_name.lower()}_{name.replace('/', '_')}_combined.png", dpi=300)
+        plt.close()
 
 def plot_epoch_loss_curve(train_losses, val_losses, filename, use_log_scale=True):
     plt.figure(figsize=(12, 6))
@@ -38,8 +38,8 @@ def plot_epoch_loss_curve(train_losses, val_losses, filename, use_log_scale=True
     plt.legend()
     plt.grid(True, linestyle='--', linewidth=0.5)
     plt.tight_layout()
-    plt.savefig(filename)
-    plt.show()
+    plt.savefig(filename, dpi=300)
+    plt.close()
 
 def plot_labels_vs_predictions(train_labels, train_preds, val_labels, val_preds, event_name, filename):
     plt.figure(figsize=(8, 8))
@@ -62,9 +62,9 @@ def plot_labels_vs_predictions(train_labels, train_preds, val_labels, val_preds,
     plt.legend()
     plt.grid(True, linestyle='--', linewidth=0.5)
     plt.tight_layout()
-    plt.savefig(filename)
-    plt.show()
-    
+    plt.savefig(filename, dpi=300)
+    plt.close()
+
 def plot_interval_q50_q90(
     labels,
     q50,

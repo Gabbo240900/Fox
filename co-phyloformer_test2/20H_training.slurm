@@ -15,16 +15,13 @@
 
 
 # ENVIRONMENT SETUP
+module purge
 
-module purge 
+module load arch/h100
 
-module load arch/h100 
+module load pytorch-gpu/py3/2.6.0
 
-module load pytorch-gpu/py3/2.4.0 
-
-module load miniforge/24.9.0
-
-conda activate cophylo
+source $WORK/envs/cophylo_pt26/bin/activate
 
 
 # Use all the CPUs Slurm gave this task

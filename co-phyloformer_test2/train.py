@@ -247,7 +247,7 @@ def main(fabric: Fabric, resume_ckpt_path=None):
             "Check ASYMMETREE_VAL_PREENCODED_DIR and make sure it points to new_val."
         )
     device = fabric.device
-    epochs = 5
+    epochs = 20
 
     batch_size = 32
 

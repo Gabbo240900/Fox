@@ -70,10 +70,12 @@ export USE_COMPILE=0
 export FIND_UNUSED_PARAMETERS=0
 export USE_BUCKETED_BATCHES=1
 export BUCKET_SIZE=4
-export DROPOUT=0.05
+export DROPOUT=0.15
 
 # Training settings
 export EPOCHS=35
+export EARLY_STOP_PATIENCE=3
+export EARLY_STOP_MIN_DELTA=0.0
 export MID_EPOCH_VALS=1
 export NUM_WORKERS=16
 export CKPT_DIR=checkpoints_fast
@@ -81,10 +83,10 @@ export BATCH_SIZE=32
 export GRAD_ACCUM=4
 export VAL_BATCH_MULT=1
 export LR=1e-4
-export WEIGHT_DECAY=0.01
-export HGT_LOSS_WEIGHT=1.5
+export WEIGHT_DECAY=0.05
+export HGT_LOSS_WEIGHT=1.0
 export TAIL_WEIGHT=1.0
-export UNDER_PENALTY=1.5
+export UNDER_PENALTY=1.0
 export HOST_MAX_LEAVES=51
 export PARA_MAX_LEAVES=142
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True

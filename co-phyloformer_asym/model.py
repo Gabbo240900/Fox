@@ -288,10 +288,11 @@ class OuterProductMean(nn.Module):
 class PairAttnBlock(nn.Module):
 
 
-    def __init__(self, pair_dim: int, n_heads: int):
+    def __init__(self, pair_dim: int, n_heads: int, dropout: float = 0.0):
         super().__init__()
         self.norm     = nn.LayerNorm(pair_dim)
-        self.mha      = nn.MultiheadAttention(pair_dim, n_heads, batch_first=True, bias=False)
+        self.mha      = nn.MultiheadAttention(pair_dim, n_heads, batch_first=True,
+                                               dropout=dropout, bias=False)
         self.g_proj   = nn.Linear(pair_dim, pair_dim)
         self.out_proj = nn.Linear(pair_dim, pair_dim)
 
@@ -341,7 +342,9 @@ class EvoPFBlockLite(nn.Module):
             if use_opm else
             ConcatPairUpdate(seq_dim, pair_dim, inner_dim=32)
         )
-        self.pair_attn   = PairAttnBlock(pair_dim, n_heads)
+        self.pair_attn   = PairAttnBlock(pair_dim, n_heads, dropout=dropout)
+
+        self.resid_drop = nn.Dropout(dropout)
 
         self.pair_norm = nn.LayerNorm(pair_dim)
         self.pair_ff   = nn.Sequential(
@@ -365,15 +368,15 @@ class EvoPFBlockLite(nn.Module):
         leaf_pad  = ~(x_ids != 22).any(dim=2)  # [B, N]     True = fully-PAD leaf
 
         # ── MSA track ────────────────────────────────────────────────────────
-        x = x + self.col_attn(x, pairs, leaf_pad)      # 1. col attention w/ pair bias
-        x = x + self.row_attn(x, pad_mask)             # 2. row attention
-        x = x + self.msa_ff(self.msa_norm(x))          # 3. MSA FFN
+        x = x + self.resid_drop(self.col_attn(x, pairs, leaf_pad))      # 1. col attention w/ pair bias
+        x = x + self.resid_drop(self.row_attn(x, pad_mask))             # 2. row attention
+        x = x + self.resid_drop(self.msa_ff(self.msa_norm(x)))          # 3. MSA FFN
 
         if self.update_pair_track:
             # Pair updates are consumed by the next block's column attention.
-            pairs = pairs + self.pair_update(x)             # 4. update from MSA
-            pairs = pairs + self.pair_attn(pairs)           # 5. pair attention
-            pairs = pairs + self.pair_ff(self.pair_norm(pairs))  # 6. pair FFN
+            pairs = pairs + self.resid_drop(self.pair_update(x))                  # 4. update from MSA
+            pairs = pairs + self.resid_drop(self.pair_attn(pairs))                # 5. pair attention
+            pairs = pairs + self.resid_drop(self.pair_ff(self.pair_norm(pairs)))  # 6. pair FFN
 
         return x, pairs
 
@@ -426,9 +429,11 @@ class MSAEncoder(nn.Module):
         # Keeps the expensive MSA encoder at hidden_dim while the summary token
         # that feeds the cross-attention operates at the larger cls_dim.
         self.cls_query = nn.Parameter(torch.zeros(1, 1, hidden_dim))
-        self.cls_attn  = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True, bias=False)
+        self.cls_attn  = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True,
+                                                dropout=dropout, bias=False)
         self.cls_norm  = nn.LayerNorm(hidden_dim)
         self.cls_proj  = nn.Linear(hidden_dim, cls_dim)
+        self.embed_drop = nn.Dropout(dropout)
 
     def forward(self, x, dist_matrix: Optional[torch.Tensor] = None):
 
@@ -436,11 +441,13 @@ class MSAEncoder(nn.Module):
         B, N, S = x_ids.shape
 
         x = self.embedder(x_ids)  # (B, N, S, hidden_dim)
+        x = self.embed_drop(x)
 
         # Initialise pairs from MSA content; optionally add distance-matrix signal on top
         pairs = self.pair_embedder(x_ids)
         if self.use_dist_matrix and dist_matrix is not None:
             pairs = pairs + self.dist_proj(dist_matrix.unsqueeze(-1).to(x.dtype))
+        pairs = self.embed_drop(pairs)
 
         for blk in self.evopf_blocks:
             if self.gradient_checkpointing and self.training:
@@ -522,11 +529,11 @@ class Cophyloformer(nn.Module):
         self.cross_norms_h2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
         self.cross_norms_p2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
         self.cross_ffns_h = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Linear(cls_dim * 4, cls_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(dropout), nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
         self.cross_ffns_p = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(),  nn.Linear(cls_dim * 4, cls_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(dropout), nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
 
@@ -544,16 +551,18 @@ class Cophyloformer(nn.Module):
         self.self_norms_h2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
         self.self_norms_p2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
         self.self_ffns_h = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Linear(cls_dim * 4, cls_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(dropout), nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
         self.self_ffns_p = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(),  nn.Linear(cls_dim * 4, cls_dim))
+            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(dropout), nn.Linear(cls_dim * 4, cls_dim))
             for _ in range(self.num_cross_layers)
         ])
 
         self.pair_pool_score_h = nn.Linear(cls_dim, 1)
         self.pair_pool_score_p = nn.Linear(cls_dim, 1)
+
+        self.resid_drop = nn.Dropout(dropout)
 
         self.concat_dim = 4 * cls_dim
 
@@ -576,8 +585,10 @@ class Cophyloformer(nn.Module):
             nn.LayerNorm(self.concat_dim),
             nn.Linear(self.concat_dim, cls_dim * 2),
             nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(cls_dim * 2, cls_dim),
             nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(cls_dim, 4),
         )
 
@@ -648,10 +659,10 @@ class Cophyloformer(nn.Module):
                 key_padding_mask=kv_pad_mask,
                 need_weights=False,
             )
-            cross_host = cross_host + h_attn
-            cross_host = cross_host + self.cross_ffns_h[i](self.cross_norms_h2[i](cross_host))
-            cross_para = cross_para + p_attn
-            cross_para = cross_para + self.cross_ffns_p[i](self.cross_norms_p2[i](cross_para))
+            cross_host = cross_host + self.resid_drop(h_attn)
+            cross_host = cross_host + self.resid_drop(self.cross_ffns_h[i](self.cross_norms_h2[i](cross_host)))
+            cross_para = cross_para + self.resid_drop(p_attn)
+            cross_para = cross_para + self.resid_drop(self.cross_ffns_p[i](self.cross_norms_p2[i](cross_para)))
 
             # self-attention so each side consolidates what it learned from the other
             h_self, _ = self.self_attn_h[i](
@@ -668,10 +679,10 @@ class Cophyloformer(nn.Module):
                 key_padding_mask=kv_pad_mask,
                 need_weights=False,
             )
-            cross_host = cross_host + h_self
-            cross_host = cross_host + self.self_ffns_h[i](self.self_norms_h2[i](cross_host))
-            cross_para = cross_para + p_self
-            cross_para = cross_para + self.self_ffns_p[i](self.self_norms_p2[i](cross_para))
+            cross_host = cross_host + self.resid_drop(h_self)
+            cross_host = cross_host + self.resid_drop(self.self_ffns_h[i](self.self_norms_h2[i](cross_host)))
+            cross_para = cross_para + self.resid_drop(p_self)
+            cross_para = cross_para + self.resid_drop(self.self_ffns_p[i](self.self_norms_p2[i](cross_para)))
 
         def masked_softmax_pool(logits, seq, mask):
             logits = logits.masked_fill(~mask, -1e4)

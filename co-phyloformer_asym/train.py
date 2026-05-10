@@ -26,7 +26,6 @@ torch._dynamo.config.optimize_ddp = False  # flex_attention uses higher-order op
 seed_everything(42)
 
 EVENT_NAMES = ["Speciation", "HGT", "Loss", "Duplication"]
-TRAIN_PRED_MAX = 2000  # samples collected per epoch for CSV/plots
 
 
 def write_prediction_csv(preds, labels, path):
@@ -313,6 +312,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
     num_workers    = int(os.environ.get("NUM_WORKERS", "8"))
     val_batch_mult = int(os.environ.get("VAL_BATCH_MULT", "1"))
     ckpt_dir       = os.environ.get("CKPT_DIR", "checkpoints")
+    early_stop_patience = int(os.environ.get("EARLY_STOP_PATIENCE", "0"))  # 0 = disabled
+    early_stop_min_delta = float(os.environ.get("EARLY_STOP_MIN_DELTA", "0.0"))
     device         = fabric.device
 
     hparams = {
@@ -340,6 +341,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
         "mid_epoch_vals":  mid_epoch_vals,
         "val_batch_mult":  val_batch_mult,
         "ckpt_dir":        ckpt_dir,
+        "early_stop_patience":  early_stop_patience,
+        "early_stop_min_delta": early_stop_min_delta,
     }
 
     event_loss_weights = torch.tensor([1.0, hgt_loss_weight, 1.0, 1.0], device=device)
@@ -434,6 +437,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
     start_epoch = 0
     global_step = 0
     best_val    = float("inf")
+    patience_counter = 0
 
     if ckpt_to_load is not None:
         start_epoch, global_step, _, best_val = load_checkpoint(
@@ -512,7 +516,6 @@ def main(fabric: Fabric, ckpt_to_load=None):
 
         train_pred_list   = []
         train_label_list  = []
-        train_pred_count  = 0
 
         for batch_idx, batch in tqdm(enumerate(train_loader), total=len(train_loader),
                                      desc=f"Epoch {epoch+1}", leave=False):
@@ -573,11 +576,9 @@ def main(fabric: Fabric, ckpt_to_load=None):
                 sum_abs   += diff.sum(dim=0)
                 sum_rel   += (diff / batch["labels"].clamp(min=0.01)).sum(dim=0)
                 n_samples += outputs.shape[0]
-                if fabric.is_global_zero and train_pred_count < TRAIN_PRED_MAX:
-                    take = min(outputs.shape[0], TRAIN_PRED_MAX - train_pred_count)
-                    train_pred_list.append(outputs.detach()[:take].cpu())
-                    train_label_list.append(batch["labels"][:take].cpu())
-                    train_pred_count += take
+                if fabric.is_global_zero:
+                    train_pred_list.append(outputs.detach().cpu())
+                    train_label_list.append(batch["labels"].cpu())
 
         # --- End of epoch ---
         epoch_loss = fabric.all_reduce(torch.tensor(total_loss / max(1, num_batches), device=device),
@@ -632,11 +633,27 @@ def main(fabric: Fabric, ckpt_to_load=None):
                 **{f"val/MRE/{EVENT_NAMES[i]}": val_mre[i] for i in range(len(EVENT_NAMES))},
             }, step=ep_step + 1)
 
+        prev_best = best_val
         best_val = save_checkpoint(
             fabric, model, optimizer, scheduler,
             epoch, global_step, epoch_step, val_loss,
             hparams, ckpt_dir, best_val, end_of_epoch=True,
         )
+
+        if early_stop_patience > 0:
+            improved = (prev_best - best_val) > early_stop_min_delta
+            if improved:
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if fabric.is_global_zero:
+                    print(f"  [EarlyStop] no val improvement: {patience_counter}/{early_stop_patience}")
+            stop_flag = torch.tensor(int(patience_counter >= early_stop_patience), device=device)
+            stop_flag = fabric.all_reduce(stop_flag, reduce_op="max")
+            if int(stop_flag.item()) > 0:
+                if fabric.is_global_zero:
+                    print(f"[EarlyStop] stopping at epoch {epoch+1} (best_val={best_val:.6f})")
+                break
 
     # -------------------------------------------------------------------------
     # Final save

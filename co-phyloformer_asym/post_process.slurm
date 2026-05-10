@@ -30,7 +30,7 @@ mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR" error_files
 
 # Defaults can be overridden at submit time:
 # sbatch --export=ALL,CKPT_DIR=checkpoints,OUTPUT_DIR=plots post_process.slurm
-CKPT_DIR="${CKPT_DIR:-checkpoints}"
+CKPT_DIR="${CKPT_DIR:-checkpoints_fast}"
 OUTPUT_DIR="${OUTPUT_DIR:-post_process_outputs}"
 TRAIN_CSV="${TRAIN_CSV:-${CKPT_DIR}/train_predictions.csv}"
 VAL_CSV="${VAL_CSV:-${CKPT_DIR}/val_predictions.csv}"

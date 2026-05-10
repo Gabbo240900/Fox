@@ -11,9 +11,9 @@ conda activate cophylo
 
 # Sync while any training job (dev/20H/100H) is still running
 while squeue -u $USER | grep -qE "dev_trai|20H_trai|100H_tra"; do
-    wandb sync --sync-all wandb/offline-run-* >/dev/null 2>&1
+    wandb sync wandb/offline-run-* >/dev/null 2>&1
     sleep 60
 done
 
 # Final sync after job finishes
-wandb sync --sync-all wandb/offline-run-*
+wandb sync wandb/offline-run-*

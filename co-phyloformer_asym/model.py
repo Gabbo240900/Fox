@@ -368,9 +368,11 @@ class EvoPFBlockLite(nn.Module):
         leaf_pad  = ~(x_ids != 22).any(dim=2)  # [B, N]     True = fully-PAD leaf
 
         # ── MSA track ────────────────────────────────────────────────────────
-        x = x + self.resid_drop(self.col_attn(x, pairs, leaf_pad))      # 1. col attention w/ pair bias
-        x = x + self.resid_drop(self.row_attn(x, pad_mask))             # 2. row attention
-        x = x + self.resid_drop(self.msa_ff(self.msa_norm(x)))          # 3. MSA FFN
+        # Skip residual dropout on MSA track: tensors are [B,N,S,D] and dominate memory.
+        # Attention/MLP internal dropouts already cover this track.
+        x = x + self.col_attn(x, pairs, leaf_pad)      # 1. col attention w/ pair bias
+        x = x + self.row_attn(x, pad_mask)             # 2. row attention
+        x = x + self.msa_ff(self.msa_norm(x))          # 3. MSA FFN
 
         if self.update_pair_track:
             # Pair updates are consumed by the next block's column attention.
@@ -433,7 +435,6 @@ class MSAEncoder(nn.Module):
                                                 dropout=dropout, bias=False)
         self.cls_norm  = nn.LayerNorm(hidden_dim)
         self.cls_proj  = nn.Linear(hidden_dim, cls_dim)
-        self.embed_drop = nn.Dropout(dropout)
 
     def forward(self, x, dist_matrix: Optional[torch.Tensor] = None):
 
@@ -441,13 +442,11 @@ class MSAEncoder(nn.Module):
         B, N, S = x_ids.shape
 
         x = self.embedder(x_ids)  # (B, N, S, hidden_dim)
-        x = self.embed_drop(x)
 
         # Initialise pairs from MSA content; optionally add distance-matrix signal on top
         pairs = self.pair_embedder(x_ids)
         if self.use_dist_matrix and dist_matrix is not None:
             pairs = pairs + self.dist_proj(dist_matrix.unsqueeze(-1).to(x.dtype))
-        pairs = self.embed_drop(pairs)
 
         for blk in self.evopf_blocks:
             if self.gradient_checkpointing and self.training:

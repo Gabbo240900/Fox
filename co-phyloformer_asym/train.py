@@ -641,8 +641,11 @@ def main(fabric: Fabric, ckpt_to_load=None):
         )
 
         if early_stop_patience > 0:
+            in_warmup = global_step < warmup_steps
             improved = (prev_best - best_val) > early_stop_min_delta
-            if improved:
+            if improved or in_warmup:
+                if in_warmup and not improved and fabric.is_global_zero:
+                    print(f"  [EarlyStop] warmup — skipping patience count (step {global_step}/{warmup_steps})")
                 patience_counter = 0
             else:
                 patience_counter += 1

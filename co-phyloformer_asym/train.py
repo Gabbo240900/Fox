@@ -239,13 +239,12 @@ def save_checkpoint(fabric, model, optimizer, scheduler, epoch, global_step, epo
     When val_loss improves, always writes best_val_loss.ckpt.
     Returns the (possibly updated) best_val.
     """
-    new_best_val = best_val
+    new_best_val = min(best_val, val_loss)
     if fabric.is_global_zero:
         # Skip building state entirely if best_only and no improvement
         if best_only and val_loss >= best_val:
             pass
         else:
-            new_best_val = min(best_val, val_loss)
             state = {
                 "model":      unwrap_model(model).state_dict(),
                 "optimizer":  optimizer.state_dict(),
@@ -495,6 +494,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
 
     for epoch in range(start_epoch, epochs):
         train_sampler.set_epoch(epoch)
+        epoch_start_best = best_val
 
         # evenly-spaced mid-epoch validation trigger steps
         mid_val_steps = {
@@ -633,7 +633,6 @@ def main(fabric: Fabric, ckpt_to_load=None):
                 **{f"val/MRE/{EVENT_NAMES[i]}": val_mre[i] for i in range(len(EVENT_NAMES))},
             }, step=ep_step + 1)
 
-        prev_best = best_val
         best_val = save_checkpoint(
             fabric, model, optimizer, scheduler,
             epoch, global_step, epoch_step, val_loss,
@@ -642,7 +641,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
 
         if early_stop_patience > 0:
             in_warmup = global_step < warmup_steps
-            improved = (prev_best - best_val) > early_stop_min_delta
+            improved = (epoch_start_best - best_val) > early_stop_min_delta
             if improved or in_warmup:
                 if in_warmup and not improved and fabric.is_global_zero:
                     print(f"  [EarlyStop] warmup — skipping patience count (step {global_step}/{warmup_steps})")

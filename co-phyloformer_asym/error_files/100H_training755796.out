@@ -1,0 +1,18 @@
+Visible GPUs: 0,1,2,3
+[Resume] Resuming from last_epoch.ckpt
+NCCL version 2.21.5+cuda12.4
+[Resume] epoch=8  step=17289  lr=9.812e-05  best_val=0.004617
+
+Epoch 9/35
+  [Val  50%] loss=0.004542  MAE → Speciation: 0.0354 | HGT: 0.0366 | Loss: 0.0224 | Duplication: 0.0366  lr=9.74e-05
+  [Checkpoint] new best val=0.004542 → best_val_loss.ckpt
+  train loss=0.004739  lr=9.65e-05
+  MAE  Speciation: 0.0363  HGT: 0.0368  Loss: 0.0237  Duplication: 0.0367
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.004583
+  MAE  Speciation: 0.0354  HGT: 0.0372  Loss: 0.0233  Duplication: 0.0365
+  MRE  Speciation: 0.0599  HGT: 0.8179  Loss: 0.3987  Duplication: 0.2823
+
+Epoch 10/35
+  [Val  50%] loss=0.004349  MAE → Speciation: 0.0341 | HGT: 0.0360 | Loss: 0.0223 | Duplication: 0.0361  lr=9.55e-05
+  [Checkpoint] new best val=0.004349 → best_val_loss.ckpt

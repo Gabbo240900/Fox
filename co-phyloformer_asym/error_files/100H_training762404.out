@@ -1,0 +1,274 @@
+Visible GPUs: 0,1,2,3
+[Resume] Resuming from last_epoch.ckpt
+NCCL version 2.21.5+cuda12.4
+[Resume] epoch=9  step=19451  lr=9.652e-05  best_val=0.004542
+
+Epoch 10/35
+  [Val  50%] loss=0.004378  MAE → Speciation: 0.0345 | HGT: 0.0364 | Loss: 0.0219 | Duplication: 0.0362  lr=9.55e-05
+  [Checkpoint] new best val=0.004378 → best_val_loss.ckpt
+  train loss=0.004330  lr=9.45e-05
+  MAE  Speciation: 0.0342  HGT: 0.0361  Loss: 0.0221  Duplication: 0.0359
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.004406
+  MAE  Speciation: 0.0346  HGT: 0.0360  Loss: 0.0220  Duplication: 0.0358
+  MRE  Speciation: 0.0601  HGT: 0.7491  Loss: 0.3334  Duplication: 0.2846
+
+Epoch 11/35
+  [Val  50%] loss=0.004225  MAE → Speciation: 0.0336 | HGT: 0.0355 | Loss: 0.0226 | Duplication: 0.0353  lr=9.33e-05
+  [Checkpoint] new best val=0.004225 → best_val_loss.ckpt
+  train loss=0.004179  lr=9.20e-05
+  MAE  Speciation: 0.0335  HGT: 0.0355  Loss: 0.0218  Duplication: 0.0353
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.004089
+  MAE  Speciation: 0.0326  HGT: 0.0354  Loss: 0.0218  Duplication: 0.0353
+  MRE  Speciation: 0.0555  HGT: 0.7500  Loss: 0.3765  Duplication: 0.2726
+  [Checkpoint] new best val=0.004089 → best_val_loss.ckpt
+
+Epoch 12/35
+  [Val  50%] loss=0.003955  MAE → Speciation: 0.0319 | HGT: 0.0346 | Loss: 0.0212 | Duplication: 0.0345  lr=9.05e-05
+  [Checkpoint] new best val=0.003955 → best_val_loss.ckpt
+  train loss=0.004017  lr=8.90e-05
+  MAE  Speciation: 0.0327  HGT: 0.0348  Loss: 0.0216  Duplication: 0.0346
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.003872
+  MAE  Speciation: 0.0318  HGT: 0.0341  Loss: 0.0207  Duplication: 0.0340
+  MRE  Speciation: 0.0553  HGT: 0.6311  Loss: 0.3137  Duplication: 0.2594
+  [Checkpoint] new best val=0.003872 → best_val_loss.ckpt
+
+Epoch 13/35
+  [Val  50%] loss=0.003856  MAE → Speciation: 0.0319 | HGT: 0.0338 | Loss: 0.0220 | Duplication: 0.0339  lr=8.74e-05
+  [Checkpoint] new best val=0.003856 → best_val_loss.ckpt
+  train loss=0.003849  lr=8.57e-05
+  MAE  Speciation: 0.0318  HGT: 0.0341  Loss: 0.0213  Duplication: 0.0339
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.003787
+  MAE  Speciation: 0.0314  HGT: 0.0336  Loss: 0.0215  Duplication: 0.0336
+  MRE  Speciation: 0.0538  HGT: 0.6491  Loss: 0.3780  Duplication: 0.2663
+  [Checkpoint] new best val=0.003787 → best_val_loss.ckpt
+
+Epoch 14/35
+  [Val  50%] loss=0.003572  MAE → Speciation: 0.0297 | HGT: 0.0329 | Loss: 0.0210 | Duplication: 0.0331  lr=8.40e-05
+  [Checkpoint] new best val=0.003572 → best_val_loss.ckpt
+  train loss=0.003693  lr=8.21e-05
+  MAE  Speciation: 0.0311  HGT: 0.0334  Loss: 0.0211  Duplication: 0.0332
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.003597
+  MAE  Speciation: 0.0301  HGT: 0.0328  Loss: 0.0218  Duplication: 0.0328
+  MRE  Speciation: 0.0517  HGT: 0.6293  Loss: 0.3697  Duplication: 0.2496
+
+Epoch 15/35
+  [Val  50%] loss=0.003595  MAE → Speciation: 0.0301 | HGT: 0.0326 | Loss: 0.0209 | Duplication: 0.0328  lr=8.02e-05
+  train loss=0.003563  lr=7.82e-05
+  MAE  Speciation: 0.0305  HGT: 0.0326  Loss: 0.0209  Duplication: 0.0325
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.003486
+  MAE  Speciation: 0.0294  HGT: 0.0322  Loss: 0.0224  Duplication: 0.0320
+  MRE  Speciation: 0.0505  HGT: 0.5795  Loss: 0.3923  Duplication: 0.2504
+  [Checkpoint] new best val=0.003486 → best_val_loss.ckpt
+
+Epoch 16/35
+  [Val  50%] loss=0.003429  MAE → Speciation: 0.0293 | HGT: 0.0320 | Loss: 0.0206 | Duplication: 0.0321  lr=7.61e-05
+  [Checkpoint] new best val=0.003429 → best_val_loss.ckpt
+  train loss=0.003439  lr=7.40e-05
+  MAE  Speciation: 0.0299  HGT: 0.0321  Loss: 0.0207  Duplication: 0.0319
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.003415
+  MAE  Speciation: 0.0291  HGT: 0.0320  Loss: 0.0203  Duplication: 0.0318
+  MRE  Speciation: 0.0505  HGT: 0.5406  Loss: 0.3205  Duplication: 0.2491
+  [Checkpoint] new best val=0.003415 → best_val_loss.ckpt
+
+Epoch 17/35
+  [Val  50%] loss=0.003437  MAE → Speciation: 0.0298 | HGT: 0.0319 | Loss: 0.0200 | Duplication: 0.0314  lr=7.18e-05
+  train loss=0.003332  lr=6.96e-05
+  MAE  Speciation: 0.0294  HGT: 0.0314  Loss: 0.0206  Duplication: 0.0314
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.003313
+  MAE  Speciation: 0.0291  HGT: 0.0310  Loss: 0.0205  Duplication: 0.0311
+  MRE  Speciation: 0.0500  HGT: 0.5502  Loss: 0.3214  Duplication: 0.2398
+  [Checkpoint] new best val=0.003313 → best_val_loss.ckpt
+
+Epoch 18/35
+  [Val  50%] loss=0.003236  MAE → Speciation: 0.0283 | HGT: 0.0309 | Loss: 0.0205 | Duplication: 0.0311  lr=6.73e-05
+  [Checkpoint] new best val=0.003236 → best_val_loss.ckpt
+  train loss=0.003225  lr=6.50e-05
+  MAE  Speciation: 0.0289  HGT: 0.0309  Loss: 0.0204  Duplication: 0.0308
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.003191
+  MAE  Speciation: 0.0280  HGT: 0.0306  Loss: 0.0200  Duplication: 0.0306
+  MRE  Speciation: 0.0486  HGT: 0.5049  Loss: 0.3173  Duplication: 0.2358
+  [Checkpoint] new best val=0.003191 → best_val_loss.ckpt
+
+Epoch 19/35
+  [Val  50%] loss=0.003242  MAE → Speciation: 0.0290 | HGT: 0.0306 | Loss: 0.0198 | Duplication: 0.0306  lr=6.27e-05
+  train loss=0.003134  lr=6.03e-05
+  MAE  Speciation: 0.0285  HGT: 0.0303  Loss: 0.0203  Duplication: 0.0303
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.003108
+  MAE  Speciation: 0.0277  HGT: 0.0302  Loss: 0.0200  Duplication: 0.0303
+  MRE  Speciation: 0.0481  HGT: 0.5319  Loss: 0.3250  Duplication: 0.2241
+  [Checkpoint] new best val=0.003108 → best_val_loss.ckpt
+
+Epoch 20/35
+  [Val  50%] loss=0.003431  MAE → Speciation: 0.0307 | HGT: 0.0302 | Loss: 0.0199 | Duplication: 0.0315  lr=5.80e-05
+  train loss=0.003048  lr=5.56e-05
+  MAE  Speciation: 0.0280  HGT: 0.0299  Loss: 0.0201  Duplication: 0.0299
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.003116
+  MAE  Speciation: 0.0281  HGT: 0.0299  Loss: 0.0203  Duplication: 0.0302
+  MRE  Speciation: 0.0484  HGT: 0.5239  Loss: 0.3250  Duplication: 0.2222
+  [EarlyStop] no val improvement: 1/3
+
+Epoch 21/35
+  [Val  50%] loss=0.003072  MAE → Speciation: 0.0277 | HGT: 0.0296 | Loss: 0.0203 | Duplication: 0.0299  lr=5.32e-05
+  [Checkpoint] new best val=0.003072 → best_val_loss.ckpt
+  train loss=0.002969  lr=5.08e-05
+  MAE  Speciation: 0.0276  HGT: 0.0294  Loss: 0.0200  Duplication: 0.0294
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.003043
+  MAE  Speciation: 0.0271  HGT: 0.0297  Loss: 0.0207  Duplication: 0.0297
+  MRE  Speciation: 0.0473  HGT: 0.4742  Loss: 0.3384  Duplication: 0.2203
+  [Checkpoint] new best val=0.003043 → best_val_loss.ckpt
+
+Epoch 22/35
+  [Val  50%] loss=0.003000  MAE → Speciation: 0.0275 | HGT: 0.0295 | Loss: 0.0202 | Duplication: 0.0295  lr=4.85e-05
+  [Checkpoint] new best val=0.003000 → best_val_loss.ckpt
+  train loss=0.002885  lr=4.61e-05
+  MAE  Speciation: 0.0272  HGT: 0.0289  Loss: 0.0199  Duplication: 0.0290
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.003004
+  MAE  Speciation: 0.0273  HGT: 0.0292  Loss: 0.0200  Duplication: 0.0295
+  MRE  Speciation: 0.0474  HGT: 0.4917  Loss: 0.3129  Duplication: 0.2146
+
+Epoch 23/35
+  [Val  50%] loss=0.003136  MAE → Speciation: 0.0281 | HGT: 0.0292 | Loss: 0.0204 | Duplication: 0.0307  lr=4.38e-05
+  train loss=0.002815  lr=4.15e-05
+  MAE  Speciation: 0.0269  HGT: 0.0285  Loss: 0.0198  Duplication: 0.0285
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.002955
+  MAE  Speciation: 0.0271  HGT: 0.0289  Loss: 0.0207  Duplication: 0.0290
+  MRE  Speciation: 0.0469  HGT: 0.4850  Loss: 0.3406  Duplication: 0.2142
+  [Checkpoint] new best val=0.002955 → best_val_loss.ckpt
+
+Epoch 24/35
+  [Val  50%] loss=0.002991  MAE → Speciation: 0.0276 | HGT: 0.0290 | Loss: 0.0193 | Duplication: 0.0291  lr=3.93e-05
+  train loss=0.002747  lr=3.71e-05
+  MAE  Speciation: 0.0265  HGT: 0.0281  Loss: 0.0197  Duplication: 0.0282
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.003000
+  MAE  Speciation: 0.0282  HGT: 0.0288  Loss: 0.0191  Duplication: 0.0290
+  MRE  Speciation: 0.0493  HGT: 0.4526  Loss: 0.2817  Duplication: 0.2083
+  [EarlyStop] no val improvement: 1/3
+
+Epoch 25/35
+  [Val  50%] loss=0.002940  MAE → Speciation: 0.0267 | HGT: 0.0291 | Loss: 0.0204 | Duplication: 0.0288  lr=3.49e-05
+  [Checkpoint] new best val=0.002940 → best_val_loss.ckpt
+  train loss=0.002682  lr=3.28e-05
+  MAE  Speciation: 0.0262  HGT: 0.0277  Loss: 0.0195  Duplication: 0.0278
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.002971
+  MAE  Speciation: 0.0272  HGT: 0.0292  Loss: 0.0197  Duplication: 0.0289
+  MRE  Speciation: 0.0470  HGT: 0.4319  Loss: 0.3014  Duplication: 0.2164
+
+Epoch 26/35
+  [Val  50%] loss=0.002953  MAE → Speciation: 0.0270 | HGT: 0.0291 | Loss: 0.0198 | Duplication: 0.0287  lr=3.08e-05
+  train loss=0.002623  lr=2.88e-05
+  MAE  Speciation: 0.0260  HGT: 0.0274  Loss: 0.0194  Duplication: 0.0275
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.002848
+  MAE  Speciation: 0.0263  HGT: 0.0285  Loss: 0.0199  Duplication: 0.0286
+  MRE  Speciation: 0.0458  HGT: 0.4434  Loss: 0.3250  Duplication: 0.2107
+  [Checkpoint] new best val=0.002848 → best_val_loss.ckpt
+
+Epoch 27/35
+  [Val  50%] loss=0.002824  MAE → Speciation: 0.0263 | HGT: 0.0283 | Loss: 0.0199 | Duplication: 0.0284  lr=2.69e-05
+  [Checkpoint] new best val=0.002824 → best_val_loss.ckpt
+  train loss=0.002566  lr=2.51e-05
+  MAE  Speciation: 0.0257  HGT: 0.0270  Loss: 0.0194  Duplication: 0.0271
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.002899
+  MAE  Speciation: 0.0268  HGT: 0.0287  Loss: 0.0200  Duplication: 0.0284
+  MRE  Speciation: 0.0467  HGT: 0.4284  Loss: 0.3164  Duplication: 0.2079
+
+Epoch 28/35
+  [Val  50%] loss=0.002923  MAE → Speciation: 0.0267 | HGT: 0.0293 | Loss: 0.0195 | Duplication: 0.0284  lr=2.34e-05
+  train loss=0.002515  lr=2.17e-05
+  MAE  Speciation: 0.0254  HGT: 0.0267  Loss: 0.0193  Duplication: 0.0268
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.002871
+  MAE  Speciation: 0.0266  HGT: 0.0286  Loss: 0.0195  Duplication: 0.0283
+  MRE  Speciation: 0.0462  HGT: 0.4237  Loss: 0.3007  Duplication: 0.2111
+  [EarlyStop] no val improvement: 1/3
+
+Epoch 29/35
+  [Val  50%] loss=0.002869  MAE → Speciation: 0.0265 | HGT: 0.0282 | Loss: 0.0203 | Duplication: 0.0285  lr=2.02e-05
+  train loss=0.002470  lr=1.87e-05
+  MAE  Speciation: 0.0252  HGT: 0.0264  Loss: 0.0192  Duplication: 0.0266
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.002820
+  MAE  Speciation: 0.0262  HGT: 0.0282  Loss: 0.0201  Duplication: 0.0282
+  MRE  Speciation: 0.0455  HGT: 0.4295  Loss: 0.3338  Duplication: 0.2105
+  [Checkpoint] new best val=0.002820 → best_val_loss.ckpt
+
+Epoch 30/35
+  [Val  50%] loss=0.002836  MAE → Speciation: 0.0262 | HGT: 0.0283 | Loss: 0.0200 | Duplication: 0.0283  lr=1.74e-05
+  train loss=0.002429  lr=1.61e-05
+  MAE  Speciation: 0.0250  HGT: 0.0262  Loss: 0.0191  Duplication: 0.0263
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.002834
+  MAE  Speciation: 0.0261  HGT: 0.0284  Loss: 0.0205  Duplication: 0.0281
+  MRE  Speciation: 0.0454  HGT: 0.4183  Loss: 0.3282  Duplication: 0.2062
+  [EarlyStop] no val improvement: 1/3
+
+Epoch 31/35
+  [Val  50%] loss=0.002828  MAE → Speciation: 0.0261 | HGT: 0.0284 | Loss: 0.0197 | Duplication: 0.0281  lr=1.50e-05
+  train loss=0.002392  lr=1.40e-05
+  MAE  Speciation: 0.0248  HGT: 0.0260  Loss: 0.0190  Duplication: 0.0261
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.002839
+  MAE  Speciation: 0.0262  HGT: 0.0283  Loss: 0.0202  Duplication: 0.0281
+  MRE  Speciation: 0.0454  HGT: 0.4184  Loss: 0.3208  Duplication: 0.2067
+  [EarlyStop] no val improvement: 2/3
+
+Epoch 32/35
+  [Val  50%] loss=0.002813  MAE → Speciation: 0.0262 | HGT: 0.0282 | Loss: 0.0196 | Duplication: 0.0281  lr=1.30e-05
+  [Checkpoint] new best val=0.002813 → best_val_loss.ckpt
+  train loss=0.002360  lr=1.22e-05
+  MAE  Speciation: 0.0247  HGT: 0.0258  Loss: 0.0190  Duplication: 0.0259
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.002806
+  MAE  Speciation: 0.0262  HGT: 0.0281  Loss: 0.0193  Duplication: 0.0281
+  MRE  Speciation: 0.0457  HGT: 0.4222  Loss: 0.2983  Duplication: 0.2057
+  [Checkpoint] new best val=0.002806 → best_val_loss.ckpt
+
+Epoch 33/35
+  [Val  50%] loss=0.002835  MAE → Speciation: 0.0262 | HGT: 0.0283 | Loss: 0.0199 | Duplication: 0.0282  lr=1.16e-05
+  train loss=0.002334  lr=1.10e-05
+  MAE  Speciation: 0.0246  HGT: 0.0256  Loss: 0.0189  Duplication: 0.0257
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.002830
+  MAE  Speciation: 0.0260  HGT: 0.0281  Loss: 0.0205  Duplication: 0.0281
+  MRE  Speciation: 0.0452  HGT: 0.4193  Loss: 0.3288  Duplication: 0.2073
+  [EarlyStop] no val improvement: 1/3
+
+Epoch 34/35
+  [Val  50%] loss=0.002847  MAE → Speciation: 0.0262 | HGT: 0.0282 | Loss: 0.0207 | Duplication: 0.0282  lr=1.06e-05
+  train loss=0.002307  lr=1.03e-05
+  MAE  Speciation: 0.0244  HGT: 0.0254  Loss: 0.0189  Duplication: 0.0256
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.002855
+  MAE  Speciation: 0.0260  HGT: 0.0284  Loss: 0.0211  Duplication: 0.0281
+  MRE  Speciation: 0.0452  HGT: 0.4104  Loss: 0.3474  Duplication: 0.2051
+  [EarlyStop] no val improvement: 2/3
+
+Epoch 35/35
+  [Val  50%] loss=0.002861  MAE → Speciation: 0.0262 | HGT: 0.0284 | Loss: 0.0202 | Duplication: 0.0283  lr=1.01e-05
+  train loss=0.002291  lr=1.00e-05
+  MAE  Speciation: 0.0243  HGT: 0.0253  Loss: 0.0189  Duplication: 0.0255
+  [CSV] predictions written to checkpoints_fast/
+  val  loss=0.002830
+  MAE  Speciation: 0.0261  HGT: 0.0285  Loss: 0.0196  Duplication: 0.0282
+  MRE  Speciation: 0.0454  HGT: 0.4137  Loss: 0.3118  Duplication: 0.2079
+  [EarlyStop] no val improvement: 3/3
+[EarlyStop] stopping at epoch 35 (best_val=0.002806)
+Training complete.
+Run post_process.py on CPU to generate scatter plots and prediction CSV files.

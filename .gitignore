@@ -36,6 +36,7 @@ co-phyloformer/checkpoints
 co-phyloformer_asym/cophyloformer_custom_model.pth
 co-phyloformer_asym/checkpoints
 
+co-phyloformer_analysis
 # Byte-compiled / optimized / DLL files
 __pycache__/
 */__pycache__/

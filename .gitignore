@@ -16,6 +16,8 @@ generate_host_freq/generated_trees/branches_lengths/
 generate_host_freq/generated_trees/output_parasite_with_lengths/
 
 co-phyloformer/*.out
+test_model.ipynb
+fasta_to_data.py 
 
 example_data/
 # Avoid sharing Datasets and other data

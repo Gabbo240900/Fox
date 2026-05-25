@@ -17,6 +17,7 @@ generate_host_freq/generated_trees/output_parasite_with_lengths/
 
 co-phyloformer/*.out
 
+example_data/
 # Avoid sharing Datasets and other data
 generate_treeducken/generated_trees/Datasets
 generate_treeducken/generated_trees/Dataset_final
@@ -35,6 +36,7 @@ co-phyloformer/checkpoints
 
 co-phyloformer_asym/cophyloformer_custom_model.pth
 co-phyloformer_asym/checkpoints
+co-phyloformer_asym/checkpoints_fast
 
 co-phyloformer_analysis
 # Byte-compiled / optimized / DLL files

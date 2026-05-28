@@ -18,7 +18,7 @@ generate_host_freq/generated_trees/output_parasite_with_lengths/
 co-phyloformer/*.out
 test_model.ipynb
 fasta_to_data.py 
-
+real_data/*
 example_data/
 # Avoid sharing Datasets and other data
 generate_treeducken/generated_trees/Datasets
@@ -30,6 +30,8 @@ generate_treeducken/generated_trees/symb_tree
 generate_treeducken/generated_trees/test
 generate_treeducken/generated_trees/*.zip
 generate_treeducken/taxa_summary.csv
+
+generate_asymmetree/generated_trees/test_data
 
 co-phyloformer_asym/error_files
 # do not share the model 

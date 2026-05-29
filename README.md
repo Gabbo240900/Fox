@@ -1,71 +1,60 @@
-### Generate TREES and SEQUENCIES (Traing 100 trees - need around 5x to get to target)
+# Co-phyloformer
 
-python simulate_input_trees.py --num_trees 500 \
---min_leaves 15 --max_leaves 50 \
---output_dir ./generated_trees/ \
---output_dir_tgl ./generated_trees/Datasets/ \
---jar_path ./cophylogeny-ML/code/coala/TGLGenerator.jar \
---num_threads 8
+Transformer-based model for inferring host–symbiont co-phylogenetic event frequencies (Speciation, Host-switch / HGT, Loss, Duplication) directly from paired multiple sequence alignments (MSAs).
 
-python alisim.py generated_trees/Datasets \
---substitution LG \
---gamma GC \
---iqtree ../bin/bin_macos/iqtree_2.2.0 \
---length 500 \
---max-attempts 1 \
---allow-duplicate-sequences 
+Co-phyloformer takes two MSAs — one for host taxa, one for symbiont taxa — and predicts the relative frequencies of the four cophylogenetic events that shaped the joint evolutionary history of the two clades. The model learns end-to-end from simulated host/symbiont trees and sequences, with no need for explicit tree inference at inference time.
 
-### Generate TREES and SEQUENCIES (Test)
+---
 
-python simulate_input_trees.py --num_trees 10
---min_leaves 15 --max_leaves 50
---output_dir /Users/gabriele/Co-phyloformer/generate_host_freq/test_data/
---output_dir_tgl /Users/gabriele/Co-phyloformer/generate_host_freq/test_data/Datasets/
---jar_path /Users/gabriele/Co-phyloformer/generate_host_freq/cophylogeny-ML/code/coala/TGLGenerator.jar
+## Repository layout
 
-python alisim.py test_data/Datasets
---substitution LG
---gamma GC
---iqtree /Users/gabriele/Co-phyloformer/bin/bin_macos/iqtree_2.2.0
---length 250
---max-attempts 1
---allow-duplicate-sequences
+```
+Co-phyloformer/
+├── co-phyloformer_asym/        # Main model + training/validation/inference pipeline (asymmetric pair track)
+├── co-phyloformer_analysis/    # Post-hoc analysis scripts, plots, summary tables
+├── generate_asymmetree/        # Simulation pipeline based on AsymmeTree (trees + MSAs)
+├── example_data/               # Small example datasets for smoke tests
+├── bin/                        # Bundled external binaries (iqtree, coevolution simulators)
+├── test_model.ipynb            # Notebook demo for loading a checkpoint and running predictions
+└── README.md
+```
 
+The `co-phyloformer_asym/` folder is the active codebase. Older experimental folders (`co-phyloformer/`, `co_phyloformer_test/`, `co-phyloformer_test2/`) are kept locally but ignored by git.
 
+---
 
+## Installation
 
+Requirements: Python ≥ 3.10, CUDA-capable GPU recommended for training (CPU works for inference on small inputs).
 
-python generate_trees.py 
-python /Users/gabriele/Co-phyloformer/generate_asymmetree/alisim.py /Users/gabriele/Co-phyloformer/generate_asymmetree/generated_trees/Datasets \
-  --substitution LG \
-  --gamma GC \
-  --iqtree /Users/gabriele/Co-phyloformer/bin/bin_macos/iqtree_2.2.0 \
-  --length 500 \
-  --max-attempts 1 \
-  --allow-duplicate-sequences \
-  --temp-dir /Users/gabriele/Co-phyloformer/alisim_tmp
+```bash
+git clone https://github.com/<user>/Co-phyloformer.git
+cd Co-phyloformer
+conda create -n cophylo python=3.10
+conda activate cophylo
+pip install -r requirements.txt
+```
 
+Core dependencies: `torch`, `lightning`, `numpy`, `pandas`, `biopython`, `ete3`, `tqdm`, `wandb`, `matplotlib`.
 
-### Train model
+External tools (already in `bin/`):
+- `iqtree` (v2.2.0) — sequence simulation via AliSim
+- `TGLGenerator.jar` (CoALA) — alternative host/symbiont tree simulator
+- `simulateWithCoevolution` — site-level coevolution simulator
 
-python train.py
+---
 
-No need to create our own self attention network sinc MSAencoder (TransformerEconder and TransformerEncoderLayer work exactly as we need)
-Cross attention is built upon results from TrasnformerEconder and VirtualNode as Parameters
+## Data generation
 
+### Option A — AsymmeTree pipeline (recommended)
 
+```bash
+cd generate_asymmetree
 
-### Simulate with tree ducken
+# 1. Simulate paired host/symbiont trees
+python generate_trees.py
 
-python simulate_input_files.py \
-  --h_lambda 0.5 1.2 \
-  --c_lambda 0.2 1.6 \
-  --s_lambda 0.5 1.2 \
-  --s_her 0.05 0.3 \
-  --num_trees 20 \
-  --n_cores 8
-
-
+# 2. Simulate MSAs along each tree with AliSim
 python alisim.py generated_trees/Datasets \
   --substitution LG \
   --gamma GC \
@@ -73,14 +62,108 @@ python alisim.py generated_trees/Datasets \
   --length 500 \
   --max-attempts 1 \
   --allow-duplicate-sequences \
-  --n_cores 8 \
   --temp-dir ../alisim_tmp
 
+# 3. (Optional) Filter / analyse the simulated dataset
+python filter_data.py
+python analyze_data.py
+```
 
-python train.py --dataset_dir ../generate_treeducken/generated_trees/Datasets 
+Outputs land in `generate_asymmetree/generated_trees/Datasets/` as `.pt` tensors paired with target event-frequency vectors.
 
-time_to_sim -> Do different times for same parameters; set up a grid of time for which to un all different set of parameters [0.5 ; 4.5] # Not possible 
+### Option B — CoALA / TGLGenerator pipeline (legacy)
 
+```bash
+python simulate_input_trees.py \
+  --num_trees 500 \
+  --min_leaves 15 --max_leaves 50 \
+  --output_dir ./generated_trees/ \
+  --output_dir_tgl ./generated_trees/Datasets/ \
+  --jar_path ./cophylogeny-ML/code/coala/TGLGenerator.jar \
+  --num_threads 8
 
-RESUME_CKPT=/Users/gabriele/Co-phyloformer/co-phyloformer/checkpoints/epoch2_batch4.pth python train.py
-RESUME_CKPT=/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/co-phyloformer/checkpoints/epoch9_batch9885.pth
+python alisim.py generated_trees/Datasets \
+  --substitution LG --gamma GC \
+  --iqtree ../bin/bin_macos/iqtree_2.2.0 \
+  --length 500 --max-attempts 1 --allow-duplicate-sequences
+```
+
+---
+
+## Training
+
+```bash
+cd co-phyloformer_asym
+python train.py
+```
+
+Key training entry points:
+- `train.py` — main training loop (Lightning Fabric, DDP-ready, mixed precision).
+- `model.py` — `Cophyloformer` architecture: MSA embedder + pair embedder + asymmetric axial attention blocks.
+- `data.py` — dataset loaders and bucket sampling for variable-size pairs.
+- `validation.py` — periodic validation pass + metric logging to W&B.
+- `prepare_buckets.py` — pre-computes bucketed dataset indices for efficient batching.
+- `pre_encoder.py` — optional pre-encoding of MSAs to speed up training.
+
+Resume from a checkpoint:
+
+```bash
+RESUME_CKPT=co-phyloformer_asym/checkpoints/epoch2_batch4.pth python train.py
+```
+
+SLURM job scripts (`*.slurm`) are provided for cluster training: `100H_training.slurm`, `20H_training.slurm`, `dev_training.slurm`.
+
+---
+
+## Inference / testing
+
+```bash
+cd co-phyloformer_asym
+python test.py --ckpt checkpoints/<your_ckpt>.pth --data <path/to/test_set>
+```
+
+For an interactive demo see [`test_model.ipynb`](test_model.ipynb).
+
+---
+
+## Analysis & plots
+
+```bash
+cd co-phyloformer_analysis
+# scripts/ : per-run analysis scripts
+# plots/   : generated figures
+# tables/  : summary CSVs
+```
+
+See [`co-phyloformer_analysis/SUMMARY.md`](co-phyloformer_analysis/SUMMARY.md) for a rundown of available analyses.
+
+---
+
+## Model architecture
+
+- **MSAEmbedder** — one-hot AA encoding → linear projection → ReLU.
+- **PairEmbedder** — PAD-aware mean pooling over sequence positions, then pairwise outer sum to initialise the pair track.
+- **Axial attention blocks** — alternating row/column attention over the MSA, with an asymmetric pair-bias track linking host and symbiont representations.
+- **Prediction head** — outputs a 4-dim softmax over event frequencies (Speciation, HGT, Loss, Duplication).
+
+Vocabulary: 23 tokens (20 amino acids + gap + UNK + PAD).
+
+---
+
+## Citation
+
+If you use Co-phyloformer in published work, please cite:
+
+```
+@unpublished{cophyloformer2026,
+  title  = {Co-phyloformer: Transformer-based inference of cophylogenetic event frequencies},
+  author = {<authors>},
+  year   = {2026}
+}
+```
+
+---
+
+## License
+
+See [`LICENSE`](LICENSE).

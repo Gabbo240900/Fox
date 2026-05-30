@@ -1,0 +1,10 @@
+BEGIN HOST;
+	TREE HOST = ((Citricoccus_zhacaiensis,Corynebacterium_felinum)Actinomycetes,(Sutcliffiella_horikoshii,Bacillus_thuringiensis)Bacillaceae)Terrabacteria_group;
+ENDBLOCK;
+BEGIN PARASITE;
+	TREE PARASITE = (WP_000105021.1,(WP_188806246.1,WP_277105037.1),WP_088017000.1);
+ENDBLOCK;
+BEGIN DISTRIBUTION;
+	RANGE
+		WP_000105021.1 : Bacillus_thuringiensis, WP_188806246.1 : Citricoccus_zhacaiensis, WP_277105037.1 : Corynebacterium_felinum, WP_088017000.1 : Sutcliffiella_horikoshii;
+ENDBLOCK;

@@ -3,7 +3,7 @@
 
 co-phyloformer/
 co_phyloformer_test/
-co_phyloformer_test2/
+co-phyloformer_test2/
 *.swp
 *.swo
 *.pth

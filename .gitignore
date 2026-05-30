@@ -13,6 +13,7 @@ training/post_process_outputs
 training/full_prophet.ckpt
 test_data/amocoala_pipeline
 test_data/pt_samples
+generate_data/generated_trees/test_data
 
 *.slurm
 # Byte-compiled / optimized / DLL files

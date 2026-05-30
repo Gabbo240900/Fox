@@ -296,8 +296,10 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     # Config
     # -------------------------------------------------------------------------
-    train_preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Prophet/generate_data/generated_trees/new_train"
-    val_preencoded_dir   = "/lustre/fsn1/projects/rech/vcu/commun/Prophet/generate_data/generated_trees/new_val"
+    train_preencoded_dir = os.environ.get("TRAIN_DIR")
+    val_preencoded_dir   = os.environ.get("VAL_DIR")
+    if not train_preencoded_dir or not val_preencoded_dir:
+        raise SystemExit("Set TRAIN_DIR and VAL_DIR env vars to the preencoded train/val directories.")
     epochs         = int(os.environ.get("EPOCHS", "50"))
     batch_size     = int(os.environ.get("BATCH_SIZE", "64"))  # per GPU
     grad_accum     = int(os.environ.get("GRAD_ACCUM", "4"))

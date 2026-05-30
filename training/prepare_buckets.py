@@ -39,10 +39,7 @@ def main():
     parser.add_argument(
         "--dirs",
         nargs="+",
-        default=[
-            "/lustre/fsn1/projects/rech/vcu/commun/Prophet/generate_data/generated_trees/new_train",
-            "/lustre/fsn1/projects/rech/vcu/commun/Prophet/generate_data/generated_trees/new_val",
-        ],
+        required=True,
         help="One or more preencoded directories containing .pt samples",
     )
     args = parser.parse_args()

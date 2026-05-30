@@ -14,7 +14,6 @@ from multiprocessing import Pool
 ALPHAS_PATH = os.path.join(os.path.dirname(__file__), "generated_trees", "hogenom_alphas.txt")
 MAX_ATTEMPTS_DEFAULT = 20
 
-print('Starting alignment simulation...')
 
 def load_list(listpath):
     with open(listpath, "rb") as file:
@@ -209,6 +208,7 @@ def process_single_tgl(args_tuple):
 
 
 if __name__ == "__main__":
+    print('Starting alignment simulation...')
     parser = argparse.ArgumentParser("Alignment simulator for TGL files")
     parser.add_argument("input_dir", type=str, help="Path to the directory containing TGL files")
     parser.add_argument("--length", "-l", default=500, type=int, help="Length of the alignment")

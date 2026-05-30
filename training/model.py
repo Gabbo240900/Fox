@@ -387,12 +387,12 @@ class EvoPFBlockLite(nn.Module):
 class MSAEncoder(nn.Module):
     def __init__(
         self,
-        hidden_dim=512,
-        pair_dim=32,
+        hidden_dim=256,
+        pair_dim=64,
         num_heads=8,
-        axial_layers=4,
+        axial_layers=2,
         use_opm: bool = False,
-        use_dist_matrix: bool = False,
+        use_dist_matrix: bool = True,
         gradient_checkpointing: bool = False,
         cls_dim: int = 512,
         use_flexattention: bool = False,
@@ -474,12 +474,12 @@ class MSAEncoder(nn.Module):
 class Prophet(nn.Module):
     def __init__(
         self,
-        hidden_dim=512,
-        pair_dim=32,
+        hidden_dim=256,
+        pair_dim=64,
         num_heads=8,
-        axial_layers=4,
+        axial_layers=2,
         use_opm: bool = False,
-        use_dist_matrix: bool = False,
+        use_dist_matrix: bool = True,
         gradient_checkpointing: bool = False,
         num_cross_layers: int = 2,
         cls_dim: int = 512,

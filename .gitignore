@@ -11,6 +11,8 @@ example_data/pt_samples
 training/checkpoints_fast
 training/post_process_outputs
 training/full_prophet.ckpt
+test_data/amocoala_pipeline
+test_data/pt_samples
 
 *.slurm
 # Byte-compiled / optimized / DLL files

@@ -7,7 +7,7 @@ import os
 import csv 
 import random
 
-base_path = "/Users/gabriele/Co-phyloformer/generate_asymmetree/generated_trees/test_data"
+base_path = "/Users/gabriele/Prophet/generate_data/generated_trees/test_data"
 num_trees = 20
 time_grid = [1.5, 2, 2.5, 3, 3.5]
 species_pattern = re.compile(r'(?<=\(|,)(\d+):')

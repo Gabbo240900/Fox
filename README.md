@@ -1,25 +1,25 @@
-# Co-phyloformer
+# Prophet
 
 Transformer-based model for inferring host–symbiont co-phylogenetic event frequencies (Speciation, Host-switch / HGT, Loss, Duplication) directly from paired multiple sequence alignments (MSAs).
 
-Co-phyloformer takes two MSAs — one for host taxa, one for symbiont taxa — and predicts the relative frequencies of the four cophylogenetic events that shaped the joint evolutionary history of the two clades. The model learns end-to-end from simulated host/symbiont trees and sequences, with no need for explicit tree inference at inference time.
+Prophet takes two MSAs — one for host taxa, one for symbiont taxa — and predicts the relative frequencies of the four cophylogenetic events that shaped the joint evolutionary history of the two clades. The model learns end-to-end from simulated host/symbiont trees and sequences, with no need for explicit tree inference at inference time.
 
 ---
 
 ## Repository layout
 
 ```
-Co-phyloformer/
-├── co-phyloformer_asym/        # Main model + training/validation/inference pipeline (asymmetric pair track)
-├── co-phyloformer_analysis/    # Post-hoc analysis scripts, plots, summary tables
-├── generate_asymmetree/        # Simulation pipeline based on AsymmeTree (trees + MSAs)
+Prophet/
+├── training/        # Main model + training/validation/inference pipeline (asymmetric pair track)
+├── Prophet_analysis/    # Post-hoc analysis scripts, plots, summary tables
+├── generate_data/        # Simulation pipeline based on AsymmeTree (trees + MSAs)
 ├── example_data/               # Small example datasets for smoke tests
 ├── bin/                        # Bundled external binaries (iqtree, coevolution simulators)
 ├── test_model.ipynb            # Notebook demo for loading a checkpoint and running predictions
 └── README.md
 ```
 
-The `co-phyloformer_asym/` folder is the active codebase. Older experimental folders (`co-phyloformer/`, `co_phyloformer_test/`, `co-phyloformer_test2/`) are kept locally but ignored by git.
+The `training/` folder is the active codebase. Older experimental folders (`Prophet/`, `co_phyloformer_test/`, `Prophet_test2/`) are kept locally but ignored by git.
 
 ---
 
@@ -28,8 +28,8 @@ The `co-phyloformer_asym/` folder is the active codebase. Older experimental fol
 Requirements: Python ≥ 3.10, CUDA-capable GPU recommended for training (CPU works for inference on small inputs).
 
 ```bash
-git clone https://github.com/<user>/Co-phyloformer.git
-cd Co-phyloformer
+git clone https://github.com/<user>/Prophet.git
+cd Prophet
 conda create -n cophylo python=3.10
 conda activate cophylo
 pip install -r requirements.txt
@@ -49,7 +49,7 @@ External tools (already in `bin/`):
 ### Option A — AsymmeTree pipeline (recommended)
 
 ```bash
-cd generate_asymmetree
+cd generate_data
 
 # 1. Simulate paired host/symbiont trees
 python generate_trees.py
@@ -69,7 +69,7 @@ python filter_data.py
 python analyze_data.py
 ```
 
-Outputs land in `generate_asymmetree/generated_trees/Datasets/` as `.pt` tensors paired with target event-frequency vectors.
+Outputs land in `generate_data/generated_trees/Datasets/` as `.pt` tensors paired with target event-frequency vectors.
 
 ### Option B — CoALA / TGLGenerator pipeline (legacy)
 
@@ -93,13 +93,13 @@ python alisim.py generated_trees/Datasets \
 ## Training
 
 ```bash
-cd co-phyloformer_asym
+cd training
 python train.py
 ```
 
 Key training entry points:
 - `train.py` — main training loop (Lightning Fabric, DDP-ready, mixed precision).
-- `model.py` — `Cophyloformer` architecture: MSA embedder + pair embedder + asymmetric axial attention blocks.
+- `model.py` — `Prophet` architecture: MSA embedder + pair embedder + asymmetric axial attention blocks.
 - `data.py` — dataset loaders and bucket sampling for variable-size pairs.
 - `validation.py` — periodic validation pass + metric logging to W&B.
 - `prepare_buckets.py` — pre-computes bucketed dataset indices for efficient batching.
@@ -108,7 +108,7 @@ Key training entry points:
 Resume from a checkpoint:
 
 ```bash
-RESUME_CKPT=co-phyloformer_asym/checkpoints/epoch2_batch4.pth python train.py
+RESUME_CKPT=training/checkpoints/epoch2_batch4.pth python train.py
 ```
 
 SLURM job scripts (`*.slurm`) are provided for cluster training: `100H_training.slurm`, `20H_training.slurm`, `dev_training.slurm`.
@@ -118,7 +118,7 @@ SLURM job scripts (`*.slurm`) are provided for cluster training: `100H_training.
 ## Inference / testing
 
 ```bash
-cd co-phyloformer_asym
+cd training
 python test.py --ckpt checkpoints/<your_ckpt>.pth --data <path/to/test_set>
 ```
 
@@ -129,13 +129,13 @@ For an interactive demo see [`test_model.ipynb`](test_model.ipynb).
 ## Analysis & plots
 
 ```bash
-cd co-phyloformer_analysis
+cd Prophet_analysis
 # scripts/ : per-run analysis scripts
 # plots/   : generated figures
 # tables/  : summary CSVs
 ```
 
-See [`co-phyloformer_analysis/SUMMARY.md`](co-phyloformer_analysis/SUMMARY.md) for a rundown of available analyses.
+See [`Prophet_analysis/SUMMARY.md`](Prophet_analysis/SUMMARY.md) for a rundown of available analyses.
 
 ---
 
@@ -152,11 +152,11 @@ Vocabulary: 23 tokens (20 amino acids + gap + UNK + PAD).
 
 ## Citation
 
-If you use Co-phyloformer in published work, please cite:
+If you use Prophet in published work, please cite:
 
 ```
-@unpublished{cophyloformer2026,
-  title  = {Co-phyloformer: Transformer-based inference of cophylogenetic event frequencies},
+@unpublished{Prophet2026,
+  title  = {Prophet: Transformer-based inference of cophylogenetic event frequencies},
   author = {<authors>},
   year   = {2026}
 }

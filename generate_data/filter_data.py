@@ -157,7 +157,7 @@ def _delete(src: str) -> bool:
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Filter pre-encoded .pt Co-Phyloformer dataset files by size / label quality.",
+        description="Filter pre-encoded .pt Prophet dataset files by size / label quality.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )

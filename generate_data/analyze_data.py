@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-analyze_data.py — unified dataset analysis tool for Co-Phyloformer datasets.
+analyze_data.py — unified dataset analysis tool for Prophet datasets.
 
 Outputs:
   • Tree structure: host / parasite leaf counts and alignment lengths
@@ -333,7 +333,7 @@ def _save_combined_tree_hist(
 def main():
     ap = argparse.ArgumentParser(
         description=(
-            "Analyze Co-Phyloformer datasets: tree sizes and event-frequency "
+            "Analyze Prophet datasets: tree sizes and event-frequency "
             "distributions (Speciation, HGT, Loss, Duplication)."
         )
     )

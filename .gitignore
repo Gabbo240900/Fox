@@ -8,7 +8,7 @@
 # Avoid sharing datasets and other data
 example_data/amocoala_pipeline
 example_data/pt_samples
-training/checkpoints_fast
+
 training/post_process_outputs
 training/full_prophet.ckpt
 test_data/amocoala_pipeline

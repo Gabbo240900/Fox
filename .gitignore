@@ -10,6 +10,7 @@ example_data/amocoala_pipeline
 example_data/pt_samples
 co-phyloformer_asym/checkpoints_fast
 co-phyloformer_asym/post_process_outputs
+co-phyloformer_asym/full_prophet.ckpt
 
 *.slurm
 # Byte-compiled / optimized / DLL files

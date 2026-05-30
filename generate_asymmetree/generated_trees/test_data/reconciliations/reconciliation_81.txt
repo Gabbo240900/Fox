@@ -1,9 +1,0 @@
-Speciation: 18
-Total Events: 18
-Speciation_freq: 1.0000
-Loss_freq: 0.0000
-HGT_freq: 0.0000
-Duplication_freq: 0.0000
-Host_num_leaves: 19
-Symbiont_num_leaves: 19
-Sim_time: 1.5

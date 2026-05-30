@@ -14,7 +14,7 @@ generate_host_freq/generated_trees/frequencies/
 generate_host_freq/generated_trees/host_trees/
 generate_host_freq/generated_trees/branches_lengths/
 generate_host_freq/generated_trees/output_parasite_with_lengths/
-
+co-phyloformer_asym/full_prophet.ckpt
 co-phyloformer/*.out
 test_model.ipynb
 fasta_to_data.py 

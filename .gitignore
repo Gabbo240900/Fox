@@ -6,7 +6,6 @@
 *.pth
 
 # Avoid sharing datasets and other data
-generate_asymmetree/generated_trees/test_data
 example_data/amocoala_pipeline
 example_data/pt_samples
 co-phyloformer_asym/checkpoints_fast

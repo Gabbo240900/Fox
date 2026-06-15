@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-analyze_data.py — unified dataset analysis tool for Prophet datasets.
+analyze_data.py — unified dataset analysis tool for Fox datasets.
 
 Outputs:
   • Tree structure: host / parasite leaf counts and alignment lengths
@@ -333,7 +333,7 @@ def _save_combined_tree_hist(
 def main():
     ap = argparse.ArgumentParser(
         description=(
-            "Analyze Prophet datasets: tree sizes and event-frequency "
+            "Analyze Fox datasets: tree sizes and event-frequency "
             "distributions (Speciation, HGT, Loss, Duplication)."
         )
     )

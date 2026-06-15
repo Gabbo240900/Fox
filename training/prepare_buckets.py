@@ -35,7 +35,7 @@ def write_bucket_metadata(preencoded_dir: str) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build bucket metadata for preencoded Prophet samples")
+    parser = argparse.ArgumentParser(description="Build bucket metadata for preencoded Fox samples")
     parser.add_argument(
         "--dirs",
         nargs="+",

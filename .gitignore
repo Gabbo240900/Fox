@@ -10,7 +10,7 @@ example_data/amocoala_pipeline
 example_data/pt_samples
 
 training/post_process_outputs
-training/full_prophet.ckpt
+training/full_fox.ckpt
 test_data/amocoala_pipeline
 test_data/pt_samples
 generate_data/generated_trees/test_data

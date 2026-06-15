@@ -334,9 +334,6 @@ class EvoPFBlockLite(nn.Module):
             nn.Linear(seq_dim * ff_mult, seq_dim),
         )
 
-        # ── Pair track ───────────────────────────────────────────────────────
-        # use_opm=True  → OuterProductMean (more expressive, higher memory)
-        # use_opm=False → ConcatPairUpdate (memory-efficient default)
         self.pair_update = (
             OuterProductMean(seq_dim, pair_dim, inner_dim=32)
             if use_opm else
@@ -367,9 +364,6 @@ class EvoPFBlockLite(nn.Module):
         pad_mask  = (x_ids == 22)               # [B, N, S]  True = PAD residue
         leaf_pad  = ~(x_ids != 22).any(dim=2)  # [B, N]     True = fully-PAD leaf
 
-        # ── MSA track ────────────────────────────────────────────────────────
-        # Skip residual dropout on MSA track: tensors are [B,N,S,D] and dominate memory.
-        # Attention/MLP internal dropouts already cover this track.
         x = x + self.col_attn(x, pairs, leaf_pad)      # 1. col attention w/ pair bias
         x = x + self.row_attn(x, pad_mask)             # 2. row attention
         x = x + self.msa_ff(self.msa_norm(x))          # 3. MSA FFN
@@ -471,7 +465,7 @@ class MSAEncoder(nn.Module):
         return x, global_repr  # per-leaf embeddings (hidden_dim) + CLS (cls_dim)
 
 
-class Prophet(nn.Module):
+class Fox(nn.Module):
     def __init__(
         self,
         hidden_dim=256,
@@ -510,7 +504,7 @@ class Prophet(nn.Module):
         self.pair_proj_h = nn.Linear(hidden_dim, cls_dim)
         self.pair_proj_p = nn.Linear(hidden_dim, cls_dim)
 
-        # ── Cross-attention (Prophet specific, no equivalent in Phyloformer-2) ──
+        # ── Cross-attention (Fox specific, no equivalent in Phyloformer-2) ──
         # Operates at cls_dim: the CLS token and projected pairs are all cls_dim.
         self.num_cross_layers = num_cross_layers
 

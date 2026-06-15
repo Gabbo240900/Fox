@@ -1,8 +1,8 @@
-# Prophet
+# Fox
 
 Transformer-based model for inferring host–symbiont cophylogenetic event frequencies — **Speciation**, **Host-switch / HGT**, **Loss**, **Duplication** — directly from a pair of multiple sequence alignments (MSAs).
 
-Prophet takes two MSAs (one for host taxa, one for symbiont taxa) plus a host/symbiont leaf-to-leaf mapping, and predicts the relative frequencies of the four cophylogenetic events that shaped their joint evolutionary history. The model is trained end-to-end on simulated host/symbiont trees and sequences; **no tree inference is required at prediction time**.
+Fox takes two MSAs (one for host taxa, one for symbiont taxa) plus a host/symbiont leaf-to-leaf mapping, and predicts the relative frequencies of the four cophylogenetic events that shaped their joint evolutionary history. The model is trained end-to-end on simulated host/symbiont trees and sequences; **no tree inference is required at prediction time**.
 
 ---
 
@@ -11,7 +11,7 @@ Prophet takes two MSAs (one for host taxa, one for symbiont taxa) plus a host/sy
 1. [What the model does](#what-the-model-does)
 2. [Repository layout](#repository-layout)
 3. [Installation](#installation)
-4. [Using the pretrained model (`prophet.ckpt`)](#using-the-pretrained-model-prophetckpt)
+4. [Using the pretrained model (`fox.ckpt`)](#using-the-pretrained-model-foxckpt)
 5. [Generating new training data with AsymmeTree](#generating-new-training-data-with-asymmetree)
 6. [Training a new model — local](#training-a-new-model--local)
 7. [Training a new model — external GPU / cluster](#training-a-new-model--external-gpu--cluster)
@@ -22,7 +22,7 @@ Prophet takes two MSAs (one for host taxa, one for symbiont taxa) plus a host/sy
 
 ## What the model does
 
-Given a host MSA `H ∈ {AA}^{N_h × L}`, a symbiont MSA `P ∈ {AA}^{N_p × L}`, a list of host↔symbiont leaf mappings, and a simulation/age scalar, Prophet returns a length-4 simplex vector:
+Given a host MSA `H ∈ {AA}^{N_h × L}`, a symbiont MSA `P ∈ {AA}^{N_p × L}`, a list of host↔symbiont leaf mappings, and a simulation/age scalar, Fox returns a length-4 simplex vector:
 
 ```
 [ p(Speciation), p(HGT), p(Loss), p(Duplication) ]
@@ -45,7 +45,7 @@ Distance matrices (Jukes–Cantor over the MSA) are used as pair-track input whe
 ```
 Prophet/
 ├── training/                  # Model + training pipeline
-│   ├── model.py               # Prophet architecture
+│   ├── model.py               # Fox architecture
 │   ├── train.py               # Main training loop (Lightning Fabric)
 │   ├── data.py                # Dataset loaders + bucket sampling
 │   ├── validation.py          # Validation loop + W&B logging
@@ -62,7 +62,7 @@ Prophet/
 │   └── generated_trees/       # Default output root + alpha/diameter priors
 ├── test_data/                 # Held-out evaluation data
 │   ├── Datasets/              # Ground-truth .tgl files (40 datasets)
-│   ├── prophet_data/          # Pre-encoded .pt samples for Prophet
+│   ├── fox_data/          # Pre-encoded .pt samples for Fox
 │   ├── amocoala_data/         # Per-dataset AmoCoala outputs
 │   ├── amocoala_pipeline/     # Inputs/intermediate files for AmoCoala
 │   └── pt_samples/            # Extra .pt samples
@@ -71,7 +71,7 @@ Prophet/
 ├── bin/                       # Bundled binaries
 │   ├── bin_linux/             # iqtree_2.2.0, FastTree, fastme, …
 │   └── bin_macos/             # same on macOS
-├── prophet.ckpt               # Released pretrained checkpoint
+├── fox.ckpt               # Released pretrained checkpoint
 ├── test_model.ipynb           # Notebook: load ckpt + run predictions + AmoCoala comparison
 ├── install.sh                 # Conda env bootstrap
 ├── requirements.txt
@@ -84,20 +84,20 @@ Prophet/
 
 **Requirements:** Python ≥ 3.11. CUDA GPU recommended for training; CPU works for inference on small inputs.
 
-One-shot install (creates a conda env named `prophet`):
+One-shot install (creates a conda env named `fox`):
 
 ```bash
 git clone https://github.com/Gabbo240900/Prophet.git
 cd Prophet
 ./install.sh                # or: ./install.sh my_env_name
-conda activate prophet
+conda activate fox
 ```
 
 Manual install:
 
 ```bash
-conda create -n prophet python=3.11
-conda activate prophet
+conda create -n fox python=3.11
+conda activate fox
 pip install -r requirements.txt
 ```
 
@@ -110,27 +110,27 @@ For AmoCoala comparison (optional): `AmoCoala.jar` from https://github.com/sinai
 
 ---
 
-## Using the pretrained model (`prophet.ckpt`)
+## Using the pretrained model (`fox.ckpt`)
 
-The released checkpoint at the repo root (`prophet.ckpt`, ~92 MB) is ready to use.
+The released checkpoint at the repo root (`fox.ckpt`, ~92 MB) is ready to use.
 
 ### Fastest path: the notebook
 
 Open [`test_model.ipynb`](test_model.ipynb). It walks through:
 
-1. Loading `prophet.ckpt`.
+1. Loading `fox.ckpt`.
 2. Single-file prediction from a `.pt` or `.tgl` input.
-3. Batch evaluation across `test_data/prophet_data/` with metrics (MAE, RMSE, R², Pearson r).
-4. Three-way comparison Prophet vs. AmoCoala vs. ground truth on simulated test data.
+3. Batch evaluation across `test_data/fox_data/` with metrics (MAE, RMSE, R², Pearson r).
+4. Three-way comparison Fox vs. AmoCoala vs. ground truth on simulated test data.
 
 ### Minimal API
 
 ```python
 import torch
-from training.model import Prophet
+from training.model import Fox
 
-ckpt = torch.load("prophet.ckpt", map_location="cpu", weights_only=False)
-model = Prophet(...).eval()           # constructor args match the checkpoint config
+ckpt = torch.load("fox.ckpt", map_location="cpu", weights_only=False)
+model = Fox(...).eval()           # constructor args match the checkpoint config
 model.load_state_dict(ckpt["model"])
 
 # host_msa, para_msa : [N, L] long tensors of AA indices (see training/pre_encoder.py)
@@ -341,7 +341,7 @@ Same script, same env vars. Two recipes.
 ```bash
 # on the remote machine
 git clone https://github.com/Gabbo240900/Prophet.git
-cd Prophet && ./install.sh && conda activate prophet
+cd Prophet && ./install.sh && conda activate fox
 
 # copy pre-encoded data over (rsync from your laptop)
 rsync -avz data/pt/ user@gpu-host:~/Prophet/data/pt/
@@ -351,7 +351,7 @@ cd training
 TRAIN_DIR=$HOME/Prophet/data/pt/my_run \
 VAL_DIR=$HOME/Prophet/data/pt/my_val \
 EPOCHS=80 BATCH_SIZE=128 \
-WANDB_MODE=online WANDB_PROJECT=Prophet WANDB_NAME=remote_run \
+WANDB_MODE=online WANDB_PROJECT=Fox WANDB_NAME=remote_run \
 python train.py train
 ```
 
@@ -363,7 +363,7 @@ For long runs, wrap in `tmux` / `screen` / `nohup` so an SSH drop doesn't kill t
 
 ```bash
 #!/usr/bin/env bash
-#SBATCH --job-name=prophet
+#SBATCH --job-name=fox
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
@@ -371,16 +371,16 @@ For long runs, wrap in `tmux` / `screen` / `nohup` so an SSH drop doesn't kill t
 #SBATCH --output=logs/%x-%j.out
 
 source ~/miniconda3/etc/profile.d/conda.sh
-conda activate prophet
+conda activate fox
 cd $SLURM_SUBMIT_DIR/training
 
-export TRAIN_DIR=/scratch/$USER/prophet/pt/my_run
-export VAL_DIR=/scratch/$USER/prophet/pt/my_val
+export TRAIN_DIR=/scratch/$USER/fox/pt/my_run
+export VAL_DIR=/scratch/$USER/fox/pt/my_val
 export EPOCHS=100
 export BATCH_SIZE=64
 export NUM_WORKERS=8
 export WANDB_MODE=online
-export WANDB_PROJECT=Prophet
+export WANDB_PROJECT=Fox
 export WANDB_NAME=slurm_${SLURM_JOB_ID}
 
 srun python train.py train
@@ -427,22 +427,22 @@ ckpt["config"]     # env-var snapshot used for the run
 ## Other folders explained
 
 - **`test_data/Datasets/`** — 40 held-out `.tgl` files used for benchmarking.
-- **`test_data/prophet_data/`** — those datasets pre-encoded as `.pt` for direct Prophet inference.
+- **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for direct Fox inference.
 - **`test_data/amocoala_data/<DatasetXX>/`** — AmoCoala's reconstructions for each test dataset (used by the 3-way comparison in [`test_model.ipynb`](test_model.ipynb)).
 - **`test_data/amocoala_pipeline/`** — intermediate files (`alignments/`, `nexus/`, `sequences/`, `trees/`, `amocoala/`) for re-running AmoCoala from scratch.
 - **`test_data/pt_samples/`** — extra example `.pt` inputs for quick sanity checks.
 - **`train_data_distributions/`** — reference plots of the training-set distributions (event frequencies, tree structure).
 - **`bin/`** — bundled binaries used by the simulation pipeline; pick the subfolder matching your OS.
 - **`results/`** — train/val prediction CSVs plus plots; safe to delete and regenerate.
-- **`prophet.ckpt`** — released checkpoint loaded by the notebook.
+- **`fox.ckpt`** — released checkpoint loaded by the notebook.
 
 ---
 
 ## Citation
 
 ```
-@unpublished{Prophet2026,
-  title  = {Prophet: Transformer-based inference of cophylogenetic event frequencies},
+@unpublished{Fox2026,
+  title  = {Fox: Transformer-based inference of cophylogenetic event frequencies},
   author = {<authors>},
   year   = {2026}
 }

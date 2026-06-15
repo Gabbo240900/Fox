@@ -9,7 +9,7 @@ import wandb
 import glob
 import math
 import os
-from model import Prophet
+from model import Fox
 from validation import run_full_validation
 from lightning.fabric import Fabric
 from lightning.fabric.utilities.seed import seed_everything
@@ -60,7 +60,7 @@ def unwrap_model(model):
         m = m.module
     return m
 
-class LazyProphetDataset(Dataset):
+class LazyFoxDataset(Dataset):
     def __init__(self, preencoded_dir, pt_files=None):
         if pt_files is None:
             self.pt_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
@@ -360,8 +360,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     # Data
     # -------------------------------------------------------------------------
-    train_dataset = LazyProphetDataset(train_preencoded_dir)
-    val_dataset   = LazyProphetDataset(val_preencoded_dir)
+    train_dataset = LazyFoxDataset(train_preencoded_dir)
+    val_dataset   = LazyFoxDataset(val_preencoded_dir)
 
     if use_bucketed_batches:
         if fabric.is_global_zero:
@@ -414,7 +414,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     # Model + optimizer + scheduler
     # -------------------------------------------------------------------------
-    model = Prophet(
+    model = Fox(
         hidden_dim=hidden_dim, pair_dim=64, cls_dim=512, axial_layers=axial_layers,
         use_opm=use_opm, use_dist_matrix=True,
         gradient_checkpointing=grad_ckpt,
@@ -454,7 +454,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
             run_name = f"{run_name}_resume_ep{start_epoch}"
         wandb.init(
             entity=os.environ.get("WANDB_ENTITY", "cophylo_team"),
-            project=os.environ.get("WANDB_PROJECT", "Prophet"),
+            project=os.environ.get("WANDB_PROJECT", "Fox"),
             name=run_name,
             group=os.environ.get("WANDB_NAME", "run"),
             id=wandb.util.generate_id(),
@@ -663,7 +663,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # Final save
     # -------------------------------------------------------------------------
     if fabric.is_global_zero:
-        torch.save(unwrap_model(model).state_dict(), "Prophet_final.pth")
+        torch.save(unwrap_model(model).state_dict(), "Fox_final.pth")
         wandb.finish()
         print("Training complete.")
         print("Run post_process.py on CPU to generate scatter plots and prediction CSV files.")
@@ -672,7 +672,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser("Train Prophet")
+    parser = argparse.ArgumentParser("Train Fox")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("train", description="Train from scratch")
     resumer = subparsers.add_parser("resume", description="Resume from a checkpoint")

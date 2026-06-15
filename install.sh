@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# One-shot install: creates conda env "prophet" with Python 3.10, installs all deps.
+# One-shot install: creates conda env "fox" with Python 3.10, installs all deps.
 # Usage: ./install.sh [env_name]
 set -euo pipefail
 
-ENV_NAME="${1:-prophet}"
+ENV_NAME="${1:-fox}"
 PYTHON_VERSION="3.11"
 
 if ! command -v conda >/dev/null 2>&1; then

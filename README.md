@@ -43,7 +43,7 @@ Distance matrices (Jukes–Cantor over the MSA) are used as pair-track input whe
 ## Repository layout
 
 ```
-Prophet/
+Fox/
 ├── training/                  # Model + training pipeline
 │   ├── model.py               # Fox architecture
 │   ├── train.py               # Main training loop (Lightning Fabric)
@@ -87,8 +87,8 @@ Prophet/
 One-shot install (creates a conda env named `fox`):
 
 ```bash
-git clone https://github.com/Gabbo240900/Prophet.git
-cd Prophet
+git clone https://github.com/Gabbo240900/Fox.git
+cd Fox
 ./install.sh                # or: ./install.sh my_env_name
 conda activate fox
 ```
@@ -340,16 +340,16 @@ Same script, same env vars. Two recipes.
 
 ```bash
 # on the remote machine
-git clone https://github.com/Gabbo240900/Prophet.git
-cd Prophet && ./install.sh && conda activate fox
+git clone https://github.com/Gabbo240900/Fox.git
+cd Fox && ./install.sh && conda activate fox
 
 # copy pre-encoded data over (rsync from your laptop)
-rsync -avz data/pt/ user@gpu-host:~/Prophet/data/pt/
+rsync -avz data/pt/ user@gpu-host:~/Fox/data/pt/
 
 # run
 cd training
-TRAIN_DIR=$HOME/Prophet/data/pt/my_run \
-VAL_DIR=$HOME/Prophet/data/pt/my_val \
+TRAIN_DIR=$HOME/Fox/data/pt/my_run \
+VAL_DIR=$HOME/Fox/data/pt/my_val \
 EPOCHS=80 BATCH_SIZE=128 \
 WANDB_MODE=online WANDB_PROJECT=Fox WANDB_NAME=remote_run \
 python train.py train

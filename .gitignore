@@ -7,7 +7,8 @@
 *.pth
 #Everything in folder cophylogeny-ML
 generate_host_freq/cophylogeny-ML/code/coala/TGLGenerator.jar
-
+test_data/
+full_fox.ckpt
 # Avoid sharing Datasets and other data
 generate_host_freq/generated_trees/Datasets/
 generate_host_freq/generated_trees/frequencies/
@@ -18,6 +19,7 @@ co-phyloformer_asym/full_prophet.ckpt
 co-phyloformer/*.out
 test_model.ipynb
 fasta_to_data.py 
+RETRAIN_NOTES.md
 real_data/*
 example_data/
 # Avoid sharing Datasets and other data

@@ -44,6 +44,13 @@ Distance matrices (Jukes–Cantor over the MSA) are used as pair-track input whe
 
 ```
 Fox/
+├── fox/                       # Inference package + `fox` CLI
+│   ├── __init__.py            # exports: predict_tgl, load_model, EVENT_NAMES
+│   ├── cli.py                 # `fox predict --tgl …` command
+│   ├── core.py                # predict_tgl() — .tgl → 4 event frequencies
+│   ├── io.py                  # read_tgl() — parse a .tgl bundle
+│   ├── encoding.py            # AA tokenisation + Jukes–Cantor distances
+│   └── model_loader.py        # load_model() — build Fox from fox.ckpt (cached)
 ├── training/                  # Model + training pipeline
 │   ├── model.py               # Fox architecture
 │   ├── train.py               # Main training loop (Lightning Fabric)
@@ -74,6 +81,7 @@ Fox/
 ├── fox.ckpt               # Released pretrained checkpoint
 ├── test_model.ipynb           # Notebook: load ckpt + run predictions + AmoCoala comparison
 ├── install.sh                 # Conda env bootstrap
+├── pyproject.toml             # Packaging + `fox` console script (inference deps)
 ├── requirements.txt
 └── README.md
 ```
@@ -84,13 +92,24 @@ Fox/
 
 **Requirements:** Python ≥ 3.11. CUDA GPU recommended for training; CPU works for inference on small inputs.
 
-One-shot install (creates a conda env named `fox`):
+**Inference only** — just want to run predictions with the `fox` command? PyTorch
+is the sole runtime dependency:
+
+```bash
+git clone https://github.com/Gabbo240900/Fox.git
+cd Fox
+pip install -e .            # installs torch + the `fox` CLI
+fox predict --tgl test_data/Datasets/Dataset11.tgl
+```
+
+**Full install** (training + simulation + notebook) — one-shot conda env named `fox`:
 
 ```bash
 git clone https://github.com/Gabbo240900/Fox.git
 cd Fox
 ./install.sh                # or: ./install.sh my_env_name
 conda activate fox
+pip install -e .            # adds the `fox` CLI on top
 ```
 
 Manual install:
@@ -113,6 +132,74 @@ For AmoCoala comparison (optional): `AmoCoala.jar` from https://github.com/sinai
 ## Using the pretrained model (`fox.ckpt`)
 
 The released checkpoint at the repo root (`fox.ckpt`, ~92 MB) is ready to use.
+
+### Quick start: the `fox` command (recommended)
+
+The simplest way to run a prediction. One well-formatted `.tgl` in, four event
+frequencies out — no notebook, no manual tensor wiring.
+
+**1. Install** (from the repo root, after cloning):
+
+```bash
+pip install -e .
+```
+
+This pulls PyTorch, registers the `fox` command, and makes the package
+importable. `fox.ckpt` at the repo root is found automatically.
+
+**2. Predict** from a `.tgl` file:
+
+```bash
+fox predict --tgl test_data/Datasets/Dataset11.tgl
+```
+
+```
+Event          Frequency
+------------------------
+Speciation        0.8352
+HGT               0.0484
+Loss              0.0100
+Duplication       0.1065
+
+Dominant: Speciation (83.5%)
+```
+
+**Options:**
+
+| flag | default | purpose |
+|------|---------|---------|
+| `--tgl` | required | input `.tgl` bundle (host MSA + symbiont MSA + mapping) |
+| `--json` | off | emit JSON instead of the table (for scripting) |
+| `--sim-time` | auto | age scalar; omitted → read from the `.tgl`, else model default |
+| `--ckpt` | repo `fox.ckpt` | use a different checkpoint |
+| `--device` | `cpu` | `cpu`, `cuda`, or `mps` |
+
+**From Python:**
+
+```python
+from fox import predict_tgl
+
+predict_tgl("test_data/Datasets/Dataset11.tgl")
+# {'Speciation': 0.835, 'HGT': 0.048, 'Loss': 0.010, 'Duplication': 0.106}
+```
+
+Predicting over many files? Load the model once and reuse it:
+
+```python
+from fox import load_model, predict_tgl
+
+model = load_model()                       # builds Fox from fox.ckpt (cached)
+for path in tgl_files:
+    print(predict_tgl(path, model=model))
+```
+
+**Input — what a `.tgl` must contain:** a `BEGIN HOST;` block and a
+`BEGIN PARASITE;` block, each with an `ALIGNMENT` of `name sequence` rows, plus
+a `BEGIN DISTRIBUTION;` block listing `parasite : host` leaf pairs. See any file
+under [`test_data/Datasets/`](test_data/Datasets/) for the exact layout.
+
+**Checkpoint not found?** If `fox.ckpt` was moved or you installed outside the
+repo, point Fox at it: `export FOX_CKPT=/path/to/fox.ckpt` or pass `--ckpt`.
 
 ### Fastest path: the notebook
 

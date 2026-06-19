@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fox-cophylo"
+version = "0.1.0"
+description = "Transformer model for inferring host–symbiont cophylogenetic event frequencies from MSAs."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Gabriele" }]
+keywords = ["phylogenetics", "cophylogeny", "transformer", "bioinformatics", "host-symbiont"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+# Inference-only runtime dep. Training/simulation extras live in requirements.txt.
+dependencies = [
+    "torch>=2.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/Gabbo240900/Fox"
+Repository = "https://github.com/Gabbo240900/Fox"
+
+[project.scripts]
+fox = "fox.cli:main"
+
+[tool.setuptools]
+# Inference needs the fox package + training.model (Fox architecture).
+packages = ["fox", "training"]
+
+[tool.setuptools.package-data]
+# fox.ckpt is ~96 MB — intentionally NOT bundled. Resolve it via $FOX_CKPT,
+# --ckpt, or an editable install from the repo root. See load_model().
+fox = []

@@ -109,7 +109,8 @@ class LazyCophyloformerDataset(Dataset):
             return
 
         keys = []
-        for pt_path in tqdm(self.pt_files, desc=f"Bucket scan {os.path.basename(os.path.normpath(os.path.dirname(pt_path)))}", leave=False):
+        scan_dir = os.path.basename(os.path.normpath(os.path.dirname(self.pt_files[0]))) if self.pt_files else ""
+        for pt_path in tqdm(self.pt_files, desc=f"Bucket scan {scan_dir}", leave=False):
             sample = torch.load(pt_path, map_location="cpu", weights_only=False)
             host_n = min(int(sample["host_msa"].shape[0]), host_max_leaves)
             para_n = min(int(sample["para_msa"].shape[0]), para_max_leaves)

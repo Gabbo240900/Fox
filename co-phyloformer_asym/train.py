@@ -47,7 +47,6 @@ find_unused_parameters = os.environ.get("FIND_UNUSED_PARAMETERS", "0").strip() =
 host_max_leaves  = int(os.environ.get("HOST_MAX_LEAVES", "51"))  # host trees have max 50 leaves
 para_max_leaves  = int(os.environ.get("PARA_MAX_LEAVES", "142"))  # parasite trees have max 128, avg 82; cap for memory
 dropout          = float(os.environ.get("DROPOUT", "0.1"))
-time_dropout     = float(os.environ.get("TIME_DROPOUT", "0.0"))  # prob. of zeroing sim_time per sample, to train a time-agnostic (undated-tree) mode
 use_bucketed_batches = os.environ.get("USE_BUCKETED_BATCHES", "1").strip() == "1"
 bucket_size      = int(os.environ.get("BUCKET_SIZE", "8"))
 
@@ -127,10 +126,6 @@ class LazyCophyloformerDataset(Dataset):
             "mappings":     sample["mappings"],
             "labels": torch.tensor(
                 [labels_src.get(e, 0.0) for e in EVENT_NAMES],
-                dtype=torch.float32,
-            ),
-            "sim_time": torch.tensor(
-                [labels_src.get("Sim_time", 0.0)],  # 0 = time-agnostic mode (see TIME_DROPOUT / model None-fallback)
                 dtype=torch.float32,
             ),
             "host_dist": sample["host_dist"],
@@ -218,7 +213,6 @@ def collate_fn(batch):
         "parasite_msa": para_msas,
         "labels":       torch.stack([s["labels"] for s in batch]),
         "mappings":     [s["mappings"] for s in batch],
-        "sim_time":     torch.stack([s["sim_time"] for s in batch]),
         "host_dist":    torch.stack([pad_dist(s["host_dist"], host_msas.shape[1]) for s in batch]),
         "para_dist":    torch.stack([pad_dist(s["para_dist"], para_msas.shape[1]) for s in batch]),
     }
@@ -525,16 +519,9 @@ def main(fabric: Fabric, ckpt_to_load=None):
                 continue
             batch["host_msa"]     = batch["host_msa"].to(device, non_blocking=True)
             batch["parasite_msa"] = batch["parasite_msa"].to(device, non_blocking=True)
-            batch["sim_time"]     = batch["sim_time"].to(device, non_blocking=True)
             batch["labels"]       = batch["labels"].to(device, non_blocking=True)
             batch["host_dist"]    = batch["host_dist"].to(device, non_blocking=True)
             batch["para_dist"]    = batch["para_dist"].to(device, non_blocking=True)
-
-            # Time dropout: randomly zero sim_time for a fraction of samples so the
-            # model learns a calibrated time-agnostic mode (t=0) for undated trees.
-            if time_dropout > 0.0:
-                keep = (torch.rand(batch["sim_time"].shape[0], 1, device=device) >= time_dropout)
-                batch["sim_time"] = batch["sim_time"] * keep.to(batch["sim_time"].dtype)
 
             if batch_idx % grad_accum == 0:
                 optimizer.zero_grad(set_to_none=True)
@@ -546,7 +533,6 @@ def main(fabric: Fabric, ckpt_to_load=None):
             with fabric.no_backward_sync(model, enabled=not sync_gradients):
                 outputs = model(
                     batch["host_msa"], batch["parasite_msa"], batch["mappings"],
-                    batch["sim_time"],
                     host_dist=batch["host_dist"], para_dist=batch["para_dist"],
                 )
 

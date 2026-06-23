@@ -71,7 +71,6 @@ export FIND_UNUSED_PARAMETERS=0
 export USE_BUCKETED_BATCHES=1
 export BUCKET_SIZE=4
 export DROPOUT=0.10
-export TIME_DROPOUT=0.15   # prob. of zeroing sim_time per sample (undated-tree / time-agnostic mode); 0 = off
 
 # Training settings
 export EPOCHS=40

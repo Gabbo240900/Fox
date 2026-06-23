@@ -32,7 +32,8 @@ generate_treeducken/generated_trees/symb_tree
 generate_treeducken/generated_trees/test
 generate_treeducken/generated_trees/*.zip
 generate_treeducken/taxa_summary.csv
-
+results/
+train_data_distributions/
 generate_asymmetree/generated_trees/test_data
 
 co-phyloformer_asym/error_files

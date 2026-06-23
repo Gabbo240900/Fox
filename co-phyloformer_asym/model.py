@@ -565,12 +565,6 @@ class Cophyloformer(nn.Module):
 
         self.concat_dim = 4 * cls_dim
 
-        self.sim_time_fc = nn.Sequential(
-            nn.Linear(1, self.concat_dim),
-            nn.GELU(),
-            nn.Linear(self.concat_dim, self.concat_dim * 2),
-        )
-
         self.feature_mixer = nn.Sequential(
             nn.Linear(self.concat_dim, self.concat_dim),
             nn.GELU(),
@@ -591,7 +585,7 @@ class Cophyloformer(nn.Module):
             nn.Linear(cls_dim, 4),
         )
 
-    def forward(self, host_msa, parasite_msa, mappings, sim_time,
+    def forward(self, host_msa, parasite_msa, mappings,
                 host_dist: Optional[torch.Tensor] = None,
                 para_dist: Optional[torch.Tensor] = None):
 
@@ -695,13 +689,6 @@ class Cophyloformer(nn.Module):
 
         attended_pairs = torch.cat([cross_host[:, 0], cross_para[:, 0], host_pooled, para_pooled], dim=-1)
         attended_pairs = self.feature_mixer(attended_pairs)
-
-        if sim_time is None:
-            sim_time = torch.zeros(attended_pairs.shape[0], 1, device=attended_pairs.device, dtype=attended_pairs.dtype)
-        gamma_beta = self.sim_time_fc(sim_time)
-        scale, shift = gamma_beta.chunk(2, dim=-1)
-        scale = torch.tanh(scale)
-        attended_pairs = attended_pairs * (1 + scale) + shift
 
         logits = self.event_head(attended_pairs)
         return torch.softmax(logits, dim=-1)

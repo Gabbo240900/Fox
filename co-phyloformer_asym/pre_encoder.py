@@ -5,8 +5,10 @@ from tqdm import tqdm
 # src_dir = '/Users/gabriele/Co-phyloformer/generate_asymmetree/generated_trees/Datasets'
 # dst_dir = '/Users/gabriele/Co-phyloformer/generate_asymmetree/generated_trees/test/'
 
-src_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/Datasets/"
-dst_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded/"
+src_dir = os.environ.get("PREENCODE_SRC_DIR",
+    "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/Datasets/")
+dst_dir = os.environ.get("PREENCODE_DST_DIR",
+    "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded/")
 
 os.makedirs(dst_dir, exist_ok=True)
 

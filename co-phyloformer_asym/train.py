@@ -544,7 +544,10 @@ def main(fabric: Fabric, ckpt_to_load=None):
                 fabric.backward(loss / grad_accum)
 
             if is_accum or is_last:
-                gnorm = fabric.clip_gradients(model, optimizer, max_norm=0.5, error_if_nonfinite=False)
+                grads = [p.grad for p in model.parameters() if p.grad is not None]
+                gnorm = torch.linalg.vector_norm(
+                    torch.stack([torch.linalg.vector_norm(g) for g in grads])
+                )
                 if torch.isfinite(gnorm):
                     optimizer.step()
                     scheduler.step()

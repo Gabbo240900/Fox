@@ -8,6 +8,26 @@ from typing import Optional
 _COMPILED_FLEX = None
 _FLEX_LOADED = False
 
+
+def _ensure_flex_loaded() -> bool:
+    """Lazily import and compile FlexAttention. Returns True if available.
+
+    Requires PyTorch >= 2.5. Safe to call repeatedly; only loads once.
+    On failure (old torch, no Triton/CUDA) leaves globals unset so callers
+    transparently fall back to the torch SDPA path."""
+    global _COMPILED_FLEX, _FLEX_LOADED
+    if _FLEX_LOADED:
+        return True
+    try:
+        from torch.nn.attention.flex_attention import flex_attention
+        _COMPILED_FLEX = torch.compile(flex_attention)
+        _FLEX_LOADED = True
+    except Exception as e:  # noqa: BLE001 — any import/compile failure → fall back
+        _COMPILED_FLEX = None
+        _FLEX_LOADED = False
+        print(f"[FlexAttention] unavailable, using torch SDPA path instead: {e}")
+    return _FLEX_LOADED
+
 class MSAEmbedder(nn.Module):
     VOCAB_SIZE = 23  # 0-19 AAs, 20=gap, 21=UNK, 22=PAD
 
@@ -94,7 +114,7 @@ class ColAttnPairBias(nn.Module):
         self.n_heads  = n_heads
         self.head_dim = dim // n_heads
         self.scale    = self.head_dim ** -0.5
-        self.use_flex = use_flexattention and _FLEX_LOADED
+        self.use_flex = use_flexattention and _ensure_flex_loaded()
 
         self.msa_norm  = nn.LayerNorm(dim)
         self.pair_norm = nn.LayerNorm(pair_dim)

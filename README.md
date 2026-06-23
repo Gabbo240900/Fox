@@ -222,7 +222,7 @@ model.load_state_dict(ckpt["model"])
 
 # host_msa, para_msa : [N, L] long tensors of AA indices (see training/pre_encoder.py)
 # mappings           : list of (host_idx, parasite_idx) tuples
-# sim_time           : scalar (age used during simulation; pass 1.0 if unknown)
+# sim_time           : scalar (age used during simulation; pass None if unknown — model defaults to 0.0)
 # host_dist, para_dist: Jukes–Cantor distance matrices, [N, N]
 out = model(host_msa[None], para_msa[None], [mappings], sim_time,
             host_dist=host_dist[None], para_dist=para_dist[None])

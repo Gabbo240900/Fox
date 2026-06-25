@@ -239,7 +239,14 @@ class ColAttnPairBias(nn.Module):
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
             return score + bias[b_idx // S, h_idx, q_idx, kv_idx]
 
-        attn_out = _COMPILED_FLEX(q, k, v, score_mod)                # [B*S, H, N, d_h]
+        # FORCE_USE_FLEX_ATTENTION: q seqlen is N (leaves, ~15-30), so inductor
+        # would otherwise pick the flex_decoding kernel. Under dynamic=True, N is a
+        # symbol and flex_decoding's get_split_k() crashes on symbolic compare
+        # ("cannot determine truth value of Relational"). Force the standard kernel.
+        attn_out = _COMPILED_FLEX(
+            q, k, v, score_mod,
+            kernel_options={"FORCE_USE_FLEX_ATTENTION": True},
+        )                                                            # [B*S, H, N, d_h]
         attn_out = (g * attn_out).transpose(1, 2).reshape(B * S, N, D)
         out = self.out_proj(attn_out)
         return out.view(B, S, N, D).permute(0, 2, 1, 3).contiguous()  # [B, N, S, D]

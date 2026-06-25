@@ -51,7 +51,7 @@ set -x
 # W&B settings
 export WANDB_ENTITY=cophylo_team
 export WANDB_PROJECT=CoPhyloformer
-export WANDB_NAME=35ep_100H_training_asym
+export WANDB_NAME=Asym_noSimTime_35Epochs
 export WANDB_MODE=offline
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300

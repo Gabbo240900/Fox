@@ -53,7 +53,7 @@ set -x
 # W&B settings
 export WANDB_ENTITY=cophylo_team
 export WANDB_PROJECT=CoPhyloformer
-export WANDB_NAME=40ep_hgt2_tail2_dropout
+export WANDB_NAME=Asym_noSimTime_35Epochs
 export WANDB_MODE=offline
 export WANDB_HTTP_TIMEOUT=120
 export WANDB__SERVICE_WAIT=300
@@ -73,8 +73,8 @@ export BUCKET_SIZE=4
 export DROPOUT=0.10
 
 # Training settings
-export EPOCHS=40
-export EARLY_STOP_PATIENCE=8
+export EPOCHS=35
+export EARLY_STOP_PATIENCE=3
 export EARLY_STOP_MIN_DELTA=0.0
 export MID_EPOCH_VALS=1
 export NUM_WORKERS=16

@@ -32,7 +32,6 @@ def run_full_validation(
                 continue
             batch["host_msa"] = batch["host_msa"].to(device, non_blocking=True)
             batch["parasite_msa"] = batch["parasite_msa"].to(device, non_blocking=True)
-            batch["sim_time"] = batch["sim_time"].to(device, non_blocking=True)
             batch["labels"] = batch["labels"].to(device, non_blocking=True)
             if "host_dist" in batch:
                 batch["host_dist"] = batch["host_dist"].to(device, non_blocking=True)
@@ -42,7 +41,6 @@ def run_full_validation(
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch["sim_time"],
                 host_dist=batch.get("host_dist"),
                 para_dist=batch.get("para_dist"),
             )
@@ -102,7 +100,6 @@ def compute_val_predictions(model, val_loader, device):
             batch["host_msa"]     = batch["host_msa"].to(device, non_blocking=True)
             batch["parasite_msa"] = batch["parasite_msa"].to(device, non_blocking=True)
             batch["labels"]       = batch["labels"].to(device, non_blocking=True)
-            batch["sim_time"]     = batch["sim_time"].to(device, non_blocking=True)
             if "host_dist" in batch:
                 batch["host_dist"] = batch["host_dist"].to(device, non_blocking=True)
                 batch["para_dist"] = batch["para_dist"].to(device, non_blocking=True)
@@ -111,7 +108,6 @@ def compute_val_predictions(model, val_loader, device):
                 batch["host_msa"],
                 batch["parasite_msa"],
                 batch["mappings"],
-                batch["sim_time"],
                 host_dist=batch.get("host_dist"),
                 para_dist=batch.get("para_dist"),
             )

@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 EVENT_NAMES = ["Speciation", "HGT", "Loss", "Duplication"]
+EVENT_LABELS = {"Speciation": "Cospeciation", "HGT": "Host switch", "Loss": "Loss", "Duplication": "Duplication"}
+def disp(e): return EVENT_LABELS.get(e, e)  # display label only; data keys/filenames stay "Speciation" etc
 
 
 def load_csv(path):
@@ -43,7 +45,7 @@ def plot_scatter(train_preds, train_labels, val_preds, val_labels, output_dir):
 
         ax.set_xlabel("True", fontsize=12)
         ax.set_ylabel("Predicted", fontsize=12)
-        ax.set_title(f"{name} — Scatter (Train vs Val)", fontsize=13)
+        ax.set_title(f"{disp(name)} — Scatter (Train vs Val)", fontsize=13)
         ax.legend(frameon=True)
         ax.grid(True, alpha=0.25, linestyle="--")
         fig.tight_layout()
@@ -73,11 +75,11 @@ def plot_density(train_preds, train_labels, val_preds, val_labels, output_dir, b
 
             ax.set_xlabel("True", fontsize=11)
             ax.set_ylabel("Predicted", fontsize=11)
-            ax.set_title(f"{name} — {title}", fontsize=12)
+            ax.set_title(f"{disp(name)} — {title}", fontsize=12)
             ax.legend(frameon=True, fontsize=9)
             ax.grid(True, alpha=0.2, linestyle="--")
 
-        fig.suptitle(f"{name} — Prediction density", fontsize=13)
+        fig.suptitle(f"{disp(name)} — Prediction density", fontsize=13)
         fig.tight_layout()
         fig.savefig(out / f"density_{name}.png", dpi=300)
         plt.close(fig)

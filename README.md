@@ -1,8 +1,8 @@
 # Fox
 
-Transformer-based model for inferring host–symbiont cophylogenetic event frequencies — **Speciation**, **Host-switch / HGT**, **Loss**, **Duplication** — directly from a pair of multiple sequence alignments (MSAs).
+Transformer model that infers host–symbiont **cophylogenetic event frequencies** — Speciation, Host-switch / HGT, Loss, Duplication — straight from a pair of multiple sequence alignments (MSAs).
 
-Fox takes two MSAs (one for host taxa, one for symbiont taxa) plus a host/symbiont leaf-to-leaf mapping, and predicts the relative frequencies of the four cophylogenetic events that shaped their joint evolutionary history. The model is trained end-to-end on simulated host/symbiont trees and sequences; **no tree inference is required at prediction time**.
+Feed Fox two MSAs (one for the host taxa, one for the symbiont taxa) plus a host↔symbiont leaf mapping. It returns the relative frequencies of the four events that shaped their shared evolutionary history. The model is trained end-to-end on simulated host/symbiont trees and sequences. **No tree inference at prediction time.**
 
 ---
 
@@ -12,31 +12,35 @@ Fox takes two MSAs (one for host taxa, one for symbiont taxa) plus a host/symbio
 2. [Repository layout](#repository-layout)
 3. [Installation](#installation)
 4. [Using the pretrained model (`fox.ckpt`)](#using-the-pretrained-model-foxckpt)
-5. [Generating new training data with AsymmeTree](#generating-new-training-data-with-asymmetree)
-6. [Training a new model — local](#training-a-new-model--local)
-7. [Training a new model — external GPU / cluster](#training-a-new-model--external-gpu--cluster)
+5. [Generating training data](#generating-training-data)
+6. [Training — local](#training--local)
+7. [Training — external GPU / cluster](#training--external-gpu--cluster)
 8. [Training outputs](#training-outputs)
-9. [Other folders explained](#other-folders-explained)
+9. [Other folders](#other-folders)
 
 ---
 
 ## What the model does
 
-Given a host MSA `H ∈ {AA}^{N_h × L}`, a symbiont MSA `P ∈ {AA}^{N_p × L}`, a list of host↔symbiont leaf mappings, and a simulation/age scalar, Fox returns a length-4 simplex vector:
+**Input:** a host MSA, a symbiont MSA, and a list of host↔symbiont leaf pairs.
+
+**Output:** four numbers that sum to 1 —
 
 ```
-[ p(Speciation), p(HGT), p(Loss), p(Duplication) ]
+[ Speciation, HGT, Loss, Duplication ]
 ```
 
-Internals (see [training/model.py](training/model.py)):
+Example: `[0.84, 0.05, 0.01, 0.11]` → this host/symbiont pair evolved mostly by speciation, with a bit of duplication and little host-switching or loss.
 
-- **MSAEmbedder** — amino-acid index → embedding → linear projection. Vocabulary: 23 tokens (20 AAs + gap + UNK + PAD). Max sequence length: 250.
-- **PairEmbedder** — PAD-aware mean pooling per sequence, then outer sum to initialize the pair track from a host/symbiont mapping.
-- **Axial attention blocks** — alternating row/column attention over each MSA, with an asymmetric pair-bias track linking host and symbiont representations.
-- **Cross-attention blocks** — bidirectional host ↔ symbiont cross-attention.
+Architecture (see [training/model.py](training/model.py)):
+
+- **MSAEmbedder** — amino-acid tokens → one-hot → linear projection. Vocabulary: 23 tokens (20 AAs + gap + UNK + PAD). Max sequence length: 250.
+- **PairEmbedder** — PAD-aware mean pooling per sequence, then an outer sum that seeds the pair track from the host/symbiont mapping.
+- **Axial attention blocks** — alternating row / column attention over each MSA, with an asymmetric pair-bias track that links host and symbiont.
+- **Cross-attention blocks** — bidirectional host ↔ symbiont attention.
 - **Prediction head** — softmax over the four event classes.
 
-Distance matrices (Jukes–Cantor over the MSA) are used as pair-track input when available; otherwise computed on the fly.
+Jukes–Cantor distance matrices (computed from each MSA) feed the pair track; they are computed on the fly when not supplied.
 
 ---
 
@@ -46,42 +50,40 @@ Distance matrices (Jukes–Cantor over the MSA) are used as pair-track input whe
 Fox/
 ├── fox/                       # Inference package + `fox` CLI
 │   ├── __init__.py            # exports: predict_tgl, load_model, EVENT_NAMES
-│   ├── cli.py                 # `fox predict --tgl …` command
-│   ├── core.py                # predict_tgl() — .tgl → 4 event frequencies
-│   ├── io.py                  # read_tgl() — parse a .tgl bundle
+│   ├── cli.py                 # `fox predict --tgl …`
+│   ├── core.py                # predict_tgl(): .tgl → 4 event frequencies
+│   ├── io.py                  # read_tgl(): parse a .tgl bundle
 │   ├── encoding.py            # AA tokenisation + Jukes–Cantor distances
-│   └── model_loader.py        # load_model() — build Fox from fox.ckpt (cached)
+│   └── model_loader.py        # load_model(): build Fox from fox.ckpt (cached)
 ├── training/                  # Model + training pipeline
 │   ├── model.py               # Fox architecture
-│   ├── train.py               # Main training loop (Lightning Fabric)
+│   ├── train.py               # Training loop (Lightning Fabric)
 │   ├── data.py                # Dataset loaders + bucket sampling
 │   ├── validation.py          # Validation loop + W&B logging
-│   ├── pre_encoder.py         # .tgl  →  .pt  pre-encoding
-│   ├── prepare_buckets.py     # Pre-compute bucket metadata for sampler
+│   ├── pre_encoder.py         # .tgl → .pt pre-encoding
+│   ├── prepare_buckets.py     # Bucket metadata for the sampler
 │   ├── plot.py                # Plot predictions during training
 │   ├── plot_from_csv.py       # Replot from saved CSVs
 │   └── post_process.py        # Standalone plotting from CSVs
 ├── generate_data/             # AsymmeTree + AliSim simulation pipeline
 │   ├── generate_trees.py      # Simulate paired host/symbiont trees
-│   ├── alisim.py              # Simulate MSAs along trees with AliSim
-│   ├── filter_data.py         # Filter pre-encoded .pt by taxa/seq length
+│   ├── alisim.py              # Simulate MSAs along trees (AliSim)
+│   ├── filter_data.py         # Filter .pt by taxa / seq length
 │   ├── analyze_data.py        # Summary plots over a .pt directory
-│   └── generated_trees/       # Default output root + alpha/diameter priors
+│   └── generated_trees/       # Default output root + priors
 ├── test_data/                 # Held-out evaluation data
 │   ├── Datasets/              # Ground-truth .tgl files (40 datasets)
-│   ├── fox_data/          # Pre-encoded .pt samples for Fox
+│   ├── fox_data/              # Pre-encoded .pt samples for Fox
 │   ├── amocoala_data/         # Per-dataset AmoCoala outputs
-│   ├── amocoala_pipeline/     # Inputs/intermediate files for AmoCoala
+│   ├── amocoala_pipeline/     # Inputs / intermediates for AmoCoala
 │   └── pt_samples/            # Extra .pt samples
 ├── train_data_distributions/  # Plots of the training-set distributions
-├── results/                   # train_predictions.csv, val_predictions.csv + plots
-├── bin/                       # Bundled binaries
-│   ├── bin_linux/             # iqtree_2.2.0, FastTree, fastme, …
-│   └── bin_macos/             # same on macOS
-├── fox.ckpt               # Released pretrained checkpoint
-├── test_model.ipynb           # Notebook: load ckpt + run predictions + AmoCoala comparison
+├── results/                   # train/val prediction CSVs + plots
+├── bin/                       # Bundled binaries (bin_linux/, bin_macos/)
+├── fox.ckpt                   # Released pretrained checkpoint (~76 MB)
+├── test_model.ipynb           # Notebook: load ckpt, predict, AmoCoala comparison
 ├── install.sh                 # Conda env bootstrap
-├── pyproject.toml             # Packaging + `fox` console script (inference deps)
+├── pyproject.toml             # Packaging + `fox` console script
 ├── requirements.txt
 └── README.md
 ```
@@ -90,10 +92,9 @@ Fox/
 
 ## Installation
 
-**Requirements:** Python ≥ 3.11. CUDA GPU recommended for training; CPU works for inference on small inputs.
+**Requires** Python ≥ 3.11. A CUDA GPU is recommended for training; CPU is fine for inference on small inputs.
 
-**Inference only** — just want to run predictions with the `fox` command? PyTorch
-is the sole runtime dependency:
+**Inference only** — just want to run `fox predict`? PyTorch is the only runtime dependency:
 
 ```bash
 git clone https://github.com/Gabbo240900/Fox.git
@@ -112,7 +113,7 @@ conda activate fox
 pip install -e .            # adds the `fox` CLI on top
 ```
 
-Manual install:
+Manual:
 
 ```bash
 conda create -n fox python=3.11
@@ -120,36 +121,25 @@ conda activate fox
 pip install -r requirements.txt
 ```
 
-Bundled binaries under `bin/`:
+Bundled binaries under `bin/` (pick the subfolder for your OS):
 
-- `bin/bin_{linux,macos}/iqtree_2.2.0` — used by AliSim for MSA simulation
-- `bin/bin_{linux,macos}/FastTree`, `fastme`, `goalign`, `phylocompare`, `phylotree` — auxiliary phylogenetic tools
+- `iqtree_2.2.0` — MSA simulation via AliSim.
+- `FastTree`, `fastme`, `goalign`, `phylocompare`, `phylotree` — auxiliary phylogenetic tools.
 
-For AmoCoala comparison (optional): `AmoCoala.jar` from https://github.com/sinaimeri/AmoCoala.
+For the optional AmoCoala comparison, get `AmoCoala.jar` from https://github.com/sinaimeri/AmoCoala.
 
 ---
 
 ## Using the pretrained model (`fox.ckpt`)
 
-The released checkpoint at the repo root (`fox.ckpt`, ~92 MB) is ready to use.
+The released checkpoint at the repo root (`fox.ckpt`, ~76 MB) is ready to use.
 
-### Quick start: the `fox` command (recommended)
+### Quick start: the `fox` command
 
-The simplest way to run a prediction. One well-formatted `.tgl` in, four event
-frequencies out — no notebook, no manual tensor wiring.
-
-**1. Install** (from the repo root, after cloning):
+One well-formed `.tgl` in, four event frequencies out. No notebook, no manual tensor wiring.
 
 ```bash
-pip install -e .
-```
-
-This pulls PyTorch, registers the `fox` command, and makes the package
-importable. `fox.ckpt` at the repo root is found automatically.
-
-**2. Predict** from a `.tgl` file:
-
-```bash
+pip install -e .        # from the repo root; registers `fox`, finds fox.ckpt
 fox predict --tgl test_data/Datasets/Dataset11.tgl
 ```
 
@@ -170,7 +160,6 @@ Dominant: Speciation (83.5%)
 |------|---------|---------|
 | `--tgl` | required | input `.tgl` bundle (host MSA + symbiont MSA + mapping) |
 | `--json` | off | emit JSON instead of the table (for scripting) |
-| `--sim-time` | auto | age scalar; omitted → read from the `.tgl`, else model default |
 | `--ckpt` | repo `fox.ckpt` | use a different checkpoint |
 | `--device` | `cpu` | `cpu`, `cuda`, or `mps` |
 
@@ -183,7 +172,7 @@ predict_tgl("test_data/Datasets/Dataset11.tgl")
 # {'Speciation': 0.835, 'HGT': 0.048, 'Loss': 0.010, 'Duplication': 0.106}
 ```
 
-Predicting over many files? Load the model once and reuse it:
+Scoring many files? Load the model once and reuse it:
 
 ```python
 from fox import load_model, predict_tgl
@@ -193,57 +182,54 @@ for path in tgl_files:
     print(predict_tgl(path, model=model))
 ```
 
-**Input — what a `.tgl` must contain:** a `BEGIN HOST;` block and a
-`BEGIN PARASITE;` block, each with an `ALIGNMENT` of `name sequence` rows, plus
-a `BEGIN DISTRIBUTION;` block listing `parasite : host` leaf pairs. See any file
-under [`test_data/Datasets/`](test_data/Datasets/) for the exact layout.
+**What a `.tgl` must contain:** a `BEGIN HOST;` block and a `BEGIN PARASITE;` block, each with an `ALIGNMENT` of `name sequence` rows, plus a `BEGIN DISTRIBUTION;` block listing `parasite : host` leaf pairs. See any file under [`test_data/Datasets/`](test_data/Datasets/) for the exact layout.
 
-**Checkpoint not found?** If `fox.ckpt` was moved or you installed outside the
-repo, point Fox at it: `export FOX_CKPT=/path/to/fox.ckpt` or pass `--ckpt`.
+**Checkpoint not found?** If `fox.ckpt` was moved, or you installed outside the repo, point Fox at it: `export FOX_CKPT=/path/to/fox.ckpt`, or pass `--ckpt`.
 
-### Fastest path: the notebook
+### The notebook
 
-Open [`test_model.ipynb`](test_model.ipynb). It walks through:
+Open [`test_model.ipynb`](test_model.ipynb). It covers:
 
 1. Loading `fox.ckpt`.
 2. Single-file prediction from a `.pt` or `.tgl` input.
 3. Batch evaluation across `test_data/fox_data/` with metrics (MAE, RMSE, R², Pearson r).
-4. Three-way comparison Fox vs. AmoCoala vs. ground truth on simulated test data.
+4. Three-way comparison — Fox vs. AmoCoala vs. ground truth — on simulated test data.
 
-### Minimal API
+### Low-level API
+
+Build the model directly and feed it tensors:
 
 ```python
 import torch
 from training.model import Fox
 
 ckpt = torch.load("fox.ckpt", map_location="cpu", weights_only=False)
-model = Fox(...).eval()           # constructor args match the checkpoint config
+model = Fox(...).eval()           # constructor args match ckpt["config"]
 model.load_state_dict(ckpt["model"])
 
-# host_msa, para_msa : [N, L] long tensors of AA indices (see training/pre_encoder.py)
-# mappings           : list of (host_idx, parasite_idx) tuples
-# sim_time           : scalar (age used during simulation; pass None if unknown — model defaults to 0.0)
+# host_msa, para_msa  : [N, L] long tensors of AA indices (see training/pre_encoder.py)
+# mappings            : list of (host_idx, parasite_idx) tuples
 # host_dist, para_dist: Jukes–Cantor distance matrices, [N, N]
-out = model(host_msa[None], para_msa[None], [mappings], sim_time,
+out = model(host_msa[None], para_msa[None], [mappings],
             host_dist=host_dist[None], para_dist=para_dist[None])
 # out: [1, 4] — softmax over (Speciation, HGT, Loss, Duplication)
 ```
 
-### Predicting from a raw `.tgl`
+### Predicting from a raw `.tgl` at the tensor level
 
-Pre-encode the `.tgl` to `.pt` first, then load it:
+Pre-encode the `.tgl` to `.pt`, then load it:
 
 ```bash
 python training/pre_encoder.py --src path/to/tgl_dir --dst path/to/pt_out
 ```
 
-Each `.pt` produced by `pre_encoder.py` contains `host_msa`, `para_msa`, `host_dist`, `para_dist`, `mappings`, and `labels`. Feed those tensors straight into the model as shown above.
+Each `.pt` holds `host_msa`, `para_msa`, `host_dist`, `para_dist`, `mappings`, and `labels`. Feed those straight into the model as above. (For a single file, `fox predict` / `predict_tgl` does the pre-encoding for you — this path is for building batches.)
 
 ---
 
-## Generating new training data with AsymmeTree
+## Generating training data
 
-Full simulation pipeline — trees → alignments → pre-encoded `.pt` → bucket metadata.
+Full pipeline: trees → alignments → pre-encoded `.pt` → bucket metadata.
 
 ### 1. Simulate paired host/symbiont trees (AsymmeTree)
 
@@ -256,23 +242,23 @@ python generate_trees.py \
   --seed 42
 ```
 
-For each simulation, [`generate_trees.py`](generate_data/generate_trees.py) draws:
+Per simulation, [`generate_trees.py`](generate_data/generate_trees.py) draws:
 
 - `num_leaves ~ U[15, 50]`
 - `host_birth_rate ~ U[0.5, 1.2]`, `host_death_rate ~ U[0.2, 0.4] · birth_rate`
 - `hgt_rate ~ U[0.05, 0.3]`, `dupl_rate ~ U[0.2, 0.4]`, `loss_rate ~ U[0.2, 0.4]`
 
-It outputs, under `generated_trees/my_run/`:
+Output under `generated_trees/my_run/`:
 
 ```
-species_trees/      species_tree_<i>.nwk        # host trees, Newick
-gene_trees/         gene_tree_<i>.nwk           # symbiont trees, Newick
-associations/       associations_<i>.csv        # parasite_leaf → host_leaf
-reconciliations/    reconciliation_<i>.csv      # per-node event labels
-Datasets/           Dataset<i>.tgl              # NEXUS-style bundle
+species_trees/      species_tree_<i>.nwk     # host trees, Newick
+gene_trees/         gene_tree_<i>.nwk        # symbiont trees, Newick
+associations/       associations_<i>.csv     # parasite_leaf → host_leaf
+reconciliations/    reconciliation_<i>.csv   # per-node event labels
+Datasets/           Dataset<i>.tgl           # NEXUS-style bundle
 ```
 
-The `.tgl` files are the canonical input for the next stages.
+The `.tgl` files are the input for the next stages.
 
 ### 2. Simulate MSAs along the trees (AliSim / IQ-TREE)
 
@@ -280,7 +266,7 @@ The `.tgl` files are the canonical input for the next stages.
 python alisim.py generated_trees/my_run/Datasets \
   --substitution LG \
   --gamma GC \
-  --iqtree ../bin/bin_macos/iqtree_2.2.0   # or ../bin/bin_linux/iqtree_2.2.0
+  --iqtree ../bin/bin_macos/iqtree_2.2.0 \
   --length 500 \
   --max-attempts 1 \
   --allow-duplicate-sequences \
@@ -288,7 +274,7 @@ python alisim.py generated_trees/my_run/Datasets \
   --temp-dir ../alisim_tmp
 ```
 
-Useful flags ([`alisim.py`](generate_data/alisim.py)):
+Flags ([`alisim.py`](generate_data/alisim.py)):
 
 | flag | default | purpose |
 |------|---------|---------|
@@ -296,17 +282,17 @@ Useful flags ([`alisim.py`](generate_data/alisim.py)):
 | `--substitution / -s` | `LG` | AA substitution model |
 | `--gamma / -g` | none | rate-heterogeneity model (`G`, `GC`, …) |
 | `--custom-model / -c` | none | path to a custom model definition |
-| `--iqtree / -t` | required | path to IQ-TREE 2 binary |
-| `--max-attempts / -m` | 20 | retries per tree if sim fails |
+| `--iqtree / -t` | required | path to the IQ-TREE 2 binary |
+| `--max-attempts / -m` | 20 | retries per tree on sim failure |
 | `--allow-duplicate-sequences / -d` | off | keep alignments with duplicate rows |
 | `--n_cores / -n` | 16 | parallel workers |
 | `--temp-dir` | system tmp | scratch dir for IQ-TREE |
 
-Result: each `Dataset<i>.tgl` is augmented in place with the host and parasite MSAs.
+Each `Dataset<i>.tgl` is augmented in place with the host and parasite MSAs.
 
 ### 3. Pre-encode `.tgl` → `.pt`
 
-Converts NEXUS bundles into tokenised tensors ready for the dataloader.
+Turns NEXUS bundles into tokenised tensors for the dataloader:
 
 ```bash
 python training/pre_encoder.py \
@@ -322,12 +308,12 @@ para_msa  : Long [N_p, 250]
 host_dist : Float [N_h, N_h]   # Jukes–Cantor pairwise distance
 para_dist : Float [N_p, N_p]
 mappings  : list[(host_idx, para_idx)]
-labels    : {Speciation, HGT, Loss, Duplication, Sim_time}
+labels    : {Speciation, HGT, Loss, Duplication}
 ```
 
 ### 4. (Optional) filter the dataset
 
-[`filter_data.py`](generate_data/filter_data.py) prunes `.pt` samples by taxa count, sequence length, or missing-event flags. It can move or delete offenders and write a CSV report:
+[`filter_data.py`](generate_data/filter_data.py) prunes `.pt` samples by taxa count, sequence length, or missing-event flags — moving or deleting offenders and writing a CSV report:
 
 ```bash
 python generate_data/filter_data.py data/pt/my_run \
@@ -343,7 +329,7 @@ python generate_data/filter_data.py data/pt/my_run \
 python generate_data/analyze_data.py data/pt/my_run --bins 30
 ```
 
-Produces histograms of taxa counts, sequence lengths, and event-frequency distributions — similar to the plots in [`train_data_distributions/`](train_data_distributions/).
+Histograms of taxa counts, sequence lengths, and event-frequency distributions — like the plots in [`train_data_distributions/`](train_data_distributions/).
 
 ### 6. Build bucket metadata (required before training)
 
@@ -357,7 +343,7 @@ Writes a `bucket_meta.tsv` next to each `.pt` directory.
 
 ---
 
-## Training a new model — local
+## Training — local
 
 `training/train.py` is driven by **environment variables**, not CLI flags (apart from `train` / `resume`).
 
@@ -413,15 +399,15 @@ python train.py resume checkpoints/last_epoch.ckpt
 
 Hardware:
 
-- Single GPU: just run as above. Lightning Fabric auto-detects CUDA and uses bf16-mixed.
-- Multi-GPU on one host: launched automatically through DDP (`devices="auto"`).
-- CPU: works but very slow; lower `BATCH_SIZE` and set `USE_BUCKETED_BATCHES=0` if memory is tight.
+- **Single GPU** — run as above. Lightning Fabric auto-detects CUDA and uses bf16-mixed.
+- **Multi-GPU, one host** — launched automatically through DDP (`devices="auto"`).
+- **CPU** — works but slow; lower `BATCH_SIZE` and set `USE_BUCKETED_BATCHES=0` if memory is tight.
 
 ---
 
-## Training a new model — external GPU / cluster
+## Training — external GPU / cluster
 
-Same script, same env vars. Two recipes.
+Same script, same env vars.
 
 ### A. Single remote GPU box (SSH)
 
@@ -430,7 +416,7 @@ Same script, same env vars. Two recipes.
 git clone https://github.com/Gabbo240900/Fox.git
 cd Fox && ./install.sh && conda activate fox
 
-# copy pre-encoded data over (rsync from your laptop)
+# copy pre-encoded data over
 rsync -avz data/pt/ user@gpu-host:~/Fox/data/pt/
 
 # run
@@ -442,11 +428,11 @@ WANDB_MODE=online WANDB_PROJECT=Fox WANDB_NAME=remote_run \
 python train.py train
 ```
 
-For long runs, wrap in `tmux` / `screen` / `nohup` so an SSH drop doesn't kill the job.
+Wrap long runs in `tmux` / `screen` / `nohup` so an SSH drop doesn't kill the job.
 
-### B. Multi-GPU node / Slurm cluster
+### B. Multi-GPU node / Slurm
 
-`train.py` uses `lightning.fabric.Fabric` with `DDPStrategy` and `devices="auto"`. Slurm example:
+`train.py` uses `lightning.fabric.Fabric` with `DDPStrategy` and `devices="auto"`.
 
 ```bash
 #!/usr/bin/env bash
@@ -475,31 +461,31 @@ srun python train.py train
 
 Notes:
 
-- Set `FIND_UNUSED_PARAMETERS=1` if you modify the model graph and DDP complains.
-- `USE_COMPILE=1` and `USE_FLEX_ATTENTION=1` require PyTorch ≥ 2.5; disable if your cluster image is older.
-- Make sure each rank sees the same `TRAIN_DIR` / `VAL_DIR` on a shared filesystem.
+- Set `FIND_UNUSED_PARAMETERS=1` if you change the model graph and DDP complains.
+- `USE_COMPILE=1` and `USE_FLEX_ATTENTION=1` need PyTorch ≥ 2.5; disable on older cluster images.
+- Every rank must see the same `TRAIN_DIR` / `VAL_DIR` on a shared filesystem.
 
 ---
 
 ## Training outputs
 
-After (and during) a run you'll find:
+During and after a run:
 
-- **`$CKPT_DIR/` (default `training/checkpoints/`)** — checkpoint files:
-  - `last_epoch.ckpt` — saved at the end of every epoch (resumable).
-  - `latest.ckpt` — saved at every mid-epoch validation.
+- **`$CKPT_DIR/` (default `training/checkpoints/`)**
+  - `last_epoch.ckpt` — end of every epoch (resumable).
+  - `latest.ckpt` — every mid-epoch validation.
   - `best.ckpt` — best validation loss so far.
-- **`results/train_predictions.csv`, `results/val_predictions.csv`** — one row per sample with columns `true_<event>` and `pred_<event>` for all four events.
-- **`results/plots/`** — scatter / density plots produced by [`training/plot.py`](training/plot.py) and [`training/plot_from_csv.py`](training/plot_from_csv.py). Replot at any time with:
+- **`results/train_predictions.csv`, `results/val_predictions.csv`** — one row per sample, columns `true_<event>` and `pred_<event>` for all four events.
+- **`results/plots/`** — scatter / density plots from [`training/plot.py`](training/plot.py) and [`training/plot_from_csv.py`](training/plot_from_csv.py). Replot any time:
   ```bash
   python training/post_process.py \
     --train-csv results/train_predictions.csv \
     --val-csv   results/val_predictions.csv \
     --output-dir results/plots --bins 40
   ```
-- **W&B run** (if `WANDB_MODE=online`) — training/validation losses, per-event metrics, prediction histograms, and learning rate.
+- **W&B run** (if `WANDB_MODE=online`) — losses, per-event metrics, prediction histograms, learning rate.
 
-A checkpoint loaded back in has:
+A reloaded checkpoint holds:
 
 ```
 ckpt["model"]      # state_dict
@@ -511,17 +497,17 @@ ckpt["config"]     # env-var snapshot used for the run
 
 ---
 
-## Other folders explained
+## Other folders
 
-- **`test_data/Datasets/`** — 40 held-out `.tgl` files used for benchmarking.
+- **`test_data/Datasets/`** — 40 held-out `.tgl` files for benchmarking.
 - **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for direct Fox inference.
-- **`test_data/amocoala_data/<DatasetXX>/`** — AmoCoala's reconstructions for each test dataset (used by the 3-way comparison in [`test_model.ipynb`](test_model.ipynb)).
-- **`test_data/amocoala_pipeline/`** — intermediate files (`alignments/`, `nexus/`, `sequences/`, `trees/`, `amocoala/`) for re-running AmoCoala from scratch.
-- **`test_data/pt_samples/`** — extra example `.pt` inputs for quick sanity checks.
-- **`train_data_distributions/`** — reference plots of the training-set distributions (event frequencies, tree structure).
-- **`bin/`** — bundled binaries used by the simulation pipeline; pick the subfolder matching your OS.
+- **`test_data/amocoala_data/<DatasetXX>/`** — AmoCoala reconstructions per test dataset (used by the 3-way comparison in [`test_model.ipynb`](test_model.ipynb)).
+- **`test_data/amocoala_pipeline/`** — intermediates (`alignments/`, `nexus/`, `sequences/`, `trees/`, `amocoala/`) for re-running AmoCoala from scratch.
+- **`test_data/pt_samples/`** — extra example `.pt` inputs for quick checks.
+- **`train_data_distributions/`** — reference plots of the training-set distributions.
+- **`bin/`** — bundled binaries for the simulation pipeline; pick the subfolder for your OS.
 - **`results/`** — train/val prediction CSVs plus plots; safe to delete and regenerate.
-- **`fox.ckpt`** — released checkpoint loaded by the notebook.
+- **`fox.ckpt`** — released checkpoint loaded by the notebook and CLI.
 
 ---
 
@@ -537,4 +523,4 @@ ckpt["config"]     # env-var snapshot used for the run
 
 ## License
 
-See [`LICENSE`](LICENSE).
+MIT — see [`LICENSE`](LICENSE).

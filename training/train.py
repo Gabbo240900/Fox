@@ -127,10 +127,6 @@ class LazyFoxDataset(Dataset):
                 [labels_src.get(e, 0.0) for e in EVENT_NAMES],
                 dtype=torch.float32,
             ),
-            "sim_time": torch.tensor(
-                [labels_src.get("Sim_time", 1.0)],
-                dtype=torch.float32,
-            ),
             "host_dist": sample["host_dist"],
             "para_dist":  sample["para_dist"],
         }
@@ -216,7 +212,6 @@ def collate_fn(batch):
         "parasite_msa": para_msas,
         "labels":       torch.stack([s["labels"] for s in batch]),
         "mappings":     [s["mappings"] for s in batch],
-        "sim_time":     torch.stack([s["sim_time"] for s in batch]),
         "host_dist":    torch.stack([pad_dist(s["host_dist"], host_msas.shape[1]) for s in batch]),
         "para_dist":    torch.stack([pad_dist(s["para_dist"], para_msas.shape[1]) for s in batch]),
     }
@@ -525,7 +520,6 @@ def main(fabric: Fabric, ckpt_to_load=None):
                 continue
             batch["host_msa"]     = batch["host_msa"].to(device, non_blocking=True)
             batch["parasite_msa"] = batch["parasite_msa"].to(device, non_blocking=True)
-            batch["sim_time"]     = batch["sim_time"].to(device, non_blocking=True)
             batch["labels"]       = batch["labels"].to(device, non_blocking=True)
             batch["host_dist"]    = batch["host_dist"].to(device, non_blocking=True)
             batch["para_dist"]    = batch["para_dist"].to(device, non_blocking=True)
@@ -540,7 +534,6 @@ def main(fabric: Fabric, ckpt_to_load=None):
             with fabric.no_backward_sync(model, enabled=not sync_gradients):
                 outputs = model(
                     batch["host_msa"], batch["parasite_msa"], batch["mappings"],
-                    batch["sim_time"],
                     host_dist=batch["host_dist"], para_dist=batch["para_dist"],
                 )
 

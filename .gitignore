@@ -24,8 +24,7 @@ __pycache__/
 generate_treeducken/*
 # C extensions
 *.so
-best_val_loss.ckpt
-fox_noTime.ckpt
+old_fox.ckpt
 # Distribution / packaging
 .Python
 build/

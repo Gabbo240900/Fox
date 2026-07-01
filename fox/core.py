@@ -1,6 +1,6 @@
 """Core prediction: a .tgl bundle -> event-frequency simplex."""
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import torch
 
@@ -13,7 +13,6 @@ def _infer(
     host_msa: Dict[str, str],
     sym_msa: Dict[str, str],
     mapping: List[Tuple[str, str]],
-    sim_time: Optional[float],
     model,
     device: str,
 ) -> Dict[str, float]:
@@ -31,16 +30,11 @@ def _infer(
             "Check the DISTRIBUTION block against the ALIGNMENT leaf ids."
         )
 
-    t = None
-    if sim_time is not None:
-        t = torch.tensor([[float(sim_time)]], dtype=torch.float32, device=device)
-
     with torch.no_grad():
         out = model(
             host_tok.unsqueeze(0).to(device),
             sym_tok.unsqueeze(0).to(device),
             [mapped],
-            t,
             host_dist=host_dist.unsqueeze(0).to(device),
             para_dist=sym_dist.unsqueeze(0).to(device),
         )  # [1, 4], already softmaxed
@@ -50,7 +44,6 @@ def _infer(
 
 def predict_tgl(
     tgl_path: str,
-    sim_time: Optional[float] = "auto",
     model=None,
     ckpt_path: str = None,
     device: str = "cpu",
@@ -61,17 +54,12 @@ def predict_tgl(
     host<->symbiont leaf mapping, so this is the single-argument entrypoint.
 
     tgl_path  : path to the .tgl file.
-    sim_time  : "auto" (default) uses Sim_time from the .tgl if present, else the
-                model's internal default branch. Pass a float to override, or
-                None to force the default branch.
     model     : preloaded Fox model (skip per-call load). Optional.
     ckpt_path, device : forwarded to load_model when model is None.
 
     Returns {Speciation, HGT, Loss, Duplication} -> float, summing to 1.
     """
     d = read_tgl(tgl_path)
-    if sim_time == "auto":
-        sim_time = d["sim_time"]
     if model is None:
         model = load_model(ckpt_path, device)
-    return _infer(d["host_msa"], d["sym_msa"], d["mapping"], sim_time, model, device)
+    return _infer(d["host_msa"], d["sym_msa"], d["mapping"], model, device)

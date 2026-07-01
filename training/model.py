@@ -8,6 +8,27 @@ from typing import Optional
 _COMPILED_FLEX = None
 _FLEX_LOADED = False
 
+
+def _ensure_flex_loaded() -> bool:
+    """Lazily import and compile FlexAttention. Returns True if available.
+
+    Requires PyTorch >= 2.5. Safe to call repeatedly; only loads once.
+    On failure (old torch, no Triton/CUDA) leaves globals unset so callers
+    transparently fall back to the torch SDPA path."""
+    global _COMPILED_FLEX, _FLEX_LOADED
+    if _FLEX_LOADED:
+        return True
+    try:
+        from torch.nn.attention.flex_attention import flex_attention
+        _COMPILED_FLEX = torch.compile(flex_attention)
+        _FLEX_LOADED = True
+    except Exception as e:  # noqa: BLE001 — any import/compile failure → fall back
+        _COMPILED_FLEX = None
+        _FLEX_LOADED = False
+        print(f"[FlexAttention] unavailable, using torch SDPA path instead: {e}")
+    return _FLEX_LOADED
+
+
 class MSAEmbedder(nn.Module):
     VOCAB_SIZE = 23  # 0-19 AAs, 20=gap, 21=UNK, 22=PAD
 
@@ -94,7 +115,7 @@ class ColAttnPairBias(nn.Module):
         self.n_heads  = n_heads
         self.head_dim = dim // n_heads
         self.scale    = self.head_dim ** -0.5
-        self.use_flex = use_flexattention and _FLEX_LOADED
+        self.use_flex = use_flexattention and _ensure_flex_loaded()
 
         self.msa_norm  = nn.LayerNorm(dim)
         self.pair_norm = nn.LayerNorm(pair_dim)
@@ -219,7 +240,14 @@ class ColAttnPairBias(nn.Module):
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
             return score + bias[b_idx // S, h_idx, q_idx, kv_idx]
 
-        attn_out = _COMPILED_FLEX(q, k, v, score_mod)                # [B*S, H, N, d_h]
+        # FORCE_USE_FLEX_ATTENTION: q seqlen is N (leaves, ~15-30), so inductor
+        # would otherwise pick the flex_decoding kernel. Under dynamic=True, N is a
+        # symbol and flex_decoding's get_split_k() crashes on symbolic compare
+        # ("cannot determine truth value of Relational"). Force the standard kernel.
+        attn_out = _COMPILED_FLEX(
+            q, k, v, score_mod,
+            kernel_options={"FORCE_USE_FLEX_ATTENTION": True},
+        )                                                            # [B*S, H, N, d_h]
         attn_out = (g * attn_out).transpose(1, 2).reshape(B * S, N, D)
         out = self.out_proj(attn_out)
         return out.view(B, S, N, D).permute(0, 2, 1, 3).contiguous()  # [B, N, S, D]
@@ -559,12 +587,6 @@ class Fox(nn.Module):
 
         self.concat_dim = 4 * cls_dim
 
-        self.sim_time_fc = nn.Sequential(
-            nn.Linear(1, self.concat_dim),
-            nn.GELU(),
-            nn.Linear(self.concat_dim, self.concat_dim * 2),
-        )
-
         self.feature_mixer = nn.Sequential(
             nn.Linear(self.concat_dim, self.concat_dim),
             nn.GELU(),
@@ -585,7 +607,7 @@ class Fox(nn.Module):
             nn.Linear(cls_dim, 4),
         )
 
-    def forward(self, host_msa, parasite_msa, mappings, sim_time,
+    def forward(self, host_msa, parasite_msa, mappings,
                 host_dist: Optional[torch.Tensor] = None,
                 para_dist: Optional[torch.Tensor] = None):
 
@@ -689,13 +711,6 @@ class Fox(nn.Module):
 
         attended_pairs = torch.cat([cross_host[:, 0], cross_para[:, 0], host_pooled, para_pooled], dim=-1)
         attended_pairs = self.feature_mixer(attended_pairs)
-
-        if sim_time is None:
-            sim_time = torch.zeros(attended_pairs.shape[0], 1, device=attended_pairs.device, dtype=attended_pairs.dtype)
-        gamma_beta = self.sim_time_fc(sim_time)
-        scale, shift = gamma_beta.chunk(2, dim=-1)
-        scale = torch.tanh(scale)
-        attended_pairs = attended_pairs * (1 + scale) + shift
 
         logits = self.event_head(attended_pairs)
         return torch.softmax(logits, dim=-1)

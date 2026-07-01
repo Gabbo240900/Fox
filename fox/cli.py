@@ -11,8 +11,6 @@ from .encoding import EVENT_NAMES
 def _add_predict_parser(sub):
     p = sub.add_parser("predict", help="Predict cophylogenetic event frequencies.")
     p.add_argument("--tgl", required=True, help="Well-formatted .tgl bundle.")
-    p.add_argument("--sim-time", type=float, default=None,
-                   help="Simulation age scalar. Omit to auto-read from the .tgl.")
     p.add_argument("--ckpt", default=None,
                    help="Checkpoint path (default: $FOX_CKPT or repo fox.ckpt).")
     p.add_argument("--device", default="cpu", help="cpu | cuda | mps.")
@@ -29,7 +27,6 @@ def main(argv=None):
     if args.command == "predict":
         result = predict_tgl(
             args.tgl,
-            sim_time="auto" if args.sim_time is None else args.sim_time,
             ckpt_path=args.ckpt,
             device=args.device,
         )

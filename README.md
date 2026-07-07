@@ -121,10 +121,9 @@ conda activate fox
 pip install -r requirements.txt
 ```
 
-Bundled binaries under `bin/` (pick the subfolder for your OS):
+Bundled binary under `bin/` (pick the subfolder for your OS):
 
-- `iqtree_2.2.0` — MSA simulation via AliSim.
-- `FastTree`, `fastme`, `goalign`, `phylocompare`, `phylotree` — auxiliary phylogenetic tools.
+- `iqtree_2.2.0` — MSA simulation via AliSim. Third-party (GNU GPL v2); see [`bin/THIRD_PARTY_LICENSES.md`](bin/THIRD_PARTY_LICENSES.md).
 
 For the optional AmoCoala comparison, get `AmoCoala.jar` from https://github.com/sinaimeri/AmoCoala.
 

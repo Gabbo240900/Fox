@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot install: creates conda env "fox" with Python 3.10, installs all deps.
+# One-shot install: creates conda env "fox" with Python 3.11, installs all deps.
 # Usage: ./install.sh [env_name]
 set -euo pipefail
 

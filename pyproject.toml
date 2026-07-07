@@ -34,6 +34,7 @@ fox = "fox.cli:main"
 packages = ["fox", "training"]
 
 [tool.setuptools.package-data]
-# fox.ckpt is ~96 MB — intentionally NOT bundled. Resolve it via $FOX_CKPT,
-# --ckpt, or an editable install from the repo root. See load_model().
+# fox.ckpt (~76 MB) is committed at the repo root, not packaged into the wheel.
+# An editable install (`pip install -e .`) finds it there; override via
+# $FOX_CKPT or --ckpt. See load_model().
 fox = []

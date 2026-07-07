@@ -516,7 +516,7 @@ ckpt["config"]     # env-var snapshot used for the run
 ```
 @unpublished{Fox2026,
   title  = {Fox: Transformer-based inference of cophylogenetic event frequencies},
-  author = {<authors>},
+  author = {Di Palma, Gabriele},
   year   = {2026}
 }
 ```

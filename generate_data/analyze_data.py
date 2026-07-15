@@ -243,6 +243,9 @@ def _save_hist(
     arr = data[np.isfinite(data)]
     if arr.size == 0:
         return
+    # Integer counts over a modest range: one bin per integer (avoid aliasing).
+    if np.all(arr == np.round(arr)) and (arr.max() - arr.min()) <= 200:
+        bins = np.arange(arr.min() - 0.5, arr.max() + 1.5, 1)
     plt.figure(figsize=(8, 5))
     plt.hist(arr, bins=bins, edgecolor="white", linewidth=0.4)
     plt.title(title)
@@ -312,7 +315,15 @@ def _save_combined_tree_hist(
         if arr.size == 0:
             ax.set_title(f"{title} (no data)")
             continue
-        ax.hist(arr, bins=bins, edgecolor="white", linewidth=0.4)
+        # Integer-valued counts (leaf counts) over a modest range: use one bin
+        # per integer to avoid aliasing spikes when bin width is non-integer.
+        is_int = np.all(arr == np.round(arr))
+        span = arr.max() - arr.min()
+        if is_int and span <= 200:
+            hist_bins = np.arange(arr.min() - 0.5, arr.max() + 1.5, 1)
+        else:
+            hist_bins = bins
+        ax.hist(arr, bins=hist_bins, edgecolor="white", linewidth=0.4)
         ax.set_title(f"{title}  (n={arr.size:,})", fontsize=11)
         ax.set_xlabel(xlabel)
         ax.set_ylabel("count")

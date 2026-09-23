@@ -4,6 +4,7 @@
 *.swp
 *.swo
 *.pth
+*.tex 
 
 # Avoid sharing datasets and other data
 example_data/amocoala_pipeline

@@ -277,7 +277,7 @@ Flags ([`alisim.py`](generate_data/alisim.py)):
 
 | flag | default | purpose |
 |------|---------|---------|
-| `--length / -l` | 500 | alignment length |
+| `--length / -l` | 250 | alignment length |
 | `--substitution / -s` | `LG` | AA substitution model |
 | `--gamma / -g` | none | rate-heterogeneity model (`G`, `GC`, …) |
 | `--custom-model / -c` | none | path to a custom model definition |

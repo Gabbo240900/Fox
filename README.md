@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="fox_scientific_research_logo.svg" alt="Fox logo" width="220">
+</p>
+
 # Fox
 
 Transformer model that infers host–symbiont **cophylogenetic event frequencies** — Speciation, Host-switch / HGT, Loss, Duplication — straight from a pair of multiple sequence alignments (MSAs).

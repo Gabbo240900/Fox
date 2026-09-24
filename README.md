@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="fox_scientific_research_logo.svg" alt="Fox logo" width="220">
-</p>
+<img src="fox_scientific_research_logo.svg" alt="Fox logo" width="160" align="right">
 
 # Fox
 

@@ -2,6 +2,9 @@
 
 # Fox
 
+<br clear="right">
+<br>
+
 Transformer model that infers host–symbiont **cophylogenetic event frequencies** — Speciation, Host-switch / HGT, Loss, Duplication — straight from a pair of multiple sequence alignments (MSAs).
 
 Feed Fox two MSAs (one for the host taxa, one for the symbiont taxa) plus a host↔symbiont leaf mapping. It returns the relative frequencies of the four events that shaped their shared evolutionary history. The model is trained end-to-end on simulated host/symbiont trees and sequences. **No tree inference at prediction time.**

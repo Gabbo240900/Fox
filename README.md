@@ -74,13 +74,14 @@ Fox/
 │   └── generated_trees/       # Default output root + priors
 ├── test_data/                 # Held-out evaluation data
 │   ├── Datasets/              # Ground-truth .tgl files (40 datasets)
-│   ├── fox_data/              # Pre-encoded .pt samples for Fox
-│   ├── amocoala_data/         # Per-dataset AmoCoala outputs
-│   ├── amocoala_pipeline/     # Inputs / intermediates for AmoCoala
-│   └── pt_samples/            # Extra .pt samples
-├── train_data_distributions/  # Plots of the training-set distributions
-├── results/                   # train/val prediction CSVs + plots
-├── bin/                       # Bundled binaries (bin_linux/, bin_macos/)
+│   ├── fox_data/              # Those datasets pre-encoded as .pt for Fox
+│   ├── amocoala_data/         # Per-dataset AmoCoala outputs (1 round)
+│   ├── Datasets_small/        # 5-dataset subset for the multi-round AmoCoala run
+│   ├── amocoala_small/        # AmoCoala outputs on that subset (3 rounds)
+│   └── real_data/             # Heliconius mimicry real-data test
+├── results/                   # train/val prediction CSVs
+├── bin/                       # Bundled IQ-TREE binary (bin_linux/, bin_macos/)
+├── assets/                    # README logo
 ├── fox.ckpt                   # Released pretrained checkpoint (~76 MB)
 ├── test_model.ipynb           # Notebook: load ckpt, predict, AmoCoala comparison
 ├── install.sh                 # Conda env bootstrap
@@ -329,7 +330,7 @@ python generate_data/filter_data.py data/pt/my_run \
 python generate_data/analyze_data.py data/pt/my_run --bins 30
 ```
 
-Histograms of taxa counts, sequence lengths, and event-frequency distributions — like the plots in [`train_data_distributions/`](train_data_distributions/).
+Histograms of taxa counts, sequence lengths, and event-frequency distributions.
 
 ### 6. Build bucket metadata (required before training)
 
@@ -502,11 +503,11 @@ ckpt["config"]     # env-var snapshot used for the run
 - **`test_data/Datasets/`** — 40 held-out `.tgl` files for benchmarking.
 - **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for direct Fox inference.
 - **`test_data/amocoala_data/<DatasetXX>/`** — AmoCoala reconstructions per test dataset (used by the 3-way comparison in [`test_model.ipynb`](test_model.ipynb)).
-- **`test_data/amocoala_pipeline/`** — intermediates (`alignments/`, `nexus/`, `sequences/`, `trees/`, `amocoala/`) for re-running AmoCoala from scratch.
-- **`test_data/pt_samples/`** — extra example `.pt` inputs for quick checks.
-- **`train_data_distributions/`** — reference plots of the training-set distributions.
-- **`bin/`** — bundled binaries for the simulation pipeline; pick the subfolder for your OS.
-- **`results/`** — train/val prediction CSVs plus plots; safe to delete and regenerate.
+- **`test_data/Datasets_small/`** + **`test_data/amocoala_small/`** — a 5-dataset subset and its 3-round AmoCoala results (the "more rounds" comparison in the notebook).
+- **`test_data/real_data/`** — the *Heliconius* Müllerian-mimicry real-data test: `heliconius_mimicry.tgl` (Fox input), `heliconius.nex` + 3-round AmoCoala results, and `heliconius_specimen_map.xlsx`. `filtered/` holds the same run with the gap-only specimen `Hmelp246` removed.
+- **`bin/`** — bundled IQ-TREE binary for the simulation pipeline; pick the subfolder for your OS.
+- **`results/`** — train/val prediction CSVs; safe to delete and regenerate.
+- **`assets/`** — the logo shown at the top of this README.
 - **`fox.ckpt`** — released checkpoint loaded by the notebook and CLI.
 
 ---

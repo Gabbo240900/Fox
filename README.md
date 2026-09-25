@@ -1,4 +1,4 @@
-<h1><img src="fox_scientific_research_logo.svg" alt="Fox logo" width="120" align="right"><br>Fox<br clear="right"></h1>
+<h1><img src="assets/fox_logo.png" alt="Fox logo" width="120" align="right"><br>Fox<br clear="right"></h1>
 
 
 Transformer model that infers host–symbiont **cophylogenetic event frequencies** — Speciation, Host-switch / HGT, Loss, Duplication — straight from a pair of multiple sequence alignments (MSAs).

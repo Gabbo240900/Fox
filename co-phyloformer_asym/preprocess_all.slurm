@@ -23,7 +23,7 @@ BASE=/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/ge
 export PREENCODE_SRC_DIR="$BASE/Datasets/"        # raw .tgl in
 export PREENCODE_DST_DIR="$BASE/asym_preencoded/" # .pt out — preencode + filter dir
 DATA_DIR="$PREENCODE_DST_DIR"
-FILTER_SCRIPT=/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/filter_data.py
+FILTER_SCRIPT=/lustre/fswork/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/filter_data.py
 
 # train/val output dirs — must match train.py (new_train / new_val)
 TRAIN_DIR="$BASE/new_train"
@@ -36,7 +36,6 @@ MIN_TAXA=5
 MAX_TAXA=142
 
 # ── 1. pre-encode: .tgl → .pt ─────────────────────────────────────────────────
-python pre_encoder.py
 
 # ── 2. filter: drop bad .pt (irreversible --delete) ───────────────────────────
 python "$FILTER_SCRIPT" "$DATA_DIR" \

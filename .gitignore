@@ -1,7 +1,7 @@
 # MacOS
 .DS_Store
 
-
+*.zip
 *.swp
 *.swo
 *.pth

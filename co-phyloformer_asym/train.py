@@ -9,7 +9,7 @@ import wandb
 import glob
 import math
 import os
-from model import Cophyloformer
+from model import Fox
 from validation import run_full_validation
 from lightning.fabric import Fabric
 from lightning.fabric.utilities.seed import seed_everything
@@ -60,7 +60,7 @@ def unwrap_model(model):
         m = m.module
     return m
 
-class LazyCophyloformerDataset(Dataset):
+class LazyFoxDataset(Dataset):
     def __init__(self, preencoded_dir, pt_files=None):
         if pt_files is None:
             self.pt_files = sorted(glob.glob(os.path.join(preencoded_dir, "*.pt")))
@@ -108,8 +108,7 @@ class LazyCophyloformerDataset(Dataset):
             return
 
         keys = []
-        scan_dir = os.path.basename(os.path.normpath(os.path.dirname(self.pt_files[0]))) if self.pt_files else ""
-        for pt_path in tqdm(self.pt_files, desc=f"Bucket scan {scan_dir}", leave=False):
+        for pt_path in tqdm(self.pt_files, desc=f"Bucket scan {os.path.basename(os.path.normpath(os.path.dirname(pt_path)))}", leave=False):
             sample = torch.load(pt_path, map_location="cpu", weights_only=False)
             host_n = min(int(sample["host_msa"].shape[0]), host_max_leaves)
             para_n = min(int(sample["para_msa"].shape[0]), para_max_leaves)
@@ -292,8 +291,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     # Config
     # -------------------------------------------------------------------------
-    train_preencoded_dir = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_train"
-    val_preencoded_dir   = "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_val"
+    train_preencoded_dir = os.environ.get("TRAIN_DIR", "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_train")
+    val_preencoded_dir   = os.environ.get("VAL_DIR",   "/lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_val")
     epochs         = int(os.environ.get("EPOCHS", "50"))
     batch_size     = int(os.environ.get("BATCH_SIZE", "64"))  # per GPU
     grad_accum     = int(os.environ.get("GRAD_ACCUM", "4"))
@@ -354,8 +353,8 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     # Data
     # -------------------------------------------------------------------------
-    train_dataset = LazyCophyloformerDataset(train_preencoded_dir)
-    val_dataset   = LazyCophyloformerDataset(val_preencoded_dir)
+    train_dataset = LazyFoxDataset(train_preencoded_dir)
+    val_dataset   = LazyFoxDataset(val_preencoded_dir)
 
     if use_bucketed_batches:
         if fabric.is_global_zero:
@@ -408,7 +407,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # -------------------------------------------------------------------------
     # Model + optimizer + scheduler
     # -------------------------------------------------------------------------
-    model = Cophyloformer(
+    model = Fox(
         hidden_dim=hidden_dim, pair_dim=64, cls_dim=512, axial_layers=axial_layers,
         use_opm=use_opm, use_dist_matrix=True,
         gradient_checkpointing=grad_ckpt,
@@ -448,7 +447,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
             run_name = f"{run_name}_resume_ep{start_epoch}"
         wandb.init(
             entity=os.environ.get("WANDB_ENTITY", "cophylo_team"),
-            project=os.environ.get("WANDB_PROJECT", "CoPhyloformer"),
+            project=os.environ.get("WANDB_PROJECT", "Fox"),
             name=run_name,
             group=os.environ.get("WANDB_NAME", "run"),
             id=wandb.util.generate_id(),
@@ -544,10 +543,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
                 fabric.backward(loss / grad_accum)
 
             if is_accum or is_last:
-                grads = [p.grad for p in model.parameters() if p.grad is not None]
-                gnorm = torch.linalg.vector_norm(
-                    torch.stack([torch.linalg.vector_norm(g) for g in grads])
-                )
+                gnorm = fabric.clip_gradients(model, optimizer, max_norm=0.5, error_if_nonfinite=False)
                 if torch.isfinite(gnorm):
                     optimizer.step()
                     scheduler.step()
@@ -658,16 +654,16 @@ def main(fabric: Fabric, ckpt_to_load=None):
     # Final save
     # -------------------------------------------------------------------------
     if fabric.is_global_zero:
-        torch.save(unwrap_model(model).state_dict(), "cophyloformer_final.pth")
+        torch.save(unwrap_model(model).state_dict(), "Fox_final.pth")
         wandb.finish()
         print("Training complete.")
-        print("Run post_process.py on CPU to generate scatter plots and prediction CSV files.")
+        print("Prediction CSVs are in CKPT_DIR; plot them from the main branch (training/post_process.py).")
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser("Train Co-Phyloformer")
+    parser = argparse.ArgumentParser("Train Fox")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("train", description="Train from scratch")
     resumer = subparsers.add_parser("resume", description="Resume from a checkpoint")

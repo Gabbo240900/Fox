@@ -35,7 +35,14 @@ SEED=42
 MIN_TAXA=5
 MAX_TAXA=142
 
+# ── 0. clear outputs of previous runs (stale .pt would mix into the new split) ─
+mkdir -p "$DATA_DIR" "$TRAIN_DIR" "$VAL_DIR"
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/asym_preencoded/ -mindepth 1 -delete
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_train/ -mindepth 1 -delete
+find /lustre/fsn1/projects/rech/vcu/commun/Co-Phyloformer/generate_asymmetree/generated_trees/new_val/ -mindepth 1 -delete
+
 # ── 1. pre-encode: .tgl → .pt ─────────────────────────────────────────────────
+python pre_encoder.py --src "$PREENCODE_SRC_DIR" --dst "$PREENCODE_DST_DIR"
 
 # ── 2. filter: drop bad .pt (irreversible --delete) ───────────────────────────
 python "$FILTER_SCRIPT" "$DATA_DIR" \

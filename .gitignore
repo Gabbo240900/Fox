@@ -226,3 +226,4 @@ co-phyloformer/*.out
 *.out
 
 wandb/
+*.ckpt

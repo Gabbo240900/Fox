@@ -207,6 +207,7 @@ Open [`test_model.ipynb`](test_model.ipynb). It covers:
 1. Loading `fox.ckpt` and scoring the 40 test datasets in `test_data/fox_data/` (MAE, R², bias, scatter plots).
 2. Comparing with the previous model ([`old/`](old/)), both with its own preprocessing and on the leaves real data shows.
 3. The *Heliconius* real-data test, after translating its mitochondrial DNA to protein.
+4. The cockroach / *Blattabacterium* real-data test (a strongly cospeciating system), with a scrambled-links control: the prediction should move away from cospeciation when the host–symbiont links are shuffled.
 
 ### Low-level API
 
@@ -519,6 +520,7 @@ ckpt["hparams"]    # env-var snapshot used for the run
 - **`test_data/amocoala_data/<DatasetXX>/`** — AmoCoala reconstructions per test dataset (used by the 3-way comparison in [`test_model.ipynb`](test_model.ipynb)).
 - **`test_data/Datasets_small/`** + **`test_data/amocoala_small/`** — a 5-dataset subset and its 3-round AmoCoala results (the "more rounds" comparison in the notebook).
 - **`test_data/real_data/`** — the *Heliconius* Müllerian-mimicry real-data test: `heliconius_mimicry.tgl` (mitochondrial DNA), `heliconius_mimicry_aa.tgl` (translated to protein, the Fox input), `heliconius.nex` + 3-round AmoCoala results, and `heliconius_specimen_map.xlsx`. `filtered/` holds the same run with the gap-only specimen `Hmelp246` removed.
+- **`test_data/real_data/blattabacterium/`** — cockroach mitochondrial proteins and *Blattabacterium* proteins for 55 host/symbiont pairs (Arab et al. 2020, *Biol. Lett.* 16: 20190702; Dryad doi:10.5061/dryad.v6wwpzgqw, CC0). `build.py` matches the pairs and writes `pairs.json`.
 - **`bin/`** — bundled IQ-TREE binary for the simulation pipeline; pick the subfolder for your OS.
 - **`results/`** — train/val prediction CSVs from the last epoch (20) of the released run (the checkpoint is epoch 18); the train file covers the samples seen by one of the four GPUs.
 - **`assets/`** — the logo shown at the top of this README.

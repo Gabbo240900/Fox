@@ -47,6 +47,7 @@ def predict_tgl(
     model=None,
     ckpt_path: str = None,
     device: str = "cpu",
+    drop_lost: bool = False,
 ) -> Dict[str, float]:
     """Predict relative cophylogenetic event frequencies from a .tgl file.
 
@@ -56,10 +57,12 @@ def predict_tgl(
     tgl_path  : path to the .tgl file.
     model     : preloaded Fox model (skip per-call load). Optional.
     ckpt_path, device : forwarded to load_model when model is None.
+    drop_lost : simulated .tgl only; drop lost-gene leaves and the planted
+                root row, as done for training (see fox.io.read_tgl).
 
     Returns {Speciation, HGT, Loss, Duplication} -> float, summing to 1.
     """
-    d = read_tgl(tgl_path)
+    d = read_tgl(tgl_path, drop_lost=drop_lost)
     if model is None:
         model = load_model(ckpt_path, device)
     return _infer(d["host_msa"], d["sym_msa"], d["mapping"], model, device)

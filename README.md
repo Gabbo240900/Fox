@@ -76,7 +76,7 @@ Fox/
 │   ├── analyze_data.py        # Summary plots over a .pt directory
 │   └── generated_trees/       # Default output root + priors
 ├── test_data/                 # Held-out evaluation data
-│   ├── Datasets/              # Ground-truth .tgl files (40 datasets)
+│   ├── Datasets/              # Ground-truth .tgl files (100 simulated test datasets)
 │   ├── fox_data/              # Those datasets pre-encoded as .pt for Fox
 │   ├── amocoala_data/         # Per-dataset AmoCoala outputs (1 round)
 │   ├── Datasets_small/        # 5-dataset subset for the multi-round AmoCoala run
@@ -131,6 +131,14 @@ Bundled binary under `bin/` (pick the subfolder for your OS):
 
 - `iqtree_2.2.0` — MSA simulation via AliSim. Third-party (GNU GPL v2); see [`bin/THIRD_PARTY_LICENSES.md`](bin/THIRD_PARTY_LICENSES.md).
 
+**Apple Silicon Macs (M1/M2/M3…): install Rosetta.** `bin/bin_macos/iqtree_2.2.0` is an Intel binary. Without Rosetta it cannot start (`bad CPU type in executable`), and `alisim.py` then reports `0/N files processed successfully` without saying why. Install it once:
+
+```bash
+softwareupdate --install-rosetta --agree-to-license
+```
+
+Check that the binary runs with `bin/bin_macos/iqtree_2.2.0 --version`. Alternatively, install a native IQ-TREE (`conda install -c bioconda -c conda-forge iqtree`) and pass its path to `--iqtree`.
+
 For the optional AmoCoala comparison, get `AmoCoala.jar` from https://github.com/sinaimeri/AmoCoala.
 
 ---
@@ -151,12 +159,12 @@ fox predict --tgl test_data/Datasets/Dataset11.tgl --simulated
 ```
 Event          Frequency
 ------------------------
-Speciation        0.7344
-HGT               0.0502
-Loss              0.0793
-Duplication       0.1362
+Speciation        0.7075
+HGT               0.0352
+Loss              0.0360
+Duplication       0.2213
 
-Dominant: Speciation (73.4%)
+Dominant: Speciation (70.7%)
 ```
 
 **Options:**
@@ -174,8 +182,8 @@ Dominant: Speciation (73.4%)
 ```python
 from fox import predict_tgl
 
-predict_tgl("test_data/Datasets/Dataset11.tgl", drop_lost=True)   # simulated file: drop lost-gene leaves
-# {'Speciation': 0.734, 'HGT': 0.050, 'Loss': 0.079, 'Duplication': 0.136}
+predict_tgl("test_data/Datasets/Dataset11.tgl", drop_lost=True)   # simulated file: drop lost-gene leaves if any
+# {'Speciation': 0.708, 'HGT': 0.035, 'Loss': 0.036, 'Duplication': 0.221}
 ```
 
 Scoring many files? Load the model once and reuse it:
@@ -204,8 +212,11 @@ The reading frame is picked automatically (fewest stop codons); gene-boundary st
 
 Open [`test_model.ipynb`](test_model.ipynb). It covers:
 
-1. Loading `fox.ckpt` and scoring the 40 test datasets in `test_data/fox_data/` (MAE, R², bias, scatter plots).
-2. Comparing with the previous model ([`old/`](old/)), both with its own preprocessing and on the leaves real data shows.
+1. Loading `fox.ckpt` and scoring the 100 test datasets pre-encoded in `test_data/fox_data/` (MAE, R², bias, scatter plots). To rebuild that folder:
+   ```bash
+   python training/pre_encoder.py --src test_data/Datasets --dst test_data/fox_data
+   ```
+2. Comparing with the previous model ([`old/`](old/)) on the same datasets (no lost-gene leaves, as in real data), with its own 4-state distances.
 3. The *Heliconius* real-data test, after translating its mitochondrial DNA to protein.
 4. The cockroach / *Blattabacterium* real-data test (a strongly cospeciating system), with a scrambled-links control: the prediction should move away from cospeciation when the host–symbiont links are shuffled.
 
@@ -283,7 +294,7 @@ python alisim.py generated_trees/my_run/Datasets \
   --substitution LG \
   --gamma GC \
   --iqtree ../bin/bin_macos/iqtree_2.2.0 \
-  --length 500 \
+  --length 250 \
   --max-attempts 1 \
   --allow-duplicate-sequences \
   --n_cores 16 \
@@ -305,6 +316,8 @@ Flags ([`alisim.py`](generate_data/alisim.py)):
 | `--temp-dir` | system tmp | scratch dir for IQ-TREE |
 
 Each `Dataset<i>.tgl` is augmented in place with the host and parasite MSAs.
+
+If it reports `0/N files processed successfully`, IQ-TREE could not run: on an Apple Silicon Mac, install Rosetta (see [Installation](#installation)).
 
 ### 3. Pre-encode `.tgl` → `.pt`
 
@@ -515,10 +528,10 @@ ckpt["hparams"]    # env-var snapshot used for the run
 
 ## Other folders
 
-- **`test_data/Datasets/`** — 40 held-out `.tgl` files for benchmarking.
-- **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for direct Fox inference (`training/pre_encoder.py`: lost-gene leaves and root row dropped).
-- **`test_data/amocoala_data/<DatasetXX>/`** — AmoCoala reconstructions per test dataset (used by the 3-way comparison in [`test_model.ipynb`](test_model.ipynb)).
-- **`test_data/Datasets_small/`** + **`test_data/amocoala_small/`** — a 5-dataset subset and its 3-round AmoCoala results (the "more rounds" comparison in the notebook).
+- **`test_data/Datasets/`** — 100 held-out simulated `.tgl` files for benchmarking, made with the current simulator (no lost-gene leaves).
+- **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for the notebook (`training/pre_encoder.py`).
+- **`test_data/amocoala_data/<DatasetXX>/`** — AmoCoala reconstructions per dataset of the previous 40-dataset test set (`old/test_data/Datasets/`), used by the 3-way comparison in [`old/test_model.ipynb`](old/test_model.ipynb).
+- **`test_data/Datasets_small/`** + **`test_data/amocoala_small/`** — a 5-dataset subset and its 3-round AmoCoala results (the "more rounds" comparison in `old/test_model.ipynb`).
 - **`test_data/real_data/`** — the *Heliconius* Müllerian-mimicry real-data test: `heliconius_mimicry.tgl` (mitochondrial DNA), `heliconius_mimicry_aa.tgl` (translated to protein, the Fox input), `heliconius.nex` + 3-round AmoCoala results, and `heliconius_specimen_map.xlsx`. `filtered/` holds the same run with the gap-only specimen `Hmelp246` removed.
 - **`test_data/real_data/blattabacterium/`** — cockroach mitochondrial proteins and *Blattabacterium* proteins for 55 host/symbiont pairs (Arab et al. 2020, *Biol. Lett.* 16: 20190702; Dryad doi:10.5061/dryad.v6wwpzgqw, CC0). `build.py` matches the pairs and writes `pairs.json`.
 - **`bin/`** — bundled IQ-TREE binary for the simulation pipeline; pick the subfolder for your OS.
@@ -533,7 +546,7 @@ ckpt["hparams"]    # env-var snapshot used for the run
 The first released model is kept for comparison and reproducibility:
 
 - `old/fox.ckpt` — its checkpoint; `old/fox/`, `old/training/`, `old/generate_data/` — its inference package, model and simulator.
-- `old/test_model.ipynb` — its evaluation notebook, with `old/test_data/fox_data/` (test set encoded its way) and `old/results/`.
+- `old/test_model.ipynb` — its evaluation notebook, with `old/test_data/Datasets/` (the 40-dataset test set it and AmoCoala were scored on), `old/test_data/fox_data/` (that test set encoded its way) and `old/results/`.
 
 It used a host↔symbiont cross-attention head that did not see which symbiont sits in which host, the 4-state Jukes–Cantor formula on proteins, and kept the lost-gene leaves in the simulated alignments. Real data never has sequences for lost genes: given only the leaves real data shows, it predicts almost no losses. Its code imports `training.model`, so run it with `old/` as the working directory (or first on `sys.path`), not together with the current package in one process. The notebook keeps its saved outputs as the record of that model; rerunning it needs its data paths pointed back to `test_data/`.
 

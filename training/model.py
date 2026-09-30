@@ -493,7 +493,60 @@ class MSAEncoder(nn.Module):
         return x, global_repr  # per-leaf embeddings (hidden_dim) + CLS (cls_dim)
 
 
+class PairTokenBlock(nn.Module):
+    """Pre-norm gated self-attention + FFN over [host CLS, symbiont CLS, pair tokens].
+
+    Accepts an additive per-head attention bias so pair tokens can compare how
+    far apart their hosts are with how far apart their symbionts are.
+    """
+
+    def __init__(self, dim: int, n_heads: int, dropout: float = 0.0):
+        super().__init__()
+        assert dim % n_heads == 0, "dim must be divisible by n_heads"
+        self.n_heads  = n_heads
+        self.head_dim = dim // n_heads
+        self.norm1    = nn.LayerNorm(dim)
+        self.qkv      = nn.Linear(dim, 3 * dim, bias=False)
+        self.g_proj   = nn.Linear(dim, dim)
+        self.out_proj = nn.Linear(dim, dim)
+        self.norm2    = nn.LayerNorm(dim)
+        self.ffn      = nn.Sequential(
+            nn.Linear(dim, dim * 4), nn.GELU(), nn.Dropout(dropout), nn.Linear(dim * 4, dim),
+        )
+        self.attn_dropout = dropout
+        self.resid_drop   = nn.Dropout(dropout)
+
+    def forward(
+        self,
+        x: torch.Tensor,                   # [B, L, D]
+        attn_bias: Optional[torch.Tensor],  # [B, H, L, L] or None
+        pad_mask: torch.Tensor,            # [B, L]  True = padded token
+    ) -> torch.Tensor:
+        B, L, D = x.shape
+        H, d_h  = self.n_heads, self.head_dim
+
+        h = self.norm1(x)
+        q, k, v = self.qkv(h).view(B, L, 3, H, d_h).permute(2, 0, 3, 1, 4)  # each [B, H, L, d_h]
+        g = torch.sigmoid(self.g_proj(h))                                     # [B, L, D]
+
+        mask = torch.zeros(B, 1, 1, L, device=x.device, dtype=q.dtype)
+        mask = mask.masked_fill(pad_mask[:, None, None, :], torch.finfo(q.dtype).min)
+        if attn_bias is not None:
+            mask = mask + attn_bias.to(q.dtype)
+
+        out = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=mask.expand(B, H, L, L),
+            dropout_p=self.attn_dropout if self.training else 0.0,
+        )                                                                     # [B, H, L, d_h]
+        out = out.transpose(1, 2).reshape(B, L, D)
+        x = x + self.resid_drop(self.out_proj(g * out))
+        x = x + self.resid_drop(self.ffn(self.norm2(x)))
+        return x
+
+
 class Fox(nn.Module):
+    N_CLS = 2  # host CLS + symbiont CLS lead the joint sequence
+
     def __init__(
         self,
         hidden_dim=256,
@@ -527,63 +580,34 @@ class Fox(nn.Module):
             dropout=dropout,
         )
 
-        # Project per-leaf pair embeddings from hidden_dim → cls_dim so the
-        # cross-attention sequence is uniformly at cls_dim throughout.
-        self.pair_proj_h = nn.Linear(hidden_dim, cls_dim)
-        self.pair_proj_p = nn.Linear(hidden_dim, cls_dim)
+        # ── Host–symbiont interaction ────────────────────────────────────────
+        # One token per mapping pair (host leaf h, symbiont leaf p), built from
+        # BOTH leaf embeddings, so the model knows which symbiont sits in which
+        # host. Re-pairing the same leaves changes the tokens and the output.
+        self.pair_token_mlp = nn.Sequential(
+            nn.Linear(2 * hidden_dim, cls_dim),
+            nn.GELU(),
+            nn.Linear(cls_dim, cls_dim),
+        )
+        # 0 = host CLS, 1 = symbiont CLS, 2 = pair token
+        self.token_type = nn.Embedding(3, cls_dim)
 
-        # ── Cross-attention (Fox specific, no equivalent in Phyloformer-2) ──
-        # Operates at cls_dim: the CLS token and projected pairs are all cls_dim.
+        # Attention bias between pair tokens k and l from
+        # [host distance(h_k, h_l), symbiont distance(p_k, p_l), same host?].
+        # Lets attention directly see whether symbiont distances follow host
+        # distances (cospeciation) or not (host switches, duplications).
+        self.pair_bias_mlp = nn.Sequential(
+            nn.Linear(3, 32),
+            nn.GELU(),
+            nn.Linear(32, num_heads),
+        )
+
         self.num_cross_layers = num_cross_layers
-
-        # Simultaneous bidirectional cross-attention
-        self.cross_attn_h2p = nn.ModuleList([
-            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=dropout)
-            for _ in range(self.num_cross_layers)
+        self.pair_blocks = nn.ModuleList([
+            PairTokenBlock(cls_dim, num_heads, dropout) for _ in range(num_cross_layers)
         ])
-        self.cross_attn_p2h = nn.ModuleList([
-            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=dropout)
-            for _ in range(self.num_cross_layers)
-        ])
-        self.cross_norms_h  = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
-        self.cross_norms_p  = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
-        self.cross_norms_h2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
-        self.cross_norms_p2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
-        self.cross_ffns_h = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(dropout), nn.Linear(cls_dim * 4, cls_dim))
-            for _ in range(self.num_cross_layers)
-        ])
-        self.cross_ffns_p = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(dropout), nn.Linear(cls_dim * 4, cls_dim))
-            for _ in range(self.num_cross_layers)
-        ])
-
-        # Self-attention to consolidate after each cross-attention step
-        self.self_attn_h  = nn.ModuleList([
-            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=dropout)
-            for _ in range(self.num_cross_layers)
-        ])
-        self.self_attn_p  = nn.ModuleList([
-            nn.MultiheadAttention(cls_dim, num_heads, batch_first=True, dropout=dropout)
-            for _ in range(self.num_cross_layers)
-        ])
-        self.self_norms_h  = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
-        self.self_norms_p  = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
-        self.self_norms_h2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
-        self.self_norms_p2 = nn.ModuleList([nn.LayerNorm(cls_dim) for _ in range(self.num_cross_layers)])
-        self.self_ffns_h = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(dropout), nn.Linear(cls_dim * 4, cls_dim))
-            for _ in range(self.num_cross_layers)
-        ])
-        self.self_ffns_p = nn.ModuleList([
-            nn.Sequential(nn.Linear(cls_dim, cls_dim * 4), nn.GELU(), nn.Dropout(dropout), nn.Linear(cls_dim * 4, cls_dim))
-            for _ in range(self.num_cross_layers)
-        ])
-
-        self.pair_pool_score_h = nn.Linear(cls_dim, 1)
-        self.pair_pool_score_p = nn.Linear(cls_dim, 1)
-
-        self.resid_drop = nn.Dropout(dropout)
+        self.final_norm = nn.LayerNorm(cls_dim)
+        self.pair_pool_score = nn.Linear(cls_dim, 1)
 
         self.concat_dim = 4 * cls_dim
 
@@ -607,6 +631,14 @@ class Fox(nn.Module):
             nn.Linear(cls_dim, 4),
         )
 
+    @staticmethod
+    def _gather_pair_dist(dist: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
+        """dist [B, N, N], idx [B, M] -> dist between the leaves of pairs k, l: [B, M, M]."""
+        B, N, _ = dist.shape
+        M = idx.shape[1]
+        rows = dist.gather(1, idx.unsqueeze(-1).expand(B, M, N))    # [B, M, N]
+        return rows.gather(2, idx.unsqueeze(1).expand(B, M, M))     # [B, M, M]
+
     def forward(self, host_msa, parasite_msa, mappings,
                 host_dist: Optional[torch.Tensor] = None,
                 para_dist: Optional[torch.Tensor] = None):
@@ -614,15 +646,14 @@ class Fox(nn.Module):
         host_emb,     host_cls     = self.encoder(host_msa, dist_matrix=host_dist)
         parasite_emb, parasite_cls = self.encoder(parasite_msa, dist_matrix=para_dist)
 
-        batch_size = host_msa.shape[0]
-        hidden_dim = host_emb.shape[-1]
-        max_pairs  = max((len(m) for m in mappings), default=0)
-        L          = max_pairs + 1   # +1 for CLS
+        B         = host_msa.shape[0]
+        H         = host_emb.shape[-1]
+        max_pairs = max((len(m) for m in mappings), default=0)
+        L         = self.N_CLS + max_pairs
+        device    = host_emb.device
 
-        device = host_emb.device
-
-        host_idx = torch.full((batch_size, max_pairs), -1, device=device, dtype=torch.long)
-        para_idx = torch.full((batch_size, max_pairs), -1, device=device, dtype=torch.long)
+        host_idx = torch.full((B, max_pairs), -1, device=device, dtype=torch.long)
+        para_idx = torch.full((B, max_pairs), -1, device=device, dtype=torch.long)
 
         for i, mapping in enumerate(mappings):
             if len(mapping) == 0:
@@ -634,83 +665,52 @@ class Fox(nn.Module):
             host_idx[i, :h.numel()] = h
             para_idx[i, :p.numel()] = p
 
+        pair_present  = (host_idx != -1) & (para_idx != -1)          # [B, M]
         safe_host_idx = host_idx.clamp(min=0)
         safe_para_idx = para_idx.clamp(min=0)
 
-        host_gather = host_emb.gather(1, safe_host_idx.unsqueeze(-1).expand(-1, -1, hidden_dim))
-        para_gather = parasite_emb.gather(1, safe_para_idx.unsqueeze(-1).expand(-1, -1, hidden_dim))
+        host_gather = host_emb.gather(1, safe_host_idx.unsqueeze(-1).expand(-1, -1, H))      # [B, M, H]
+        para_gather = parasite_emb.gather(1, safe_para_idx.unsqueeze(-1).expand(-1, -1, H))  # [B, M, H]
+        pair_tok = self.pair_token_mlp(torch.cat([host_gather, para_gather], dim=-1))        # [B, M, cls_dim]
+        pair_tok = pair_tok.masked_fill(~pair_present.unsqueeze(-1), 0.0)
 
-        host_gather = host_gather.masked_fill((host_idx == -1).unsqueeze(-1), 0)
-        para_gather = para_gather.masked_fill((para_idx == -1).unsqueeze(-1), 0)
+        types = self.token_type.weight                                                       # [3, cls_dim]
+        seq = torch.cat([
+            (host_cls + types[0]).unsqueeze(1),
+            (parasite_cls + types[1]).unsqueeze(1),
+            pair_tok + types[2],
+        ], dim=1)                                                                            # [B, L, cls_dim]
 
-        # Project per-leaf pair embeddings from hidden_dim → cls_dim
-        host_gather = self.pair_proj_h(host_gather)   # (B, max_pairs, cls_dim)
-        para_gather = self.pair_proj_p(para_gather)   # (B, max_pairs, cls_dim)
+        token_present = torch.ones((B, L), device=device, dtype=torch.bool)
+        token_present[:, self.N_CLS:] = pair_present
+        pad_mask = ~token_present
 
-        host_seq     = torch.cat([host_cls.unsqueeze(1),     host_gather], dim=1)  # (B, L, cls_dim)
-        parasite_seq = torch.cat([parasite_cls.unsqueeze(1), para_gather], dim=1)
+        attn_bias = None
+        if host_dist is not None and para_dist is not None and max_pairs > 0:
+            hd = self._gather_pair_dist(host_dist.to(seq.dtype), safe_host_idx)             # [B, M, M]
+            pd = self._gather_pair_dist(para_dist.to(seq.dtype), safe_para_idx)             # [B, M, M]
+            same_host = (safe_host_idx.unsqueeze(2) == safe_host_idx.unsqueeze(1)).to(seq.dtype)
+            pb = self.pair_bias_mlp(torch.stack([hd, pd, same_host], dim=-1))               # [B, M, M, heads]
+            attn_bias = torch.zeros(B, self.num_heads, L, L, device=device, dtype=seq.dtype)
+            attn_bias[:, :, self.N_CLS:, self.N_CLS:] = pb.permute(0, 3, 1, 2)
 
-        pair_present = torch.ones((batch_size, L), device=device, dtype=torch.bool)
-        if max_pairs > 0:
-            pair_present[:, 1:] = (host_idx != -1) & (para_idx != -1)
-        kv_pad_mask = ~pair_present
+        for blk in self.pair_blocks:
+            seq = blk(seq, attn_bias, pad_mask)
+        seq = self.final_norm(seq)
 
-        cross_host = host_seq
-        cross_para = parasite_seq
+        pairs_out = seq[:, self.N_CLS:]                                                      # [B, M, cls_dim]
+        pm = pair_present.to(seq.dtype).unsqueeze(-1)                                        # [B, M, 1]
 
-        for i in range(self.num_cross_layers):
-            # simultaneous bidirectional cross-attention (both on pre-update representations)
-            h_attn, _ = self.cross_attn_h2p[i](
-                self.cross_norms_h[i](cross_host),
-                cross_para,
-                cross_para,
-                key_padding_mask=kv_pad_mask,
-                need_weights=False,
-            )
-            p_attn, _ = self.cross_attn_p2h[i](
-                self.cross_norms_p[i](cross_para),
-                cross_host,
-                cross_host,
-                key_padding_mask=kv_pad_mask,
-                need_weights=False,
-            )
-            cross_host = cross_host + self.resid_drop(h_attn)
-            cross_host = cross_host + self.resid_drop(self.cross_ffns_h[i](self.cross_norms_h2[i](cross_host)))
-            cross_para = cross_para + self.resid_drop(p_attn)
-            cross_para = cross_para + self.resid_drop(self.cross_ffns_p[i](self.cross_norms_p2[i](cross_para)))
+        # Attention pooling over pair tokens (masked)
+        scores = self.pair_pool_score(pairs_out).squeeze(-1).float()
+        scores = scores.masked_fill(~pair_present, -1e4)
+        w = F.softmax(scores, dim=1).to(seq.dtype).unsqueeze(-1) * pm
+        attn_pooled = (pairs_out * w).sum(1) / w.sum(1).clamp(min=1e-6)
+        # Mean pooling over pair tokens (masked)
+        mean_pooled = (pairs_out * pm).sum(1) / pm.sum(1).clamp(min=1.0)
 
-            # self-attention so each side consolidates what it learned from the other
-            h_self, _ = self.self_attn_h[i](
-                self.self_norms_h[i](cross_host),
-                cross_host,
-                cross_host,
-                key_padding_mask=kv_pad_mask,
-                need_weights=False,
-            )
-            p_self, _ = self.self_attn_p[i](
-                self.self_norms_p[i](cross_para),
-                cross_para,
-                cross_para,
-                key_padding_mask=kv_pad_mask,
-                need_weights=False,
-            )
-            cross_host = cross_host + self.resid_drop(h_self)
-            cross_host = cross_host + self.resid_drop(self.self_ffns_h[i](self.self_norms_h2[i](cross_host)))
-            cross_para = cross_para + self.resid_drop(p_self)
-            cross_para = cross_para + self.resid_drop(self.self_ffns_p[i](self.self_norms_p2[i](cross_para)))
+        features = torch.cat([seq[:, 0], seq[:, 1], attn_pooled, mean_pooled], dim=-1)     # [B, 4*cls_dim]
+        features = self.feature_mixer(features)
 
-        def masked_softmax_pool(logits, seq, mask):
-            logits = logits.masked_fill(~mask, -1e4)
-            w = F.softmax(logits.float(), dim=1).to(dtype=seq.dtype)
-            w = w * mask.to(dtype=seq.dtype)
-            w = w / w.sum(dim=1, keepdim=True).clamp(min=1e-6)
-            return torch.sum(seq * w.unsqueeze(-1), dim=1)
-
-        host_pooled  = masked_softmax_pool(self.pair_pool_score_h(cross_host).squeeze(-1), cross_host, pair_present)
-        para_pooled  = masked_softmax_pool(self.pair_pool_score_p(cross_para).squeeze(-1), cross_para, pair_present)
-
-        attended_pairs = torch.cat([cross_host[:, 0], cross_para[:, 0], host_pooled, para_pooled], dim=-1)
-        attended_pairs = self.feature_mixer(attended_pairs)
-
-        logits = self.event_head(attended_pairs)
+        logits = self.event_head(features)
         return torch.softmax(logits, dim=-1)

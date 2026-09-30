@@ -1,6 +1,6 @@
 """Sequence encoding + Jukes-Cantor distances.
 
-Mirrors training/pre_encoder.py exactly so inference matches training.
+Shared by training/pre_encoder.py and inference so both encode identically.
 """
 
 import torch
@@ -10,6 +10,7 @@ AA_TO_INDEX = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
 UNK_ID = 21
 PAD_ID = 22
 MAX_SEQ_LEN = 250
+JC_MAX_P = 0.94  # protein JC saturates at p = 0.95
 
 EVENT_NAMES = ["Speciation", "HGT", "Loss", "Duplication"]
 
@@ -27,13 +28,18 @@ def encode_msa(msa: dict) -> torch.Tensor:
 
 
 def jukes_cantor_dist(msa: torch.Tensor) -> torch.Tensor:
-    """Vectorised pairwise Jukes-Cantor distances. msa: [N, S] int tokens (PAD=22)."""
+    """Vectorised pairwise Jukes-Cantor distances for proteins (20 states).
+
+    msa: [N, S] int tokens (PAD=22). With p = fraction of mismatching sites,
+    d = -(19/20) * ln(1 - (20/19) * p). p is capped just below the saturation
+    point (19/20 = 0.95) so the log stays finite.
+    """
     valid = (msa != PAD_ID)
     valid_pair = valid.unsqueeze(1) & valid.unsqueeze(0)
     n_v = valid_pair.sum(dim=2).clamp(min=1).float()
     mismatch = (msa.unsqueeze(1) != msa.unsqueeze(0)) & valid_pair
     p = mismatch.float().sum(dim=2) / n_v
-    p = p.clamp(0.0, 0.74)
-    dist = -0.75 * torch.log(1.0 - (4.0 / 3.0) * p)
+    p = p.clamp(0.0, JC_MAX_P)
+    dist = -(19.0 / 20.0) * torch.log(1.0 - (20.0 / 19.0) * p)
     dist.fill_diagonal_(0.0)
     return dist

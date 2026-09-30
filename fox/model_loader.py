@@ -51,12 +51,16 @@ def load_model(ckpt_path: str = None, device: str = "cpu"):
     hp = ckpt.get("hparams", {})
 
     # num_cross_layers is not stored in hparams; infer it from the state dict.
-    num_cross_layers = max(
-        int(k.split(".")[1]) for k in ckpt["model"] if k.startswith("cross_attn_h2p.")
-    ) + 1
+    block_ids = [int(k.split(".")[1]) for k in ckpt["model"] if k.startswith("pair_blocks.")]
+    if not block_ids:
+        raise RuntimeError(
+            f"{ckpt_path!r} was trained with the old host/symbiont cross-attention "
+            "head (before pair tokens) and cannot be loaded by this model version."
+        )
+    num_cross_layers = max(block_ids) + 1
 
     model = Fox(
-        hidden_dim=256,
+        hidden_dim=hp.get("hidden_dim", 256),
         pair_dim=hp.get("pair_dim", 64),
         num_heads=8,
         axial_layers=hp.get("axial_layers", 2),
@@ -68,6 +72,7 @@ def load_model(ckpt_path: str = None, device: str = "cpu"):
         use_flexattention=False,  # FlexAttention needs CUDA; off for portable inference
         dropout=0.0,
     )
+    # Released checkpoints store weights in float16; load_state_dict casts them to float32.
     model.load_state_dict(ckpt["model"])
     model.to(device).eval()
     return model

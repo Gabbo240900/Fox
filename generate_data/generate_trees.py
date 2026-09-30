@@ -1,5 +1,5 @@
 import asymmetree.treeevolve as te
-from asymmetree.tools.PhyloTreeTools import to_newick
+from asymmetree.tools.PhyloTreeTools import to_newick, remove_planted_root
 from tralda.datastructures import Tree, LCA
 from collections import Counter
 import re
@@ -40,8 +40,19 @@ def generate(base_path: str, num_trees: int = 20, time_grid=(1.5, 2, 2.5, 3, 3.5
             s = te.species_tree_n_age(n=num_leaves, model='BDP', age=age,
                                       birth_rate=host_birth_rate, death_rate=host_death_rate)
             g = te.dated_gene_tree(s, dupl_rate=dupl_rate, loss_rate=loss_rate, hgt_rate=hgt_rate)
-            s_nwk = to_newick(s)
-            g_nwk = to_newick(g)
+
+            # Labels are counted on the full history `g` (below). The trees we
+            # write, and so the MSAs and the mapping, only keep what real data
+            # can show: lost-gene leaves are pruned and the planted root edge
+            # is removed, so AliSim no longer emits a P0 / H0 root row.
+            g_obs = te.prune_losses(g)
+            s_obs = remove_planted_root(s, inplace=False)
+            extant_count = sum(1 for _ in g_obs.leaves()) if g_obs.root is not None else 0
+            if extant_count < 2:
+                continue
+
+            s_nwk = to_newick(s_obs)
+            g_nwk = to_newick(g_obs)
 
             s_nwk = re.sub(r'(?<=[(,)])(?!(H))(\d+):', r'H\2:', s_nwk)
             g_nwk = gene_pattern.sub(lambda m: f"P{m.group(1)}", g_nwk)
@@ -100,6 +111,7 @@ def generate(base_path: str, num_trees: int = 20, time_grid=(1.5, 2, 2.5, 3, 3.5
                 f.write(f"Duplication_freq: {dupl_proportion:.4f}\n")
                 f.write(f"Host_num_leaves: {sum(1 for _ in s.leaves())}\n")
                 f.write(f"Symbiont_num_leaves: {gene_leaf_count}\n")
+                f.write(f"Symbiont_num_extant: {extant_count}\n")
                 f.write(f"Sim_time: {age}\n")
 
             dataset_path = f"{base_path}/Datasets/Dataset{sim_index}.tgl"
@@ -129,6 +141,7 @@ def generate(base_path: str, num_trees: int = 20, time_grid=(1.5, 2, 2.5, 3, 3.5
                 f.write(f"Duplication_freq: {dupl_proportion:.4f}\n")
                 f.write(f"Host_num_leaves: {sum(1 for _ in s.leaves())}\n")
                 f.write(f"Symbiont_num_leaves: {gene_leaf_count}\n")
+                f.write(f"Symbiont_num_extant: {extant_count}\n")
                 f.write(f"Sim_time: {age}\n")
             sim_index += 1
 

@@ -12,9 +12,12 @@ example_data/pt_samples
 
 training/post_process_outputs
 training/full_fox.ckpt
+old/training/full_fox.ckpt
+old/training/post_process_outputs
 test_data/amocoala_pipeline
 test_data/pt_samples
 generate_data/generated_trees/test_data
+old/generate_data/generated_trees/test_data
 
 *.slurm
 # Byte-compiled / optimized / DLL files

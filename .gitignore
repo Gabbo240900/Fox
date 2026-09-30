@@ -132,3 +132,4 @@ cython_debug/
 
 wandb/
 !assets/fox_logo.png
+test_data/real_data/blattabacterium/pairs.json

@@ -14,6 +14,8 @@ def _add_predict_parser(sub):
     p.add_argument("--ckpt", default=None,
                    help="Checkpoint path (default: $FOX_CKPT or repo fox.ckpt).")
     p.add_argument("--device", default="cpu", help="cpu | cuda | mps.")
+    p.add_argument("--simulated", action="store_true",
+                   help="Simulated .tgl: drop lost-gene leaves and the root row, as in training.")
     p.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
     return p
 
@@ -29,6 +31,7 @@ def main(argv=None):
             args.tgl,
             ckpt_path=args.ckpt,
             device=args.device,
+            drop_lost=args.simulated,
         )
         if args.json:
             print(json.dumps(result, indent=2))

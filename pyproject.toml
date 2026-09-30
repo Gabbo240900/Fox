@@ -22,6 +22,10 @@ dependencies = [
     "torch>=2.1,<3",
 ]
 
+[project.optional-dependencies]
+# `python -m fox.translate` (DNA .tgl -> protein .tgl)
+translate = ["biopython>=1.80"]
+
 [project.urls]
 Homepage = "https://github.com/Gabbo240900/Fox"
 Repository = "https://github.com/Gabbo240900/Fox"
@@ -34,7 +38,7 @@ fox = "fox.cli:main"
 packages = ["fox", "training"]
 
 [tool.setuptools.package-data]
-# fox.ckpt (~76 MB) is committed at the repo root, not packaged into the wheel.
+# fox.ckpt (~43 MB, float16) is committed at the repo root, not packaged into the wheel.
 # An editable install (`pip install -e .`) finds it there; override via
 # $FOX_CKPT or --ckpt. See load_model().
 fox = []

@@ -6,6 +6,8 @@ No external deps. Keeps the install light.
 import re
 from typing import Dict, List, Tuple
 
+from .tree import extant_leaves
+
 # Canonical labels found in a .tgl. The event frequencies are written as
 # "<Event>_freq" (the bare "<Event>" lines are integer counts, not frequencies).
 # These labels live in a trailer after the final "END;", so they are parsed at
@@ -19,8 +21,13 @@ _FREQ_KEYS = {
 }
 
 
-def read_tgl(path: str) -> dict:
+def read_tgl(path: str, drop_lost: bool = False) -> dict:
     """Parse a well-formatted .tgl bundle.
+
+    drop_lost : for simulated .tgl files only. Keep just the leaves that reach
+                the present in the HOST / PARASITE trees: drops lost-gene
+                leaves and the planted-root row (P0 / H0) from the alignments
+                and the mapping. Needs dated trees; do not use on real data.
 
     Returns a dict with:
       host_msa : {name: sequence}   (HOST ALIGNMENT block)
@@ -34,6 +41,7 @@ def read_tgl(path: str) -> dict:
     sym_msa: Dict[str, str] = {}
     mapping_ps: List[Tuple[str, str]] = []  # (parasite, host) as written
     labels: Dict[str, float] = {}
+    trees: Dict[str, str] = {}
     section = None
     in_aln = False
 
@@ -54,7 +62,9 @@ def read_tgl(path: str) -> dict:
                 continue
 
             if section in ("HOST", "PARA"):
-                if re.match(r"TREE \* \S+ = ", s):
+                m = re.match(r"TREE \* \S+ = (.+)", s)
+                if m:
+                    trees[section] = m.group(1)
                     continue
                 if s.startswith("ALIGNMENT"):
                     in_aln = True
@@ -85,6 +95,15 @@ def read_tgl(path: str) -> dict:
             f"{path!r}: missing HOST or PARASITE alignment. "
             "Expected a well-formatted .tgl with both ALIGNMENT blocks."
         )
+
+    if drop_lost:
+        if "HOST" not in trees or "PARA" not in trees:
+            raise ValueError(f"{path!r}: drop_lost needs both HOST and PARASITE trees.")
+        keep_h = extant_leaves(trees["HOST"])
+        keep_p = extant_leaves(trees["PARA"])
+        host_msa = {n: q for n, q in host_msa.items() if n in keep_h}
+        sym_msa = {n: q for n, q in sym_msa.items() if n in keep_p}
+        mapping_ps = [(p, h) for p, h in mapping_ps if p in sym_msa and h in host_msa]
 
     mapping = [(h, p) for p, h in mapping_ps]  # return host-first
     return {

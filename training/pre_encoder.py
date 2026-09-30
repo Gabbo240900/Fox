@@ -1,68 +1,60 @@
 import os
+import sys
 import argparse
+from glob import glob
 import torch
 from tqdm import tqdm
-from data import CophylogenyDataset
 
-AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY-"
-AA_TO_INDEX = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
-UNK_ID = 21
-PAD_ID = 22
-MAX_SEQ_LEN = 250
+# Reuse the inference package's reader + encoding so training and `fox predict`
+# can never drift apart (tokens, Jukes-Cantor distances, lost-leaf filtering).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from fox.io import read_tgl  # noqa: E402
+from fox.encoding import encode_msa, jukes_cantor_dist  # noqa: E402
 
-
-def encode_sequence(sequence, max_len=MAX_SEQ_LEN):
-    encoded = [AA_TO_INDEX.get(aa, UNK_ID) for aa in sequence[:max_len]]
-    encoded += [PAD_ID] * (max_len - len(encoded))
-    return torch.tensor(encoded, dtype=torch.long)
-
-
-def jukes_cantor_dist(msa: torch.Tensor) -> torch.Tensor:
-    """Vectorised pairwise Jukes-Cantor distances. msa: [N, S] int tokens (PAD=22)."""
-    valid = (msa != PAD_ID)
-    valid_pair = valid.unsqueeze(1) & valid.unsqueeze(0)
-    n_v = valid_pair.sum(dim=2).clamp(min=1).float()
-    mismatch = (msa.unsqueeze(1) != msa.unsqueeze(0)) & valid_pair
-    p = mismatch.float().sum(dim=2) / n_v
-    p = p.clamp(0.0, 0.74)
-    dist = -0.75 * torch.log(1.0 - (4.0 / 3.0) * p)
-    dist.fill_diagonal_(0.0)
-    return dist
+LABEL_KEYS = ("Speciation", "HGT", "Loss", "Duplication", "Sim_time")
 
 
 def preencode(src_dir: str, dst_dir: str):
     os.makedirs(dst_dir, exist_ok=True)
-    dataset = CophylogenyDataset(src_dir).get_data()
-    for i, sample in enumerate(tqdm(dataset, total=len(dataset))):
-        if len(sample["host_msas"]) == 0 or len(sample["parasite_msas"]) == 0:
+    tgl_paths = sorted(glob(os.path.join(src_dir, "*.tgl")))
+    skipped = 0
+    for i, path in enumerate(tqdm(tgl_paths)):
+        try:
+            # drop_lost: keep only leaves alive at the present (no lost genes,
+            # no planted-root P0/H0 row), matching what real data looks like.
+            sample = read_tgl(path, drop_lost=True)
+        except ValueError as e:
+            print(f"[skip] {e}")
+            skipped += 1
             continue
-        host_list = list(sample["host_msas"].keys())
-        para_list = list(sample["parasite_msas"].keys())
-        h_idx = {n: j for j, n in enumerate(host_list)}
-        p_idx = {n: j for j, n in enumerate(para_list)}
-        host_tokens = torch.stack([encode_sequence(seq) for seq in sample["host_msas"].values()])
-        para_tokens = torch.stack([encode_sequence(seq) for seq in sample["parasite_msas"].values()])
-        mappings = [
-            (h_idx[h], p_idx[p])
-            for p, h in sample["mappings"]
-            if p in p_idx and h in h_idx
-        ]
+        host_msa, para_msa = sample["host_msa"], sample["sym_msa"]
+        if len(host_msa) < 2 or len(para_msa) < 2:
+            skipped += 1
+            continue
+        h_idx = {n: j for j, n in enumerate(host_msa)}
+        p_idx = {n: j for j, n in enumerate(para_msa)}
+        mappings = [(h_idx[h], p_idx[p]) for h, p in sample["mapping"]]
+        if not mappings:
+            skipped += 1
+            continue
+        host_tokens = encode_msa(host_msa)
+        para_tokens = encode_msa(para_msa)
         out = {
             "host_msa":  host_tokens,
             "para_msa":  para_tokens,
             "host_dist": jukes_cantor_dist(host_tokens),
             "para_dist": jukes_cantor_dist(para_tokens),
             "mappings":  mappings,
-            "labels": {
-                e: sample["event_frequencies"].get(e, 0.0)
-                for e in ("Speciation", "HGT", "Loss", "Duplication", "Sim_time")
-            },
+            "labels":    {e: sample["labels"].get(e, 0.0) for e in LABEL_KEYS},
         }
         torch.save(out, os.path.join(dst_dir, f"{i:07d}.pt"))
+    print(f"Encoded {len(tgl_paths) - skipped}/{len(tgl_paths)} files ({skipped} skipped).")
 
 
 def main():
-    p = argparse.ArgumentParser(description="Pre-encode .tgl datasets into .pt tensors.")
+    p = argparse.ArgumentParser(description="Pre-encode simulated .tgl datasets into .pt tensors.")
     p.add_argument("--src", required=True, help="Directory with raw .tgl files")
     p.add_argument("--dst", required=True, help="Output directory for .pt files")
     args = p.parse_args()

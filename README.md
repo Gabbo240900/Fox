@@ -18,6 +18,7 @@ Feed Fox two MSAs (one for the host taxa, one for the symbiont taxa) plus a host
 7. [Training — external GPU / cluster](#training--external-gpu--cluster)
 8. [Training outputs](#training-outputs)
 9. [Other folders](#other-folders)
+10. [Previous model (`old/`)](#previous-model-old)
 
 ---
 
@@ -38,10 +39,10 @@ Architecture (see [training/model.py](training/model.py)):
 - **MSAEmbedder** — amino-acid tokens → one-hot → linear projection. Vocabulary: 23 tokens (20 AAs + gap + UNK + PAD). Max sequence length: 250.
 - **PairEmbedder** — PAD-aware mean pooling per sequence, then an outer sum that seeds the pair track from the host/symbiont mapping.
 - **Axial attention blocks** — alternating row / column attention over each MSA, with an asymmetric pair-bias track that links host and symbiont.
-- **Cross-attention blocks** — bidirectional host ↔ symbiont attention.
+- **Pair-token blocks** — one token per host↔symbiont pair (built from both leaf embeddings), plus a host and a symbiont summary token, mixed by self-attention. Attention between two pairs is biased by their host distance, their symbiont distance and whether they share a host, so the model sees which symbiont sits in which host.
 - **Prediction head** — softmax over the four event classes.
 
-Jukes–Cantor distance matrices (computed from each MSA) feed the pair track; they are computed on the fly when not supplied.
+Protein Jukes–Cantor distance matrices (20 states, computed from each MSA) feed the pair track and the pair-token attention bias; they are computed on the fly when not supplied.
 
 ---
 
@@ -54,7 +55,9 @@ Fox/
 │   ├── cli.py                 # `fox predict --tgl …`
 │   ├── core.py                # predict_tgl(): .tgl → 4 event frequencies
 │   ├── io.py                  # read_tgl(): parse a .tgl bundle
-│   ├── encoding.py            # AA tokenisation + Jukes–Cantor distances
+│   ├── tree.py                # extant_leaves(): drop lost-gene leaves of simulated trees
+│   ├── encoding.py            # AA tokenisation + protein Jukes–Cantor distances
+│   ├── translate.py           # DNA .tgl → protein .tgl (codon translation)
 │   └── model_loader.py        # load_model(): build Fox from fox.ckpt (cached)
 ├── training/                  # Model + training pipeline
 │   ├── model.py               # Fox architecture
@@ -79,11 +82,12 @@ Fox/
 │   ├── Datasets_small/        # 5-dataset subset for the multi-round AmoCoala run
 │   ├── amocoala_small/        # AmoCoala outputs on that subset (3 rounds)
 │   └── real_data/             # Heliconius mimicry real-data test
-├── results/                   # train/val prediction CSVs
+├── results/                   # train/val prediction CSVs of the released run
 ├── bin/                       # Bundled IQ-TREE binary (bin_linux/, bin_macos/)
 ├── assets/                    # README logo
-├── fox.ckpt                   # Released pretrained checkpoint (~76 MB)
-├── test_model.ipynb           # Notebook: load ckpt, predict, AmoCoala comparison
+├── fox.ckpt                   # Released pretrained checkpoint (float16, ~43 MB)
+├── test_model.ipynb           # Notebook: test set, comparison with the previous model, real data
+├── old/                       # Previous model: code, checkpoint, notebook, results
 ├── install.sh                 # Conda env bootstrap
 ├── pyproject.toml             # Packaging + `fox` console script
 ├── requirements.txt
@@ -102,7 +106,7 @@ Fox/
 git clone https://github.com/Gabbo240900/Fox.git
 cd Fox
 pip install -e .            # installs torch + the `fox` CLI
-fox predict --tgl test_data/Datasets/Dataset11.tgl
+fox predict --tgl test_data/Datasets/Dataset11.tgl --simulated
 ```
 
 **Full install** (training + simulation + notebook) — one-shot conda env named `fox`:
@@ -133,7 +137,7 @@ For the optional AmoCoala comparison, get `AmoCoala.jar` from https://github.com
 
 ## Using the pretrained model (`fox.ckpt`)
 
-The released checkpoint at the repo root (`fox.ckpt`, ~76 MB) is ready to use.
+The released checkpoint at the repo root (`fox.ckpt`, ~43 MB) is ready to use. It is the best-validation epoch (18) of the training run, with weights stored in float16 to keep the file small; they are cast back to float32 when loaded (predictions change by less than 10⁻⁴).
 
 ### Quick start: the `fox` command
 
@@ -141,18 +145,18 @@ One well-formed `.tgl` in, four event frequencies out. No notebook, no manual te
 
 ```bash
 pip install -e .        # from the repo root; registers `fox`, finds fox.ckpt
-fox predict --tgl test_data/Datasets/Dataset11.tgl
+fox predict --tgl test_data/Datasets/Dataset11.tgl --simulated
 ```
 
 ```
 Event          Frequency
 ------------------------
-Speciation        0.8352
-HGT               0.0484
-Loss              0.0100
-Duplication       0.1065
+Speciation        0.7344
+HGT               0.0502
+Loss              0.0793
+Duplication       0.1362
 
-Dominant: Speciation (83.5%)
+Dominant: Speciation (73.4%)
 ```
 
 **Options:**
@@ -160,6 +164,7 @@ Dominant: Speciation (83.5%)
 | flag | default | purpose |
 |------|---------|---------|
 | `--tgl` | required | input `.tgl` bundle (host MSA + symbiont MSA + mapping) |
+| `--simulated` | off | simulated `.tgl` only: drop lost-gene leaves and the root row, as in training |
 | `--json` | off | emit JSON instead of the table (for scripting) |
 | `--ckpt` | repo `fox.ckpt` | use a different checkpoint |
 | `--device` | `cpu` | `cpu`, `cuda`, or `mps` |
@@ -169,8 +174,8 @@ Dominant: Speciation (83.5%)
 ```python
 from fox import predict_tgl
 
-predict_tgl("test_data/Datasets/Dataset11.tgl")
-# {'Speciation': 0.835, 'HGT': 0.048, 'Loss': 0.010, 'Duplication': 0.106}
+predict_tgl("test_data/Datasets/Dataset11.tgl", drop_lost=True)   # simulated file: drop lost-gene leaves
+# {'Speciation': 0.734, 'HGT': 0.050, 'Loss': 0.079, 'Duplication': 0.136}
 ```
 
 Scoring many files? Load the model once and reuse it:
@@ -185,16 +190,23 @@ for path in tgl_files:
 
 **What a `.tgl` must contain:** a `BEGIN HOST;` block and a `BEGIN PARASITE;` block, each with an `ALIGNMENT` of `name sequence` rows, plus a `BEGIN DISTRIBUTION;` block listing `parasite : host` leaf pairs. See any file under [`test_data/Datasets/`](test_data/Datasets/) for the exact layout.
 
+**Amino acids only.** Fox reads protein alignments. A DNA alignment would be read as a strange protein (A, C, G, T are also amino-acid letters) without any error. Translate protein-coding DNA first, choosing the genetic code of each side:
+
+```bash
+python -m fox.translate in.tgl out_aa.tgl --host-table 2 --para-table 5   # e.g. vertebrate / invertebrate mitochondrial
+```
+
+The reading frame is picked automatically (fewest stop codons); gene-boundary stop codons are dropped. Needs Biopython (`pip install biopython`).
+
 **Checkpoint not found?** If `fox.ckpt` was moved, or you installed outside the repo, point Fox at it: `export FOX_CKPT=/path/to/fox.ckpt`, or pass `--ckpt`.
 
 ### The notebook
 
 Open [`test_model.ipynb`](test_model.ipynb). It covers:
 
-1. Loading `fox.ckpt`.
-2. Single-file prediction from a `.pt` or `.tgl` input.
-3. Batch evaluation across `test_data/fox_data/` with metrics (MAE, RMSE, R², Pearson r).
-4. Three-way comparison — Fox vs. AmoCoala vs. ground truth — on simulated test data.
+1. Loading `fox.ckpt` and scoring the 40 test datasets in `test_data/fox_data/` (MAE, R², bias, scatter plots).
+2. Comparing with the previous model ([`old/`](old/)), both with its own preprocessing and on the leaves real data shows.
+3. The *Heliconius* real-data test, after translating its mitochondrial DNA to protein.
 
 ### Low-level API
 
@@ -248,6 +260,8 @@ Per simulation, [`generate_trees.py`](generate_data/generate_trees.py) draws:
 - `num_leaves ~ U[15, 50]`
 - `host_birth_rate ~ U[0.5, 1.2]`, `host_death_rate ~ U[0.2, 0.4] · birth_rate`
 - `hgt_rate ~ U[0.05, 0.3]`, `dupl_rate ~ U[0.2, 0.4]`, `loss_rate ~ U[0.2, 0.4]`
+
+Event labels are counted on the full simulated history. The written trees — and so the MSAs and the mapping — keep only what real data can show: lost-gene leaves are pruned and the planted root edge is removed (no extra `P0` / `H0` row). For older `.tgl` files that still contain them, `training/pre_encoder.py` drops them at encode time (`read_tgl(..., drop_lost=True)`, or `fox predict --simulated`).
 
 Output under `generated_trees/my_run/`:
 
@@ -493,7 +507,7 @@ ckpt["model"]      # state_dict
 ckpt["optimizer"]  # optimizer state
 ckpt["scheduler"]  # LR scheduler state
 ckpt["epoch"]      # last completed epoch
-ckpt["config"]     # env-var snapshot used for the run
+ckpt["hparams"]    # env-var snapshot used for the run
 ```
 
 ---
@@ -501,14 +515,25 @@ ckpt["config"]     # env-var snapshot used for the run
 ## Other folders
 
 - **`test_data/Datasets/`** — 40 held-out `.tgl` files for benchmarking.
-- **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for direct Fox inference.
+- **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for direct Fox inference (`training/pre_encoder.py`: lost-gene leaves and root row dropped).
 - **`test_data/amocoala_data/<DatasetXX>/`** — AmoCoala reconstructions per test dataset (used by the 3-way comparison in [`test_model.ipynb`](test_model.ipynb)).
 - **`test_data/Datasets_small/`** + **`test_data/amocoala_small/`** — a 5-dataset subset and its 3-round AmoCoala results (the "more rounds" comparison in the notebook).
-- **`test_data/real_data/`** — the *Heliconius* Müllerian-mimicry real-data test: `heliconius_mimicry.tgl` (Fox input), `heliconius.nex` + 3-round AmoCoala results, and `heliconius_specimen_map.xlsx`. `filtered/` holds the same run with the gap-only specimen `Hmelp246` removed.
+- **`test_data/real_data/`** — the *Heliconius* Müllerian-mimicry real-data test: `heliconius_mimicry.tgl` (mitochondrial DNA), `heliconius_mimicry_aa.tgl` (translated to protein, the Fox input), `heliconius.nex` + 3-round AmoCoala results, and `heliconius_specimen_map.xlsx`. `filtered/` holds the same run with the gap-only specimen `Hmelp246` removed.
 - **`bin/`** — bundled IQ-TREE binary for the simulation pipeline; pick the subfolder for your OS.
-- **`results/`** — train/val prediction CSVs; safe to delete and regenerate.
+- **`results/`** — train/val prediction CSVs from the last epoch (20) of the released run (the checkpoint is epoch 18); the train file covers the samples seen by one of the four GPUs.
 - **`assets/`** — the logo shown at the top of this README.
 - **`fox.ckpt`** — released checkpoint loaded by the notebook and CLI.
+
+---
+
+## Previous model (`old/`)
+
+The first released model is kept for comparison and reproducibility:
+
+- `old/fox.ckpt` — its checkpoint; `old/fox/`, `old/training/`, `old/generate_data/` — its inference package, model and simulator.
+- `old/test_model.ipynb` — its evaluation notebook, with `old/test_data/fox_data/` (test set encoded its way) and `old/results/`.
+
+It used a host↔symbiont cross-attention head that did not see which symbiont sits in which host, the 4-state Jukes–Cantor formula on proteins, and kept the lost-gene leaves in the simulated alignments. Real data never has sequences for lost genes: given only the leaves real data shows, it predicts almost no losses. Its code imports `training.model`, so run it with `old/` as the working directory (or first on `sys.path`), not together with the current package in one process. The notebook keeps its saved outputs as the record of that model; rerunning it needs its data paths pointed back to `test_data/`.
 
 ---
 

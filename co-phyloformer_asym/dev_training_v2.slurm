@@ -1,0 +1,102 @@
+#!/bin/bash
+
+#SBATCH --job-name=dev_training_v2
+#SBATCH --account=vcu@h100
+#SBATCH --qos=qos_gpu_h100-dev
+#SBATCH --output=error_files/dev_training_v2_%j.out
+#SBATCH --error=error_files/dev_training_v2_%j.err
+#SBATCH --constraint=h100
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=4
+#SBATCH --gres=gpu:4
+#SBATCH --cpus-per-task=24
+#SBATCH --time=2:00:00
+
+# ENVIRONMENT SETUP
+
+module purge
+
+module load arch/h100
+
+module load pytorch-gpu/py3/2.6.0
+
+source $WORK/envs/cophylo_pt26/bin/activate
+
+
+# Use all the CPUs Slurm gave this task
+export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK"
+export PYTHONUNBUFFERED=1
+
+# NCCL / distributed sanity
+export NCCL_DEBUG=WARN
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_P2P_DISABLE=0
+export NCCL_IB_DISABLE=0
+
+
+# Set cache directories to avoid cluster warnings
+export XDG_CACHE_HOME="$ALL_CCFRWORK/.cache"
+export MPLCONFIGDIR="$ALL_CCFRWORK/.cache/mpl"
+export HF_HOME="$ALL_CCFRWORK/.cache/huggingface"
+export WANDB_CACHE_DIR="$ALL_CCFRWORK/.cache/wandb"
+export WANDB_DATA_DIR="$JOBSCRATCH/wandb_data"
+
+mkdir -p "$WANDB_DATA_DIR" "$WANDB_CACHE_DIR"
+mkdir -p "$XDG_CACHE_HOME" "$MPLCONFIGDIR" "$HF_HOME"
+
+
+# ECHO
+set -x
+
+# W&B settings
+export WANDB_ENTITY=cophylo_team
+export WANDB_PROJECT=CoPhyloformer
+export WANDB_NAME=Dev_v2_4x4_evw_lr2e-4
+export WANDB_MODE=offline
+export WANDB_HTTP_TIMEOUT=120
+export WANDB__SERVICE_WAIT=300
+
+# Architecture
+export HIDDEN_DIM=256
+export AXIAL_LAYERS=4
+export CROSS_LAYERS=4
+export USE_OPM=0
+export USE_DIST_MATRIX=1
+export GRADIENT_CHECKPOINTING=0
+export USE_FLEX_ATTENTION=1
+export USE_COMPILE=0
+export FIND_UNUSED_PARAMETERS=0
+export USE_BUCKETED_BATCHES=1
+export BUCKET_SIZE=4
+export DROPOUT=0.05
+
+# Training settings
+export EPOCHS=35
+export EARLY_STOP_PATIENCE=6
+export EARLY_STOP_MIN_DELTA=1e-5
+export MID_EPOCH_VALS=1
+export NUM_WORKERS=16
+export CKPT_DIR=checkpoints_fox_dev_v2
+export BATCH_SIZE=32
+export GRAD_ACCUM=4
+export VAL_BATCH_MULT=1
+export LR=2e-4
+export WEIGHT_DECAY=0.05
+export EVENT_LOSS_WEIGHTS=1,4,4,4   # Spec,HGT,Loss,Dup ~ 1/label variance
+export TAIL_WEIGHT=1.0
+export UNDER_PENALTY=1.0
+export HOST_MAX_LEAVES=51
+export PARA_MAX_LEAVES=142
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+echo "Visible GPUs: $CUDA_VISIBLE_DEVICES"
+
+# 1) Worst case: one batch of the largest training trees on a single GPU
+echo "[Probe] worst-case memory check"
+python gpu_mem_probe.py || { echo "[Probe] FAILED (likely OOM) - not starting training"; exit 1; }
+
+# 2) Real multi-GPU training for the rest of the 2h: check step speed (tqdm it/s)
+#    and that nothing crashes. Always starts fresh in its own dev checkpoint dir.
+rm -rf "$CKPT_DIR"
+echo "[Train] Starting from scratch (dev)"
+srun python train.py train

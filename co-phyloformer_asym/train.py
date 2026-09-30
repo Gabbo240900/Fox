@@ -302,6 +302,13 @@ def main(fabric: Fabric, ckpt_to_load=None):
     under_penalty  = float(os.environ.get("UNDER_PENALTY", "2.5"))
     tail_weight    = float(os.environ.get("TAIL_WEIGHT", "2.0"))
     hgt_loss_weight = float(os.environ.get("HGT_LOSS_WEIGHT", "2.0"))
+    # Per-event weights "Spec,HGT,Loss,Dup"; overrides HGT_LOSS_WEIGHT when set
+    event_weights_env = os.environ.get("EVENT_LOSS_WEIGHTS", "")
+    if event_weights_env:
+        event_weights = [float(w) for w in event_weights_env.split(",")]
+        assert len(event_weights) == 4, "EVENT_LOSS_WEIGHTS needs 4 comma-separated values"
+    else:
+        event_weights = [1.0, hgt_loss_weight, 1.0, 1.0]
     mid_epoch_vals = int(os.environ.get("MID_EPOCH_VALS", "1"))
     num_workers    = int(os.environ.get("NUM_WORKERS", "8"))
     val_batch_mult = int(os.environ.get("VAL_BATCH_MULT", "1"))
@@ -322,8 +329,11 @@ def main(fabric: Fabric, ckpt_to_load=None):
         "under_penalty":      under_penalty,
         "tail_weight":        tail_weight,
         "hgt_loss_weight":    hgt_loss_weight,
+        "event_loss_weights": event_weights,
         "dropout":            dropout,
         "axial_layers":       axial_layers,
+        "cross_layers":       cross_layers,
+        "hidden_dim":         hidden_dim,
         "use_opm":            use_opm,
         "use_flexattention":  use_flex,
         "use_compile":        use_compile,
@@ -339,7 +349,7 @@ def main(fabric: Fabric, ckpt_to_load=None):
         "early_stop_min_delta": early_stop_min_delta,
     }
 
-    event_loss_weights = torch.tensor([1.0, hgt_loss_weight, 1.0, 1.0], device=device)
+    event_loss_weights = torch.tensor(event_weights, device=device)
 
     def asymmetric_huber(pred, target):
         err = target - pred

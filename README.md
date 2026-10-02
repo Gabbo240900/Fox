@@ -530,8 +530,8 @@ ckpt["hparams"]    # env-var snapshot used for the run
 
 - **`test_data/Datasets/`** — 100 held-out simulated `.tgl` files for benchmarking, made with the current simulator (no lost-gene leaves).
 - **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for the notebook (`training/pre_encoder.py`).
-- **`test_data/amocoala_data/<DatasetXX>/`** — AmoCoala reconstructions per dataset of the previous 40-dataset test set (`old/test_data/Datasets/`), used by the 3-way comparison in [`old/test_model.ipynb`](old/test_model.ipynb).
-- **`test_data/Datasets_small/`** + **`test_data/amocoala_small/`** — a 5-dataset subset and its 3-round AmoCoala results (the "more rounds" comparison in `old/test_model.ipynb`).
+- **`old/test_data/amocoala_data/<DatasetXX>/`** — AmoCoala reconstructions per dataset of the previous 40-dataset test set (`old/test_data/Datasets/`), used by the 3-way comparison in [`old/test_model.ipynb`](old/test_model.ipynb).
+- **`old/test_data/Datasets_small/`** + **`old/test_data/amocoala_small/`** — a 5-dataset subset and its 3-round AmoCoala results (the "more rounds" comparison in `old/test_model.ipynb`).
 - **`test_data/real_data/`** — the *Heliconius* Müllerian-mimicry real-data test: `heliconius_mimicry.tgl` (mitochondrial DNA), `heliconius_mimicry_aa.tgl` (translated to protein, the Fox input), `heliconius.nex` + 3-round AmoCoala results, and `heliconius_specimen_map.xlsx`. `filtered/` holds the same run with the gap-only specimen `Hmelp246` removed.
 - **`test_data/real_data/blattabacterium/`** — cockroach mitochondrial proteins and *Blattabacterium* proteins for 55 host/symbiont pairs (Arab et al. 2020, *Biol. Lett.* 16: 20190702; Dryad doi:10.5061/dryad.v6wwpzgqw, CC0). `build.py` matches the pairs and writes `pairs.json`.
 - **`bin/`** — bundled IQ-TREE binary for the simulation pipeline; pick the subfolder for your OS.

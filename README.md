@@ -145,7 +145,7 @@ For the optional AmoCoala comparison, get `AmoCoala.jar` from https://github.com
 
 ## Using the pretrained model (`fox.ckpt`)
 
-The released checkpoint at the repo root (`fox.ckpt`, ~43 MB) is ready to use. It is the best-validation epoch (18) of the training run, with weights stored in float16 to keep the file small; they are cast back to float32 when loaded (predictions change by less than 10⁻⁴).
+The released checkpoint at the repo root (`fox.ckpt`, ~43 MB) is ready to use. It is the best-validation epoch (23) of the training run, with weights stored in float16 to keep the file small; they are cast back to float32 when loaded (predictions change by at most ~2×10⁻⁴).
 
 ### Quick start: the `fox` command
 
@@ -535,7 +535,7 @@ ckpt["hparams"]    # env-var snapshot used for the run
 - **`test_data/real_data/`** — the *Heliconius* Müllerian-mimicry real-data test: `heliconius_mimicry.tgl` (mitochondrial DNA), `heliconius_mimicry_aa.tgl` (translated to protein, the Fox input), `heliconius.nex` + 3-round AmoCoala results, and `heliconius_specimen_map.xlsx`. `filtered/` holds the same run with the gap-only specimen `Hmelp246` removed.
 - **`test_data/real_data/blattabacterium/`** — cockroach mitochondrial proteins and *Blattabacterium* proteins for 55 host/symbiont pairs (Arab et al. 2020, *Biol. Lett.* 16: 20190702; Dryad doi:10.5061/dryad.v6wwpzgqw, CC0). `build.py` matches the pairs and writes `pairs.json`.
 - **`bin/`** — bundled IQ-TREE binary for the simulation pipeline; pick the subfolder for your OS.
-- **`results/`** — train/val prediction CSVs from the last epoch (20) of the released run (the checkpoint is epoch 18); the train file covers the samples seen by one of the four GPUs.
+- **`results/`** — train/val prediction CSVs from the end of the released run (the checkpoint is epoch 23), plus their scatter / density plots in `results/plots/`; the train file covers the samples seen by one of the four GPUs.
 - **`assets/`** — the logo shown at the top of this README.
 - **`fox.ckpt`** — released checkpoint loaded by the notebook and CLI.
 

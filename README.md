@@ -72,6 +72,7 @@ Fox/
 ├── generate_data/             # AsymmeTree + AliSim simulation pipeline
 │   ├── generate_trees.py      # Simulate paired host/symbiont trees
 │   ├── alisim.py              # Simulate MSAs along trees (AliSim)
+│   ├── treeducken_testset.R   # Independent test set from treeducken (not Fox's training simulator)
 │   ├── filter_data.py         # Filter .pt by taxa / seq length
 │   ├── analyze_data.py        # Summary plots over a .pt directory
 │   └── generated_trees/       # Default output root + priors
@@ -81,7 +82,8 @@ Fox/
 │   ├── amocoala_data/         # Per-dataset AmoCoala outputs (1 round)
 │   ├── Datasets_small/        # 5-dataset subset for the multi-round AmoCoala run
 │   ├── amocoala_small/        # AmoCoala outputs on that subset (3 rounds)
-│   └── real_data/             # Heliconius mimicry real-data test
+│   ├── treeducken/            # Independent treeducken test set (Datasets/) + AmoCoala outputs
+│   └── real_data/             # Real-data tests: blattabacterium/ (main), extra/ (Heliconius)
 ├── results/                   # train/val prediction CSVs of the released run
 ├── bin/                       # Bundled IQ-TREE binary (bin_linux/, bin_macos/)
 ├── assets/                    # README logo
@@ -217,8 +219,9 @@ Open [`test_model.ipynb`](test_model.ipynb). It covers:
    python training/pre_encoder.py --src test_data/Datasets --dst test_data/fox_data
    ```
 2. Comparing with the previous model ([`old/`](old/)) on the same datasets (no lost-gene leaves, as in real data), with its own 4-state distances.
-3. The *Heliconius* real-data test, after translating its mitochondrial DNA to protein.
-4. The cockroach / *Blattabacterium* real-data test (a strongly cospeciating system), with a scrambled-links control: the prediction should move away from cospeciation when the host–symbiont links are shuffled.
+3. An independent test set simulated with treeducken (not Fox's training simulator), Fox vs AmoCoala.
+4. The cockroach / *Blattabacterium* real-data test (a strongly cospeciating system): one `.tgl` with the full alignments, pre-encoded like the synthetic data; Fox reads the first 250 amino acids.
+5. As an extra at the end, the *Heliconius* real-data test, after translating its mitochondrial DNA to protein.
 
 ### Low-level API
 
@@ -532,8 +535,8 @@ ckpt["hparams"]    # env-var snapshot used for the run
 - **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for the notebook (`training/pre_encoder.py`).
 - **`old/test_data/amocoala_data/<DatasetXX>/`** — AmoCoala reconstructions per dataset of the previous 40-dataset test set (`old/test_data/Datasets/`), used by the 3-way comparison in [`old/test_model.ipynb`](old/test_model.ipynb).
 - **`old/test_data/Datasets_small/`** + **`old/test_data/amocoala_small/`** — a 5-dataset subset and its 3-round AmoCoala results (the "more rounds" comparison in `old/test_model.ipynb`).
-- **`test_data/real_data/`** — the *Heliconius* Müllerian-mimicry real-data test: `heliconius_mimicry.tgl` (mitochondrial DNA), `heliconius_mimicry_aa.tgl` (translated to protein, the Fox input), `heliconius.nex` + 3-round AmoCoala results, and `heliconius_specimen_map.xlsx`. `filtered/` holds the same run with the gap-only specimen `Hmelp246` removed.
-- **`test_data/real_data/blattabacterium/`** — cockroach mitochondrial proteins and *Blattabacterium* proteins for 55 host/symbiont pairs (Arab et al. 2020, *Biol. Lett.* 16: 20190702; Dryad doi:10.5061/dryad.v6wwpzgqw, CC0). `build.py` matches the pairs and writes `pairs.json`.
+- **`test_data/real_data/extra/`** — the *Heliconius* Müllerian-mimicry real-data test (an extra in the notebook): `heliconius_mimicry.tgl` (mitochondrial DNA), `heliconius_mimicry_aa.tgl` (translated to protein, the Fox input), `heliconius.nex` + 3-round AmoCoala results, and `heliconius_specimen_map.xlsx`. `filtered/` holds the same run with the gap-only specimen `Hmelp246` removed.
+- **`test_data/real_data/blattabacterium/`** — cockroach mitochondrial proteins and *Blattabacterium* proteins for 55 host/symbiont pairs (Arab et al. 2020, *Biol. Lett.* 16: 20190702; Dryad doi:10.5061/dryad.v6wwpzgqw, CC0). `make_tgl.py` matches the pairs across the two alignment files (they label the same pair differently) and writes the 50 pairs used by Fox to `Datasets/blattabacterium.tgl`, pre-encoded to `fox_data/` with `python training/pre_encoder.py --src … --dst … --keep-all-leaves`.
 - **`bin/`** — bundled IQ-TREE binary for the simulation pipeline; pick the subfolder for your OS.
 - **`results/`** — train/val prediction CSVs from the end of the released run (the checkpoint is epoch 23), plus their scatter / density plots in `results/plots/`; the train file covers the samples seen by one of the four GPUs.
 - **`assets/`** — the logo shown at the top of this README.

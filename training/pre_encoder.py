@@ -16,7 +16,7 @@ from fox.encoding import encode_msa, jukes_cantor_dist  # noqa: E402
 LABEL_KEYS = ("Speciation", "HGT", "Loss", "Duplication", "Sim_time")
 
 
-def preencode(src_dir: str, dst_dir: str):
+def preencode(src_dir: str, dst_dir: str, drop_lost: bool = True):
     os.makedirs(dst_dir, exist_ok=True)
     tgl_paths = sorted(glob(os.path.join(src_dir, "*.tgl")))
     skipped = 0
@@ -24,7 +24,8 @@ def preencode(src_dir: str, dst_dir: str):
         try:
             # drop_lost: keep only leaves alive at the present (no lost genes,
             # no planted-root P0/H0 row), matching what real data looks like.
-            sample = read_tgl(path, drop_lost=True)
+            # Real data has no dated trees, so it keeps every leaf.
+            sample = read_tgl(path, drop_lost=drop_lost)
         except ValueError as e:
             print(f"[skip] {e}")
             skipped += 1
@@ -57,8 +58,10 @@ def main():
     p = argparse.ArgumentParser(description="Pre-encode simulated .tgl datasets into .pt tensors.")
     p.add_argument("--src", required=True, help="Directory with raw .tgl files")
     p.add_argument("--dst", required=True, help="Output directory for .pt files")
+    p.add_argument("--keep-all-leaves", action="store_true",
+                   help="Real data (no dated trees): keep every leaf instead of dropping lost ones")
     args = p.parse_args()
-    preencode(args.src, args.dst)
+    preencode(args.src, args.dst, drop_lost=not args.keep_all_leaves)
 
 
 if __name__ == "__main__":

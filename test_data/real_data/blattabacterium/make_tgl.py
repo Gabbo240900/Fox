@@ -1,17 +1,29 @@
-"""Blattabacterium / cockroach amino-acid data.
+"""Cockroach / Blattabacterium data -> one .tgl for Fox, like the synthetic test sets.
 
 Source: Arab, Bourguignon, Wang, Ho & Lo (2020) Evolutionary rates are correlated
 between cockroach symbionts and mitochondrial genomes. Biol. Lett. 16: 20190702.
 Data: Dryad doi:10.5061/dryad.v6wwpzgqw (CC0): Cockroaches_AminoAcid_Outgrp.phy
 (13 mitochondrial proteins) and Blattabacterium_AminoAcids_Outgrp.phy (104 genes).
 
-Maps the labels of the amino-acid alignments to the 55 cockroach/symbiont pairs
-of the study (names as in the authors' NoOutgrp files), removes outgroups and
-all-gap columns, and writes pairs.json: {host: {name: seq}, sym: {name: seq},
-links: [[host, sym], ...]}; host and symbiont of a pair share the name.
-Run from this folder: python build.py
+Each of the study's 55 pairs is a cockroach species and the symbiont strain taken
+from it, so the links are one-to-one. The two .phy files label the same pair
+differently (e.g. Anallacta_methanoides / 57_Anallacta_SC), so the table below maps
+each pair name to its label in each file; 3 pairs with no unambiguous label are
+dropped (52 left). Outgroups and all-gap columns are removed. Fox takes at most 50
+hosts, so 50 of the 52 pairs are used (drawn with seed 1). The .tgl holds the full
+alignments; Fox reads the first 250 columns.
+
+Real data: no trees and no labels. Pre-encode with
+  python training/pre_encoder.py --src test_data/real_data/blattabacterium/Datasets \
+      --dst test_data/real_data/blattabacterium/fox_data --keep-all-leaves
+
+Run from the repository root: python test_data/real_data/blattabacterium/make_tgl.py
 """
-import json
+import os
+import random
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+N_PAIRS = 50
 
 
 def read_phy(path):
@@ -19,8 +31,6 @@ def read_phy(path):
     return {l.split(None, 1)[0]: l.split(None, 1)[1].replace(" ", "").upper() for l in lines[1:]}
 
 
-host_aa = read_phy("Cockroaches_AminoAcid_Outgrp.phy")
-sym_aa = read_phy("Blattabacterium_AminoAcids_Outgrp.phy")
 SYM_LABEL = {
     "Euphyllodromia": "DNA17_Z257_Euphyllodromia", "Amazonina": "Amazonina",
     "Anaplecta_calosoma": None,              # only 'Anaplecta_annotation2': ambiguous
@@ -68,9 +78,25 @@ def strip_gap_columns(msa):
     return {n: "".join(s[i] for i in cols) for n, s in msa.items()}
 
 
+host_aa = read_phy(os.path.join(HERE, "Cockroaches_AminoAcid_Outgrp.phy"))
+sym_aa = read_phy(os.path.join(HERE, "Blattabacterium_AminoAcids_Outgrp.phy"))
 host = strip_gap_columns({n: host_aa[HOST_LABEL[n]] for n in names})
 sym = strip_gap_columns({n: sym_aa[SYM_LABEL[n]] for n in names})
-json.dump({"host": host, "sym": sym, "links": [[n, n] for n in names]}, open("pairs.json", "w"))
-print(f"{len(names)} pairs; host alignment {len(next(iter(host.values())))} aa, "
-      f"symbiont alignment {len(next(iter(sym.values())))} aa; dropped "
-      f"{[n for n in SYM_LABEL if SYM_LABEL[n] is None]}")
+pairs = sorted(random.Random(1).sample(names, N_PAIRS))
+
+lines = ["#NEXUS", "BEGIN HOST;", "\tALIGNMENT * Host1 = '"]
+lines += [f"\t{n}  {host[n]}" for n in pairs]
+lines += ["\t'", "ENDBLOCK;", "", "BEGIN PARASITE;", "\tALIGNMENT * Para1 = '"]
+lines += [f"\t{n}  {sym[n]}" for n in pairs]
+lines += ["\t'", "ENDBLOCK;", "", "BEGIN DISTRIBUTION;", "\tRANGE"]
+lines += [f"\t\t{n}: {n}" for n in pairs]   # host and symbiont of a pair share the pair name
+lines += ["END;", ""]
+
+out_dir = os.path.join(HERE, "Datasets")
+os.makedirs(out_dir, exist_ok=True)
+out = os.path.join(out_dir, "blattabacterium.tgl")
+with open(out, "w") as f:
+    f.write("\n".join(lines))
+print(f"{len(names)} pairs (dropped {[n for n in SYM_LABEL if SYM_LABEL[n] is None]}); "
+      f"wrote {out} with {N_PAIRS} (left out {sorted(set(names) - set(pairs))}); host alignment "
+      f"{len(host[pairs[0]])} aa, symbiont alignment {len(sym[pairs[0]])} aa (Fox reads the first 250)")

@@ -79,16 +79,15 @@ Fox/
 ├── test_data/                 # Held-out evaluation data
 │   ├── Datasets/              # Ground-truth .tgl files (100 simulated test datasets)
 │   ├── fox_data/              # Those datasets pre-encoded as .pt for Fox
-│   ├── amocoala_data/         # Per-dataset AmoCoala outputs (1 round)
-│   ├── Datasets_small/        # 5-dataset subset for the multi-round AmoCoala run
-│   ├── amocoala_small/        # AmoCoala outputs on that subset (3 rounds)
-│   ├── treeducken/            # Independent treeducken test set (Datasets/) + AmoCoala outputs
+│   ├── amocoala_data_100/     # AmoCoala outputs on those datasets (1 round)
+│   ├── amocoala_small_100_N2000/  # AmoCoala outputs on the 5 smallest (3 rounds)
+│   ├── treeducken/            # Independent treeducken test set + its AmoCoala outputs and plots
 │   └── real_data/             # Real-data tests: blattabacterium/ (main), extra/ (Heliconius)
 ├── results/                   # train/val prediction CSVs of the released run
 ├── bin/                       # Bundled IQ-TREE binary (bin_linux/, bin_macos/)
 ├── assets/                    # README logo
 ├── fox.ckpt                   # Released pretrained checkpoint (float16, ~43 MB)
-├── test_model.ipynb           # Notebook: test set, comparison with the previous model, real data
+├── test_model.ipynb           # Notebook: test sets, Fox vs AmoCoala, real data, robustness checks
 ├── old/                       # Previous model: code, checkpoint, notebook, results
 ├── install.sh                 # Conda env bootstrap
 ├── pyproject.toml             # Packaging + `fox` console script
@@ -141,7 +140,18 @@ softwareupdate --install-rosetta --agree-to-license
 
 Check that the binary runs with `bin/bin_macos/iqtree_2.2.0 --version`. Alternatively, install a native IQ-TREE (`conda install -c bioconda -c conda-forge iqtree`) and pass its path to `--iqtree`.
 
-For the optional AmoCoala comparison, get `AmoCoala.jar` from https://github.com/sinaimeri/AmoCoala.
+For the optional AmoCoala comparison, get `AmoCoala.jar` from https://github.com/sinaimeri/AmoCoala (needs Java).
+
+To rebuild the independent treeducken test set you also need R with `ape` and the fork
+[Gabbo240900/treeducken](https://github.com/Gabbo240900/treeducken), which fixes how the original package records
+host switches and spreads:
+
+```r
+remotes::install_github("Gabbo240900/treeducken")
+```
+
+treeducken asks for C++11, but current RcppArmadillo headers need C++14 or newer. If the build fails, compile it
+with C++17 by running `echo "CXX11STD = -std=gnu++17" > ~/.R/Makevars` (create `~/.R/` first) before installing.
 
 ---
 
@@ -218,10 +228,38 @@ Open [`test_model.ipynb`](test_model.ipynb). It covers:
    ```bash
    python training/pre_encoder.py --src test_data/Datasets --dst test_data/fox_data
    ```
-2. Comparing with the previous model ([`old/`](old/)) on the same datasets (no lost-gene leaves, as in real data), with its own 4-state distances.
-3. An independent test set simulated with treeducken (not Fox's training simulator), Fox vs AmoCoala.
-4. The cockroach / *Blattabacterium* real-data test (a strongly cospeciating system): one `.tgl` with the full alignments, pre-encoded like the synthetic data; Fox reads the first 250 amino acids.
-5. As an extra at the end, the *Heliconius* real-data test, after translating its mitochondrial DNA to protein.
+2. The comparison with AmoCoala on an independent test set simulated with treeducken (not Fox's training simulator, see [Independent test set](#independent-test-set-treeducken)): Fox alone, Fox vs AmoCoala with 1 round (all 100 datasets) and 3 rounds (the 20 smallest), and error vs tree size.
+3. The cockroach / *Blattabacterium* real-data test (a strongly cospeciating system): one `.tgl` with the full alignments, pre-encoded like the synthetic data; Fox reads the first 250 amino acids.
+4. Robustness checks on the AsymmeTree test set: alignment length, and invariance to the row order of the MSAs.
+5. Extras at the end: Fox vs AmoCoala on the AsymmeTree test set (Fox's training simulator, so it favours Fox), and the *Heliconius* real-data test (mitochondrial DNA translated to protein; almost no signal for Fox).
+
+The AmoCoala cells read finished results from disk and only run AmoCoala on datasets without one; set `AMOCOALA_JAR` to the path of `AmoCoala.jar`.
+
+### Independent test set (treeducken)
+
+Scoring Fox only on AsymmeTree data favours it, since that is the simulator it was trained on. The treeducken
+test set comes from a different simulator ([treeducken](https://github.com/Gabbo240900/treeducken), Dismukes &
+Heath 2021), with rates drawn from the same ranges as the training data:
+
+| AsymmeTree (training) | treeducken |
+|---|---|
+| host birth 0.5–1.2 (every host speciation also splits the symbiont) | cospeciation 0.5–1.2; no host speciation without the symbiont |
+| duplication 0.2–0.4 | symbiont speciation without the host 0.2–0.4 |
+| HGT 0.05–0.3 | host switch 0.05–0.3 |
+| loss 0.2–0.4 | symbiont extinction 0.2–0.4 |
+| host death 0.2–0.4 × birth, but no extinct hosts in the tree | no host extinction |
+
+Labels follow the training convention, counted on the full symbiont tree: a branching node counts as its event
+(cospeciation, duplication or host switch) only if both of its sides survive to the present, and every extinct
+symbiont leaf is one loss. So total events = all symbiont leaves − 1 and total − losses = extant symbiont leaves − 1,
+as in the AsymmeTree data. Extinct lineages are pruned from the trees (15–50 extant hosts, 10–80 extant symbionts).
+
+```bash
+Rscript generate_data/treeducken_testset.R out=test_data/treeducken/Datasets n=100 seed=2026
+python generate_data/alisim.py test_data/treeducken/Datasets --iqtree bin/bin_macos/iqtree_2.2.0 -l 250 -g yes
+```
+
+`alisim.py` skips files that already contain MSAs, so delete the folder before regenerating it.
 
 ### Low-level API
 
@@ -331,6 +369,9 @@ python training/pre_encoder.py \
   --src generate_data/generated_trees/my_run/Datasets \
   --dst data/pt/my_run
 ```
+
+Simulated `.tgl` files keep only the leaves that reach the present (lost-gene leaves are dropped using the
+dated trees). Real data has no dated trees: add `--keep-all-leaves` to keep every sequence.
 
 Each `.pt` contains:
 
@@ -533,6 +574,8 @@ ckpt["hparams"]    # env-var snapshot used for the run
 
 - **`test_data/Datasets/`** — 100 held-out simulated `.tgl` files for benchmarking, made with the current simulator (no lost-gene leaves).
 - **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for the notebook (`training/pre_encoder.py`).
+- **`test_data/amocoala_data_100/<DatasetXX>/`** + **`test_data/amocoala_small_100_N2000/`** — AmoCoala results on those datasets: 1 round on each, and 3 rounds (`-N 2000 -t 0.1,0.25,0.25`) on the 5 smallest. Used by the AsymmeTree extra in the notebook.
+- **`test_data/treeducken/`** — the independent treeducken test set: `Datasets/` (100 `.tgl` with MSAs), `amocoala_data/` (AmoCoala, 1 round on each), `amocoala_small_N2000/` (3 rounds on the 20 smallest) and the plots of the treeducken comparison.
 - **`old/test_data/amocoala_data/<DatasetXX>/`** — AmoCoala reconstructions per dataset of the previous 40-dataset test set (`old/test_data/Datasets/`), used by the 3-way comparison in [`old/test_model.ipynb`](old/test_model.ipynb).
 - **`old/test_data/Datasets_small/`** + **`old/test_data/amocoala_small/`** — a 5-dataset subset and its 3-round AmoCoala results (the "more rounds" comparison in `old/test_model.ipynb`).
 - **`test_data/real_data/extra/`** — the *Heliconius* Müllerian-mimicry real-data test (an extra in the notebook): `heliconius_mimicry.tgl` (mitochondrial DNA), `heliconius_mimicry_aa.tgl` (translated to protein, the Fox input), `heliconius.nex` + 3-round AmoCoala results, and `heliconius_specimen_map.xlsx`. `filtered/` holds the same run with the gap-only specimen `Hmelp246` removed.

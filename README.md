@@ -18,7 +18,6 @@ Feed Fox two MSAs (one for the host taxa, one for the symbiont taxa) plus a host
 7. [Training — external GPU / cluster](#training--external-gpu--cluster)
 8. [Training outputs](#training-outputs)
 9. [Other folders](#other-folders)
-10. [Previous model (`old/`)](#previous-model-old)
 
 ---
 
@@ -66,7 +65,6 @@ Fox/
 │   ├── validation.py          # Validation loop + W&B logging
 │   ├── pre_encoder.py         # .tgl → .pt pre-encoding
 │   ├── prepare_buckets.py     # Bucket metadata for the sampler
-│   ├── plot.py                # Plot predictions during training
 │   ├── plot_from_csv.py       # Replot from saved CSVs
 │   └── post_process.py        # Standalone plotting from CSVs
 ├── generate_data/             # AsymmeTree + AliSim simulation pipeline
@@ -88,7 +86,6 @@ Fox/
 ├── assets/                    # README logo
 ├── fox.ckpt                   # Released pretrained checkpoint (float16, ~43 MB)
 ├── test_model.ipynb           # Notebook: test sets, Fox vs AmoCoala, real data, robustness checks
-├── old/                       # Previous model: code, checkpoint, notebook, results
 ├── install.sh                 # Conda env bootstrap
 ├── pyproject.toml             # Packaging + `fox` console script
 ├── requirements.txt
@@ -549,7 +546,7 @@ During and after a run:
   - `latest.ckpt` — every mid-epoch validation.
   - `best.ckpt` — best validation loss so far.
 - **`results/train_predictions.csv`, `results/val_predictions.csv`** — one row per sample, columns `true_<event>` and `pred_<event>` for all four events.
-- **`results/plots/`** — scatter / density plots from [`training/plot.py`](training/plot.py) and [`training/plot_from_csv.py`](training/plot_from_csv.py). Replot any time:
+- **`results/plots/`** — scatter / density plots from [`training/plot_from_csv.py`](training/plot_from_csv.py) (called by `training/post_process.py`). Replot any time:
   ```bash
   python training/post_process.py \
     --train-csv results/train_predictions.csv \
@@ -576,25 +573,12 @@ ckpt["hparams"]    # env-var snapshot used for the run
 - **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for the notebook (`training/pre_encoder.py`).
 - **`test_data/amocoala_data_100/<DatasetXX>/`** + **`test_data/amocoala_small_100_N2000/`** — AmoCoala results on those datasets: 1 round on each, and 3 rounds (`-N 2000 -t 0.1,0.25,0.25`) on the 5 smallest. Used by the AsymmeTree extra in the notebook.
 - **`test_data/treeducken/`** — the independent treeducken test set: `Datasets/` (100 `.tgl` with MSAs), `amocoala_data/` (AmoCoala, 1 round on each), `amocoala_small_N2000/` (3 rounds on the 20 smallest) and the plots of the treeducken comparison.
-- **`old/test_data/amocoala_data/<DatasetXX>/`** — AmoCoala reconstructions per dataset of the previous 40-dataset test set (`old/test_data/Datasets/`), used by the 3-way comparison in [`old/test_model.ipynb`](old/test_model.ipynb).
-- **`old/test_data/Datasets_small/`** + **`old/test_data/amocoala_small/`** — a 5-dataset subset and its 3-round AmoCoala results (the "more rounds" comparison in `old/test_model.ipynb`).
 - **`test_data/real_data/extra/`** — the *Heliconius* Müllerian-mimicry real-data test (an extra in the notebook): `heliconius_mimicry.tgl` (mitochondrial DNA), `heliconius_mimicry_aa.tgl` (translated to protein, the Fox input), `heliconius.nex` + 3-round AmoCoala results, and `heliconius_specimen_map.xlsx`. `filtered/` holds the same run with the gap-only specimen `Hmelp246` removed.
 - **`test_data/real_data/blattabacterium/`** — cockroach mitochondrial proteins and *Blattabacterium* proteins for 55 host/symbiont pairs (Arab et al. 2020, *Biol. Lett.* 16: 20190702; Dryad doi:10.5061/dryad.v6wwpzgqw, CC0). `make_tgl.py` matches the pairs across the two alignment files (they label the same pair differently) and writes the 50 pairs used by Fox to `Datasets/blattabacterium.tgl`, pre-encoded to `fox_data/` with `python training/pre_encoder.py --src … --dst … --keep-all-leaves`.
 - **`bin/`** — bundled IQ-TREE binary for the simulation pipeline; pick the subfolder for your OS.
 - **`results/`** — train/val prediction CSVs from the end of the released run (the checkpoint is epoch 23), plus their scatter / density plots in `results/plots/`; the train file covers the samples seen by one of the four GPUs.
 - **`assets/`** — the logo shown at the top of this README.
 - **`fox.ckpt`** — released checkpoint loaded by the notebook and CLI.
-
----
-
-## Previous model (`old/`)
-
-The first released model is kept for comparison and reproducibility:
-
-- `old/fox.ckpt` — its checkpoint; `old/fox/`, `old/training/`, `old/generate_data/` — its inference package, model and simulator.
-- `old/test_model.ipynb` — its evaluation notebook, with `old/test_data/Datasets/` (the 40-dataset test set it and AmoCoala were scored on), `old/test_data/fox_data/` (that test set encoded its way) and `old/results/`.
-
-It used a host↔symbiont cross-attention head that did not see which symbiont sits in which host, the 4-state Jukes–Cantor formula on proteins, and kept the lost-gene leaves in the simulated alignments. Real data never has sequences for lost genes: given only the leaves real data shows, it predicts almost no losses. Its code imports `training.model`, so run it with `old/` as the working directory (or first on `sys.path`), not together with the current package in one process. The notebook keeps its saved outputs as the record of that model; rerunning it needs its data paths pointed back to `test_data/`.
 
 ---
 

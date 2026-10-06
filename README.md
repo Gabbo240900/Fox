@@ -80,7 +80,7 @@ Fox/
 │   ├── amocoala_data_100/     # AmoCoala outputs on those datasets (1 round)
 │   ├── amocoala_small_100_N2000/  # AmoCoala outputs on the 5 smallest (3 rounds)
 │   ├── treeducken/            # Independent treeducken test set + its AmoCoala outputs and plots
-│   └── real_data/             # Real-data tests: blattabacterium/ (main), extra/ (Heliconius)
+│   └── real_data/             # Real-data test: blattabacterium/
 ├── results/                   # train/val prediction CSVs of the released run
 ├── bin/                       # Bundled IQ-TREE binary (bin_linux/, bin_macos/)
 ├── assets/                    # README logo
@@ -228,7 +228,7 @@ Open [`test_model.ipynb`](test_model.ipynb). It covers:
 2. The comparison with AmoCoala on an independent test set simulated with treeducken (not Fox's training simulator, see [Independent test set](#independent-test-set-treeducken)): Fox alone, Fox vs AmoCoala with 1 round (all 100 datasets) and 3 rounds (the 20 smallest), and error vs tree size.
 3. The cockroach / *Blattabacterium* real-data test (a strongly cospeciating system): one `.tgl` with the full alignments, pre-encoded like the synthetic data; Fox reads the first 250 amino acids.
 4. Robustness checks on the AsymmeTree test set: alignment length, and invariance to the row order of the MSAs.
-5. Extras at the end: Fox vs AmoCoala on the AsymmeTree test set (Fox's training simulator, so it favours Fox), and the *Heliconius* real-data test (mitochondrial DNA translated to protein; almost no signal for Fox).
+5. Extra at the end: Fox vs AmoCoala on the AsymmeTree test set (Fox's training simulator, so it favours Fox).
 
 The AmoCoala cells read finished results from disk and only run AmoCoala on datasets without one; set `AMOCOALA_JAR` to the path of `AmoCoala.jar`.
 
@@ -254,9 +254,12 @@ as in the AsymmeTree data. Extinct lineages are pruned from the trees (15–50 e
 ```bash
 Rscript generate_data/treeducken_testset.R out=test_data/treeducken/Datasets n=100 seed=2026
 python generate_data/alisim.py test_data/treeducken/Datasets --iqtree bin/bin_macos/iqtree_2.2.0 -l 250 -g yes
+python training/pre_encoder.py --src test_data/treeducken/Datasets --dst test_data/treeducken/fox_data
 ```
 
-`alisim.py` skips files that already contain MSAs, so delete the folder before regenerating it.
+`alisim.py` skips files that already contain MSAs, so delete the folder before regenerating it. As for the
+AsymmeTree test set, the notebook scores Fox on the pre-encoded `.pt` files (it builds them if `fox_data/` is
+missing).
 
 ### Low-level API
 
@@ -572,9 +575,8 @@ ckpt["hparams"]    # env-var snapshot used for the run
 - **`test_data/Datasets/`** — 100 held-out simulated `.tgl` files for benchmarking, made with the current simulator (no lost-gene leaves).
 - **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for the notebook (`training/pre_encoder.py`).
 - **`test_data/amocoala_data_100/<DatasetXX>/`** + **`test_data/amocoala_small_100_N2000/`** — AmoCoala results on those datasets: 1 round on each, and 3 rounds (`-N 2000 -t 0.1,0.25,0.25`) on the 5 smallest. Used by the AsymmeTree extra in the notebook.
-- **`test_data/treeducken/`** — the independent treeducken test set: `Datasets/` (100 `.tgl` with MSAs), `amocoala_data/` (AmoCoala, 1 round on each), `amocoala_small_N2000/` (3 rounds on the 20 smallest) and the plots of the treeducken comparison.
-- **`test_data/real_data/extra/`** — the *Heliconius* Müllerian-mimicry real-data test (an extra in the notebook): `heliconius_mimicry.tgl` (mitochondrial DNA), `heliconius_mimicry_aa.tgl` (translated to protein, the Fox input), `heliconius.nex` + 3-round AmoCoala results, and `heliconius_specimen_map.xlsx`. `filtered/` holds the same run with the gap-only specimen `Hmelp246` removed.
-- **`test_data/real_data/blattabacterium/`** — cockroach mitochondrial proteins and *Blattabacterium* proteins for 55 host/symbiont pairs (Arab et al. 2020, *Biol. Lett.* 16: 20190702; Dryad doi:10.5061/dryad.v6wwpzgqw, CC0). `make_tgl.py` matches the pairs across the two alignment files (they label the same pair differently) and writes the 50 pairs used by Fox to `Datasets/blattabacterium.tgl`, pre-encoded to `fox_data/` with `python training/pre_encoder.py --src … --dst … --keep-all-leaves`.
+- **`test_data/treeducken/`** — the independent treeducken test set: `Datasets/` (100 `.tgl` with MSAs), `fox_data/` (those pre-encoded as `.pt` for Fox), `amocoala_data/` (AmoCoala, 1 round on each), `amocoala_small_N2000/` (3 rounds on the 20 smallest) and the plots of the treeducken comparison.
+- **`test_data/real_data/blattabacterium/`** — cockroach mitochondrial proteins and *Blattabacterium* proteins for 55 host/symbiont pairs (Arab et al. 2020, *Biol. Lett.* 16: 20190702; Dryad doi:10.5061/dryad.v6wwpzgqw, CC0). `make_tgl.py` matches the pairs across the two alignment files (they label the same pair differently) and writes the 50 pairs used by Fox to `Datasets/blattabacterium.tgl`, pre-encoded to `fox_data/` with `python training/pre_encoder.py --src … --dst … --keep-all-leaves`. `blattabacterium_fig1.tgl` (and `fig1_host.nwk` / `fig1_symbiont.nwk`) holds the host and symbiont topologies of figure 1 of the paper, transcribed by hand (all 55 pairs, no branch lengths); `amocoala/` has the 3-round AmoCoala run on them, compared with Fox in the notebook.
 - **`bin/`** — bundled IQ-TREE binary for the simulation pipeline; pick the subfolder for your OS.
 - **`results/`** — train/val prediction CSVs from the end of the released run (the checkpoint is epoch 23), plus their scatter / density plots in `results/plots/`; the train file covers the samples seen by one of the four GPUs.
 - **`assets/`** — the logo shown at the top of this README.

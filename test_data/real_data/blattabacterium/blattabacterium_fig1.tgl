@@ -1,0 +1,67 @@
+#NEXUS
+BEGIN HOST;
+	TREE * Host1 = ((Lamproblatta,(Anaplecta_calosoma,Anaplecta_omei)),(((((((Periplaneta_americana,Shelfordella_lateralis),(Protagonista_lugubris,Blatta_orientalis)),Deropeltis_paulinoi),((((Melanozosteria_sp,Platyzosteria_sp),Cosmozosteria),Methana_sp),Eurycotis_decipiens)),Tryonicus),((Cryptocercus_hirtus,Cryptocercus_punctulatus),Mastotermes_darwiniensis)),((Eupolyphaga_sinensis,Therea_regularis),((Ectoneura_hanitschi,(Ectobius_sp,Phyllodromica_sp)),(((Amazonina,((CHORI_Chorisoserrata_sp,Euphyllodromia),(Allacta,Balta_sp))),Anallacta_methanoides),((Megaloblatta,(((Blattella_germanica,(Parcoblatta_virginica,Paratemnopteryx_couloniana)),(Carbrunneria_paramaxi,Beybienkoa_karandanensis)),Ischnoptera_deropeltiformis)),(((((Epilampra_maya,Galiblatta_cribrosa),Paranauphoeta_circumda),((((Opisthoplatia,Rhabdoblatta_sp),(Neolaxta_mackerrasae,Laxta_sp)),((Panesthia_angustipennis,Panesthia_Salganea),Macropanesthia_rhinoceros)),Pycnoscelus_femapterus)),(Panchlora_nivea,(Gyna_capucina,((Blaptica_dubia,Blaberus_giganteus),Eublaberus_distanti)))),((Gromphadorhina_grandidieri,(Elliptorhina_davidi,Aeluropoda_insignis)),Nauphoeta_cinerea))))))));
+ENDBLOCK;
+
+BEGIN PARASITE;
+	TREE * Para1 = ((((Lamproblatta,(Anaplecta_calosoma,Anaplecta_omei)),((((((Periplaneta_americana,Shelfordella_lateralis),(Protagonista_lugubris,Blatta_orientalis)),Deropeltis_paulinoi),(((Melanozosteria_sp,(Platyzosteria_sp,Cosmozosteria)),Methana_sp),Eurycotis_decipiens)),Tryonicus),((Cryptocercus_hirtus,Cryptocercus_punctulatus),Mastotermes_darwiniensis))),(Eupolyphaga_sinensis,Therea_regularis)),((((Ectoneura_hanitschi,(Ectobius_sp,Phyllodromica_sp)),((Amazonina,CHORI_Chorisoserrata_sp),(Euphyllodromia,(Allacta,Balta_sp)))),Anallacta_methanoides),((Megaloblatta,((Blattella_germanica,(Parcoblatta_virginica,Paratemnopteryx_couloniana)),((Carbrunneria_paramaxi,Beybienkoa_karandanensis),Ischnoptera_deropeltiformis))),((Epilampra_maya,Galiblatta_cribrosa),((((((Opisthoplatia,Rhabdoblatta_sp),Pycnoscelus_femapterus),(Neolaxta_mackerrasae,Laxta_sp)),(Paranauphoeta_circumda,((Panesthia_angustipennis,Panesthia_Salganea),Macropanesthia_rhinoceros))),(((Gromphadorhina_grandidieri,Elliptorhina_davidi),Aeluropoda_insignis),Nauphoeta_cinerea)),((Panchlora_nivea,Gyna_capucina),((Blaptica_dubia,Blaberus_giganteus),Eublaberus_distanti)))))));
+ENDBLOCK;
+
+BEGIN DISTRIBUTION;
+	RANGE
+		Aeluropoda_insignis: Aeluropoda_insignis
+		Allacta: Allacta
+		Amazonina: Amazonina
+		Anallacta_methanoides: Anallacta_methanoides
+		Anaplecta_calosoma: Anaplecta_calosoma
+		Anaplecta_omei: Anaplecta_omei
+		Balta_sp: Balta_sp
+		Beybienkoa_karandanensis: Beybienkoa_karandanensis
+		Blaberus_giganteus: Blaberus_giganteus
+		Blaptica_dubia: Blaptica_dubia
+		Blatta_orientalis: Blatta_orientalis
+		Blattella_germanica: Blattella_germanica
+		CHORI_Chorisoserrata_sp: CHORI_Chorisoserrata_sp
+		Carbrunneria_paramaxi: Carbrunneria_paramaxi
+		Cosmozosteria: Cosmozosteria
+		Cryptocercus_hirtus: Cryptocercus_hirtus
+		Cryptocercus_punctulatus: Cryptocercus_punctulatus
+		Deropeltis_paulinoi: Deropeltis_paulinoi
+		Ectobius_sp: Ectobius_sp
+		Ectoneura_hanitschi: Ectoneura_hanitschi
+		Elliptorhina_davidi: Elliptorhina_davidi
+		Epilampra_maya: Epilampra_maya
+		Eublaberus_distanti: Eublaberus_distanti
+		Euphyllodromia: Euphyllodromia
+		Eupolyphaga_sinensis: Eupolyphaga_sinensis
+		Eurycotis_decipiens: Eurycotis_decipiens
+		Galiblatta_cribrosa: Galiblatta_cribrosa
+		Gromphadorhina_grandidieri: Gromphadorhina_grandidieri
+		Gyna_capucina: Gyna_capucina
+		Ischnoptera_deropeltiformis: Ischnoptera_deropeltiformis
+		Lamproblatta: Lamproblatta
+		Laxta_sp: Laxta_sp
+		Macropanesthia_rhinoceros: Macropanesthia_rhinoceros
+		Mastotermes_darwiniensis: Mastotermes_darwiniensis
+		Megaloblatta: Megaloblatta
+		Melanozosteria_sp: Melanozosteria_sp
+		Methana_sp: Methana_sp
+		Nauphoeta_cinerea: Nauphoeta_cinerea
+		Neolaxta_mackerrasae: Neolaxta_mackerrasae
+		Opisthoplatia: Opisthoplatia
+		Panchlora_nivea: Panchlora_nivea
+		Panesthia_Salganea: Panesthia_Salganea
+		Panesthia_angustipennis: Panesthia_angustipennis
+		Paranauphoeta_circumda: Paranauphoeta_circumda
+		Paratemnopteryx_couloniana: Paratemnopteryx_couloniana
+		Parcoblatta_virginica: Parcoblatta_virginica
+		Periplaneta_americana: Periplaneta_americana
+		Phyllodromica_sp: Phyllodromica_sp
+		Platyzosteria_sp: Platyzosteria_sp
+		Protagonista_lugubris: Protagonista_lugubris
+		Pycnoscelus_femapterus: Pycnoscelus_femapterus
+		Rhabdoblatta_sp: Rhabdoblatta_sp
+		Shelfordella_lateralis: Shelfordella_lateralis
+		Therea_regularis: Therea_regularis
+		Tryonicus: Tryonicus
+END;

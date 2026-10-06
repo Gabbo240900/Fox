@@ -12,11 +12,8 @@ example_data/pt_samples
 generate_data/generated_trees/my_run
 training/post_process_outputs
 training/full_fox.ckpt
-old/training/full_fox.ckpt
-old/training/post_process_outputs
 test_data/pt_samples
 generate_data/generated_trees/test_data
-old/generate_data/generated_trees/test_data
 
 *.slurm
 # Byte-compiled / optimized / DLL files
@@ -28,6 +25,7 @@ generate_treeducken/*
 # C extensions
 *.so
 old_fox.ckpt
+old/
 # Distribution / packaging
 .Python
 build/
@@ -132,3 +130,9 @@ cython_debug/
 wandb/
 !assets/fox_logo.png
 test_data/real_data/blattabacterium/pairs.json
+
+# untracked: unused
+capybara.log
+training/plot.py
+generate_data/generated_trees/hogenom_diams.txt
+generate_data/generated_trees/raxml_diams.txt

@@ -22,7 +22,12 @@ import argparse
 import re
 from typing import Dict, List, Optional, Tuple
 
-from Bio.Data import CodonTable
+try:
+    from Bio.Data import CodonTable
+except ImportError:
+    raise SystemExit(
+        "fox.translate needs Biopython: pip install biopython  (or: pip install -e \".[translate]\")"
+    ) from None
 
 from .encoding import MAX_SEQ_LEN
 

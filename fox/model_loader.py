@@ -43,7 +43,7 @@ def load_model(ckpt_path: str = None, device: str = "cpu"):
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(
             f"Checkpoint not found: {ckpt_path!r}. "
-            "Set $FOX_CKPT or pass ckpt_path=."
+            "Set $FOX_CKPT, or pass --ckpt (CLI) / ckpt_path= (Python)."
         )
 
     Fox = _import_fox_class()

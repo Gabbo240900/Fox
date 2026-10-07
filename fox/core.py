@@ -1,5 +1,6 @@
 """Core prediction: a .tgl bundle -> event-frequency simplex."""
 
+import warnings
 from typing import Dict, List, Tuple
 
 import torch
@@ -7,6 +8,34 @@ import torch
 from .encoding import encode_msa, jukes_cantor_dist, EVENT_NAMES
 from .io import read_tgl
 from .model_loader import load_model
+
+# Training host trees have 15-50 leaves (num_leaves in generate_data/generate_trees.py).
+TRAIN_MAX_HOSTS = 50
+
+
+def _looks_like_dna(msa: Dict[str, str]) -> bool:
+    """True when nearly every non-gap letter is A, C, G, T/U or N."""
+    letters = "".join(msa.values()).upper().replace("-", "").replace("?", "")
+    if not letters:
+        return False
+    nuc = sum(letters.count(c) for c in "ACGTUN")
+    return nuc / len(letters) > 0.9
+
+
+def _check_input(host_msa: Dict[str, str], sym_msa: Dict[str, str]) -> None:
+    for side, msa in (("host", host_msa), ("symbiont", sym_msa)):
+        if _looks_like_dna(msa):
+            warnings.warn(
+                f"The {side} alignment looks like DNA. Fox reads amino acids only; "
+                "translate it first with `python -m fox.translate`.",
+                stacklevel=3,
+            )
+    if len(host_msa) > TRAIN_MAX_HOSTS:
+        warnings.warn(
+            f"{len(host_msa)} hosts: Fox was trained on at most {TRAIN_MAX_HOSTS} hosts, "
+            "so this prediction is outside its training range.",
+            stacklevel=3,
+        )
 
 
 def _infer(
@@ -63,6 +92,7 @@ def predict_tgl(
     Returns {Speciation, HGT, Loss, Duplication} -> float, summing to 1.
     """
     d = read_tgl(tgl_path, drop_lost=drop_lost)
+    _check_input(d["host_msa"], d["sym_msa"])
     if model is None:
         model = load_model(ckpt_path, device)
     return _infer(d["host_msa"], d["sym_msa"], d["mapping"], model, device)

@@ -20,6 +20,7 @@ classifiers = [
 # Inference-only runtime dep. Training/simulation extras live in requirements.txt.
 dependencies = [
     "torch>=2.1,<3",
+    "numpy",  # not used directly; without it torch warns on every run
 ]
 
 [project.optional-dependencies]

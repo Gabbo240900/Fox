@@ -103,7 +103,7 @@ Fox/
 ```bash
 git clone https://github.com/Gabbo240900/Fox.git
 cd Fox
-pip install -e .            # installs torch + the `fox` CLI
+pip install -e .            # installs torch + numpy + the `fox` CLI
 fox predict --tgl test_data/Datasets/Dataset11.tgl --simulated
 ```
 
@@ -168,12 +168,12 @@ fox predict --tgl test_data/Datasets/Dataset11.tgl --simulated
 ```
 Event          Frequency
 ------------------------
-Speciation        0.7075
-HGT               0.0352
-Loss              0.0360
-Duplication       0.2213
+Speciation        0.7112
+HGT               0.0355
+Loss              0.0266
+Duplication       0.2267
 
-Dominant: Speciation (70.7%)
+Dominant: Speciation (71.1%)
 ```
 
 **Options:**
@@ -192,7 +192,7 @@ Dominant: Speciation (70.7%)
 from fox import predict_tgl
 
 predict_tgl("test_data/Datasets/Dataset11.tgl", drop_lost=True)   # simulated file: drop lost-gene leaves if any
-# {'Speciation': 0.708, 'HGT': 0.035, 'Loss': 0.036, 'Duplication': 0.221}
+# {'Speciation': 0.711, 'HGT': 0.036, 'Loss': 0.027, 'Duplication': 0.227}
 ```
 
 Scoring many files? Load the model once and reuse it:
@@ -207,13 +207,15 @@ for path in tgl_files:
 
 **What a `.tgl` must contain:** a `BEGIN HOST;` block and a `BEGIN PARASITE;` block, each with an `ALIGNMENT` of `name sequence` rows, plus a `BEGIN DISTRIBUTION;` block listing `parasite : host` leaf pairs. See any file under [`test_data/Datasets/`](test_data/Datasets/) for the exact layout.
 
-**Amino acids only.** Fox reads protein alignments. A DNA alignment would be read as a strange protein (A, C, G, T are also amino-acid letters) without any error. Translate protein-coding DNA first, choosing the genetic code of each side:
+**Amino acids only.** Fox reads protein alignments. A DNA alignment would be read as a strange protein (A, C, G, T are also amino-acid letters); `fox predict` warns when an alignment looks like DNA but still runs. Translate protein-coding DNA first, choosing the genetic code of each side:
 
 ```bash
 python -m fox.translate in.tgl out_aa.tgl --host-table 2 --para-table 5   # e.g. vertebrate / invertebrate mitochondrial
 ```
 
-The reading frame is picked automatically (fewest stop codons); gene-boundary stop codons are dropped. Needs Biopython (`pip install biopython`).
+The reading frame is picked automatically (fewest stop codons); gene-boundary stop codons are dropped. Needs Biopython: `pip install -e ".[translate]"` (or `pip install biopython`).
+
+**Tree size.** Fox was trained on 15–50 hosts. It runs on more, but `fox predict` warns that the result is outside the training range. Bad input (missing file, no alignment blocks, no checkpoint) stops with a one-line `fox: error: …` and exit code 1.
 
 **Checkpoint not found?** If `fox.ckpt` was moved, or you installed outside the repo, point Fox at it: `export FOX_CKPT=/path/to/fox.ckpt`, or pass `--ckpt`.
 
@@ -225,7 +227,7 @@ Open [`test_model.ipynb`](test_model.ipynb). It covers:
    ```bash
    python training/pre_encoder.py --src test_data/Datasets --dst test_data/fox_data
    ```
-2. The comparison with AmoCoala on an independent test set simulated with treeducken (not Fox's training simulator, see [Independent test set](#independent-test-set-treeducken)): Fox alone, Fox vs AmoCoala (3 rounds, `-N 2000 -t 0.1,0.25,0.25`, on all 100 datasets, at most 12 hours each), and error vs tree size.
+2. The comparison with AmoCoala on an independent test set simulated with treeducken (not Fox's training simulator, see [Independent test set](#independent-test-set-treeducken)): Fox alone, Fox vs AmoCoala (3 rounds, `-N 2000 -M 100 -t 0.1,0.25,0.25`, at most 90 minutes per dataset: 92 of the 100 datasets finished, the 8 slowest are listed in `skipped.json`), and error vs tree size.
 3. The cockroach / *Blattabacterium* real-data test (a strongly cospeciating system): one `.tgl` with the full alignments, pre-encoded like the synthetic data; Fox reads the first 250 amino acids.
 4. Robustness checks on the AsymmeTree test set: alignment length, and invariance to the row order of the MSAs.
 5. Extra at the end: Fox vs AmoCoala on the AsymmeTree test set (Fox's training simulator, so it favours Fox).
@@ -263,15 +265,12 @@ missing).
 
 ### Low-level API
 
-Build the model directly and feed it tensors:
+Load the model and feed it tensors:
 
 ```python
-import torch
-from training.model import Fox
+from fox import load_model
 
-ckpt = torch.load("fox.ckpt", map_location="cpu", weights_only=False)
-model = Fox(...).eval()           # constructor args match ckpt["config"]
-model.load_state_dict(ckpt["model"])
+model = load_model()              # Fox from fox.ckpt, eval mode, float32
 
 # host_msa, para_msa  : [N, L] long tensors of AA indices (see training/pre_encoder.py)
 # mappings            : list of (host_idx, parasite_idx) tuples
@@ -346,7 +345,7 @@ Flags ([`alisim.py`](generate_data/alisim.py)):
 
 | flag | default | purpose |
 |------|---------|---------|
-| `--length / -l` | 250 | alignment length |
+| `--length / -l` | 500 | alignment length (Fox reads 250, so pass `--length 250`) |
 | `--substitution / -s` | `LG` | AA substitution model |
 | `--gamma / -g` | none | rate-heterogeneity model (`G`, `GC`, …) |
 | `--custom-model / -c` | none | path to a custom model definition |
@@ -456,7 +455,7 @@ python train.py resume checkpoints/last_epoch.ckpt
 | `CKPT_DIR` | `checkpoints` | output dir for `.ckpt` files |
 | `EARLY_STOP_PATIENCE` | 0 (off) | epochs without improvement before stop |
 | `AXIAL_LAYERS` | 2 | number of axial attention blocks |
-| `CROSS_LAYERS` | 1 | number of cross-attention blocks |
+| `CROSS_LAYERS` | 1 | number of pair-token blocks |
 | `HIDDEN_DIM` | 256 | model hidden dim |
 | `DROPOUT` | 0.1 | dropout |
 | `USE_OPM` | 0 | enable outer-product mean update |
@@ -575,7 +574,7 @@ ckpt["hparams"]    # env-var snapshot used for the run
 - **`test_data/Datasets/`** — 100 held-out simulated `.tgl` files for benchmarking, made with the current simulator (no lost-gene leaves).
 - **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for the notebook (`training/pre_encoder.py`).
 - **`test_data/amocoala_data_100/<DatasetXX>/`** + **`test_data/amocoala_small_100_N2000/`** — AmoCoala results on those datasets: 1 round on each, and 3 rounds (`-N 2000 -t 0.1,0.25,0.25`) on the 5 smallest. Used by the AsymmeTree extra in the notebook.
-- **`test_data/treeducken/`** — the independent treeducken test set: `Datasets/` (100 `.tgl` with MSAs), `fox_data/` (those pre-encoded as `.pt` for Fox), `amocoala_3rounds/` (AmoCoala, 3 rounds on each), `amocoala_data/` (an earlier 1-round run, no longer used by the notebook) and the plots of the treeducken comparison.
+- **`test_data/treeducken/`** — the independent treeducken test set: `Datasets/` (100 `.tgl` with MSAs), `fox_data/` (those pre-encoded as `.pt` for Fox), `amocoala_3rounds/` (AmoCoala, 3 rounds; 92 datasets finished, the 8 that hit the 90-minute limit are in `skipped.json`), `amocoala_data/` (an earlier 1-round run, no longer used by the notebook) and the plots of the treeducken comparison.
 - **`test_data/real_data/blattabacterium/`** — cockroach mitochondrial proteins and *Blattabacterium* proteins for 55 host/symbiont pairs (Arab et al. 2020, *Biol. Lett.* 16: 20190702; Dryad doi:10.5061/dryad.v6wwpzgqw, CC0). `make_tgl.py` matches the pairs across the two alignment files (they label the same pair differently) and writes the 50 pairs used by Fox to `Datasets/blattabacterium.tgl`, pre-encoded to `fox_data/` with `python training/pre_encoder.py --src … --dst … --keep-all-leaves`. `blattabacterium_fig1.tgl` (and `fig1_host.nwk` / `fig1_symbiont.nwk`) holds the host and symbiont topologies of figure 1 of the paper, transcribed by hand (all 55 pairs, no branch lengths); `amocoala/` has the 3-round AmoCoala run on them, compared with Fox in the notebook.
 - **`bin/`** — bundled IQ-TREE binary for the simulation pipeline; pick the subfolder for your OS.
 - **`results/`** — train/val prediction CSVs from the end of the released run (the checkpoint is epoch 23), plus their scatter / density plots in `results/plots/`; the train file covers the samples seen by one of the four GPUs.

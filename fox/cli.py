@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+import warnings
 
 from .core import predict_tgl
 from .encoding import EVENT_NAMES
@@ -27,12 +28,18 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.command == "predict":
-        result = predict_tgl(
-            args.tgl,
-            ckpt_path=args.ckpt,
-            device=args.device,
-            drop_lost=args.simulated,
-        )
+        # Plain one-line warnings on stderr instead of Python's file:line format.
+        warnings.showwarning = lambda msg, *a, **k: print(f"fox: warning: {msg}", file=sys.stderr)
+        try:
+            result = predict_tgl(
+                args.tgl,
+                ckpt_path=args.ckpt,
+                device=args.device,
+                drop_lost=args.simulated,
+            )
+        except (OSError, ValueError, KeyError) as e:
+            print(f"fox: error: {e}", file=sys.stderr)
+            return 1
         if args.json:
             print(json.dumps(result, indent=2))
         else:

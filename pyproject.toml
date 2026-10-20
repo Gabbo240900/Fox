@@ -9,7 +9,7 @@ description = "Transformer model for inferring host–symbiont cophylogenetic ev
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Gabriele" }]
+authors = [{ name = "Gabriele Di Palma" }]
 keywords = ["phylogenetics", "cophylogeny", "transformer", "bioinformatics", "host-symbiont"]
 classifiers = [
     "Programming Language :: Python :: 3",

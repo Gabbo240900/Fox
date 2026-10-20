@@ -296,6 +296,8 @@ Each `.pt` holds `host_msa`, `para_msa`, `host_dist`, `para_dist`, `mappings`, a
 
 Full pipeline: trees → alignments → pre-encoded `.pt` → bucket metadata.
 
+> **Training data availability.** The released model was trained on ~1.1 million simulated host/symbiont datasets. The set is too large to distribute, so it is not included in this repository or its archive. It can be regenerated with the pipeline below: the simulation scripts, parameter priors (e.g. `generate_data/generated_trees/hogenom_alphas.txt`) and pre-encoding steps are all here. The held-out test data used in the paper is included under [`test_data/`](test_data/).
+
 ### 1. Simulate paired host/symbiont trees (AsymmeTree)
 
 ```bash

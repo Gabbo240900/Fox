@@ -31,6 +31,8 @@ Feed Fox two MSAs (one for the host taxa, one for the symbiont taxa) plus a host
 [ Speciation, HGT, Loss, Duplication ]
 ```
 
+**Event names.** The code, CLI output and CSVs use `Speciation` and `HGT`; the paper calls these *cospeciation* and *host switch*. `Loss` and `Duplication` are the same in both.
+
 Example: `[0.84, 0.05, 0.01, 0.11]` → this host/symbiont pair evolved mostly by speciation, with a bit of duplication and little host-switching or loss.
 
 Architecture (see [training/model.py](training/model.py)):
@@ -51,6 +53,7 @@ Protein Jukes–Cantor distance matrices (20 states, computed from each MSA) fee
 Fox/
 ├── fox/                       # Inference package + `fox` CLI
 │   ├── __init__.py            # exports: predict_tgl, load_model, EVENT_NAMES
+│   ├── __main__.py            # `python -m fox` → same as the `fox` command
 │   ├── cli.py                 # `fox predict --tgl …`
 │   ├── core.py                # predict_tgl(): .tgl → 4 event frequencies
 │   ├── io.py                  # read_tgl(): parse a .tgl bundle
@@ -296,7 +299,7 @@ Each `.pt` holds `host_msa`, `para_msa`, `host_dist`, `para_dist`, `mappings`, a
 
 Full pipeline: trees → alignments → pre-encoded `.pt` → bucket metadata.
 
-> **Training data availability.** The released model was trained on ~1.1 million simulated host/symbiont datasets. The set is too large to distribute, so it is not included in this repository or its archive. It can be regenerated with the pipeline below: the simulation scripts, parameter priors (e.g. `generate_data/generated_trees/hogenom_alphas.txt`) and pre-encoding steps are all here. The held-out test data used in the paper is included under [`test_data/`](test_data/).
+> **Training data availability.** The released model was trained on roughly 1.5 million simulated host/symbiont datasets (80/20 train/validation split). The set is too large to distribute, so it is not included in this repository or its archive. It can be regenerated with the pipeline below: the simulation scripts, parameter priors (e.g. `generate_data/generated_trees/hogenom_alphas.txt`) and pre-encoding steps are all here. The held-out test data used in the paper is included under [`test_data/`](test_data/).
 
 ### 1. Simulate paired host/symbiont trees (AsymmeTree)
 
@@ -349,7 +352,7 @@ Flags ([`alisim.py`](generate_data/alisim.py)):
 |------|---------|---------|
 | `--length / -l` | 500 | alignment length (Fox reads 250, so pass `--length 250`) |
 | `--substitution / -s` | `LG` | AA substitution model |
-| `--gamma / -g` | none | rate-heterogeneity model (`G`, `GC`, …) |
+| `--gamma / -g` | none | any value turns on Gamma rate heterogeneity (`+G`), with the shape α drawn per tree from `generated_trees/hogenom_alphas.txt` |
 | `--custom-model / -c` | none | path to a custom model definition |
 | `--iqtree / -t` | required | path to the IQ-TREE 2 binary |
 | `--max-attempts / -m` | 20 | retries per tree on sim failure |
@@ -435,6 +438,19 @@ Resume from a checkpoint:
 ```bash
 TRAIN_DIR=../data/pt/my_run VAL_DIR=../data/pt/my_val \
 python train.py resume checkpoints/last_epoch.ckpt
+```
+
+### Settings of the released model
+
+The defaults below are general-purpose. The released `fox.ckpt` was trained with these values (read from the checkpoint's `hparams`), on 4 GPUs (effective batch 32 × 4 × 4 = 512):
+
+```bash
+EPOCHS=35 BATCH_SIZE=32 GRAD_ACCUM=4 LR=1e-4 WEIGHT_DECAY=0.05 DROPOUT=0.1 \
+AXIAL_LAYERS=2 CROSS_LAYERS=2 HIDDEN_DIM=256 \
+HUBER_DELTA=1.0 UNDER_PENALTY=1.0 TAIL_WEIGHT=1.0 HGT_LOSS_WEIGHT=1.0 \
+EARLY_STOP_PATIENCE=3 EARLY_STOP_MIN_DELTA=0.0 \
+USE_FLEX_ATTENTION=1 USE_BUCKETED_BATCHES=1 BUCKET_SIZE=4 \
+python train.py train
 ```
 
 ### Key environment variables
@@ -576,7 +592,7 @@ ckpt["hparams"]    # env-var snapshot used for the run
 - **`test_data/Datasets/`** — 100 held-out simulated `.tgl` files for benchmarking, made with the current simulator (no lost-gene leaves).
 - **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for the notebook (`training/pre_encoder.py`).
 - **`test_data/amocoala_data_100/<DatasetXX>/`** + **`test_data/amocoala_small_100_N2000/`** — AmoCoala results on those datasets: 1 round on each, and 3 rounds (`-N 2000 -t 0.1,0.25,0.25`) on the 5 smallest. Used by the AsymmeTree extra in the notebook.
-- **`test_data/treeducken/`** — the independent treeducken test set: `Datasets/` (100 `.tgl` with MSAs), `fox_data/` (those pre-encoded as `.pt` for Fox), `amocoala_3rounds/` (AmoCoala, 3 rounds; 92 datasets finished, the 8 that hit the 90-minute limit are in `skipped.json`), `amocoala_data/` (an earlier 1-round run, no longer used by the notebook) and the plots of the treeducken comparison.
+- **`test_data/treeducken/`** — the independent treeducken test set: `Datasets/` (100 `.tgl` with MSAs), `fox_data/` (those pre-encoded as `.pt` for Fox), `amocoala_3rounds/` (AmoCoala, 3 rounds; 92 datasets finished, the 8 that hit the 90-minute limit are in `skipped.json`), and `amocoala_data/` (an earlier 1-round run, no longer used by the notebook). The notebook writes the treeducken comparison plots here.
 - **`test_data/real_data/blattabacterium/`** — cockroach mitochondrial proteins and *Blattabacterium* proteins for 55 host/symbiont pairs (Arab et al. 2020, *Biol. Lett.* 16: 20190702; Dryad doi:10.5061/dryad.v6wwpzgqw, CC0). `make_tgl.py` matches the pairs across the two alignment files (they label the same pair differently) and writes the 50 pairs used by Fox to `Datasets/blattabacterium.tgl`, pre-encoded to `fox_data/` with `python training/pre_encoder.py --src … --dst … --keep-all-leaves`. `blattabacterium_fig1.tgl` (and `fig1_host.nwk` / `fig1_symbiont.nwk`) holds the host and symbiont topologies of figure 1 of the paper, transcribed by hand (all 55 pairs, no branch lengths); `amocoala/` has the 3-round AmoCoala run on them, compared with Fox in the notebook.
 - **`bin/`** — bundled IQ-TREE binary for the simulation pipeline; pick the subfolder for your OS.
 - **`results/`** — train/val prediction CSVs from the end of the released run (the checkpoint is epoch 23), plus their scatter / density plots in `results/plots/`; the train file covers the samples seen by one of the four GPUs.

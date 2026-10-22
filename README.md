@@ -80,8 +80,6 @@ Fox/
 ├── test_data/                 # Held-out evaluation data
 │   ├── Datasets/              # Ground-truth .tgl files (100 simulated test datasets)
 │   ├── fox_data/              # Those datasets pre-encoded as .pt for Fox
-│   ├── amocoala_data_100/     # AmoCoala outputs on those datasets (1 round)
-│   ├── amocoala_small_100_N2000/  # AmoCoala outputs on the 5 smallest (3 rounds)
 │   ├── treeducken/            # Independent treeducken test set + its AmoCoala outputs and plots
 │   └── real_data/             # Real-data test: blattabacterium/
 ├── results/                   # train/val prediction CSVs of the released run
@@ -233,7 +231,7 @@ Open [`test_model.ipynb`](test_model.ipynb). It covers:
 2. The comparison with AmoCoala on an independent test set simulated with treeducken (not Fox's training simulator, see [Independent test set](#independent-test-set-treeducken)): Fox alone, Fox vs AmoCoala (3 rounds, `-N 2000 -M 100 -t 0.1,0.25,0.25`, at most 90 minutes per dataset: 92 of the 100 datasets finished, the 8 slowest are listed in `skipped.json`), and error vs tree size.
 3. The cockroach / *Blattabacterium* real-data test (a strongly cospeciating system): one `.tgl` with the full alignments, pre-encoded like the synthetic data; Fox reads the first 250 amino acids.
 4. Robustness checks on the AsymmeTree test set: alignment length, and invariance to the row order of the MSAs.
-5. Extra at the end: Fox vs AmoCoala on the AsymmeTree test set (Fox's training simulator, so it favours Fox).
+5. Sensitivity to the host–symbiont links: the links are shuffled while the sequences stay the same (cockroach data and the AsymmeTree test set), to check that Fox uses the associations.
 
 The AmoCoala cells read finished results from disk and only run AmoCoala on datasets without one; set `AMOCOALA_JAR` to the path of `AmoCoala.jar`.
 
@@ -591,9 +589,8 @@ ckpt["hparams"]    # env-var snapshot used for the run
 
 - **`test_data/Datasets/`** — 100 held-out simulated `.tgl` files for benchmarking, made with the current simulator (no lost-gene leaves).
 - **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for the notebook (`training/pre_encoder.py`).
-- **`test_data/amocoala_data_100/<DatasetXX>/`** + **`test_data/amocoala_small_100_N2000/`** — AmoCoala results on those datasets: 1 round on each, and 3 rounds (`-N 2000 -t 0.1,0.25,0.25`) on the 5 smallest. Used by the AsymmeTree extra in the notebook.
 - **`test_data/treeducken/`** — the independent treeducken test set: `Datasets/` (100 `.tgl` with MSAs), `fox_data/` (those pre-encoded as `.pt` for Fox), `amocoala_3rounds/` (AmoCoala, 3 rounds; 92 datasets finished, the 8 that hit the 90-minute limit are in `skipped.json`), and `amocoala_data/` (an earlier 1-round run, no longer used by the notebook). The notebook writes the treeducken comparison plots here.
-- **`test_data/real_data/blattabacterium/`** — cockroach mitochondrial proteins and *Blattabacterium* proteins for 55 host/symbiont pairs (Arab et al. 2020, *Biol. Lett.* 16: 20190702; Dryad doi:10.5061/dryad.v6wwpzgqw, CC0). `make_tgl.py` matches the pairs across the two alignment files (they label the same pair differently) and writes the 50 pairs used by Fox to `Datasets/blattabacterium.tgl`, pre-encoded to `fox_data/` with `python training/pre_encoder.py --src … --dst … --keep-all-leaves`. `blattabacterium_fig1.tgl` (and `fig1_host.nwk` / `fig1_symbiont.nwk`) holds the host and symbiont topologies of figure 1 of the paper, transcribed by hand (all 55 pairs, no branch lengths); `amocoala/` has the 3-round AmoCoala run on them, compared with Fox in the notebook.
+- **`test_data/real_data/blattabacterium/`** — cockroach mitochondrial proteins and *Blattabacterium* proteins for 55 host/symbiont pairs (Arab et al. 2020, *Biol. Lett.* 16: 20190702; Dryad doi:10.5061/dryad.v6wwpzgqw, CC0). `make_tgl.py` matches the pairs across the two alignment files (they label the same pair differently) and writes the 50 pairs used by Fox to `Datasets/blattabacterium.tgl`, pre-encoded to `fox_data/` with `python training/pre_encoder.py --src … --dst … --keep-all-leaves`. `fig1_host.nwk` / `fig1_symbiont.nwk` hold the host and symbiont topologies of figure 1 of the paper, transcribed by hand (all 55 pairs, no branch lengths). `make_fig1_50.py` prunes them to Fox's 50 pairs (`amocoala/fig1_50.nex`), so both tools see the same pairs; `amocoala/` has the 3-round AmoCoala run on them, compared with Fox in the notebook.
 - **`bin/`** — bundled IQ-TREE binary for the simulation pipeline; pick the subfolder for your OS.
 - **`results/`** — train/val prediction CSVs from the end of the released run (the checkpoint is epoch 23), plus their scatter / density plots in `results/plots/`; the train file covers the samples seen by one of the four GPUs.
 - **`assets/`** — the logo shown at the top of this README.

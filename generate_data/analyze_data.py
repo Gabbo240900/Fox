@@ -3,7 +3,7 @@
 analyze_data.py — unified dataset analysis tool for Fox datasets.
 
 Outputs:
-  • Tree structure: host / parasite leaf counts and alignment lengths
+  • Tree structure: host / symbiont leaf counts and alignment lengths
   • Event frequencies: Speciation, HGT, Loss, Duplication
 
 Supported input formats:
@@ -38,6 +38,7 @@ if "MPLCONFIGDIR" not in os.environ:
 # ── Constants ────────────────────────────────────────────────────────────────
 
 EVENT_NAMES = ["Speciation", "HGT", "Loss", "Duplication"]
+EVENT_LABELS = {"Speciation": "Cospeciation", "HGT": "Host switch", "Loss": "Loss", "Duplication": "Duplication"}
 
 # Maps normalised raw keys (from .tgl lines) → canonical event name
 _EVENT_KEY_MAP: Dict[str, str] = {
@@ -272,10 +273,10 @@ def _save_combined_event_hist(
         arr = event_vals[e]
         arr = arr[np.isfinite(arr)]
         if arr.size == 0:
-            ax.set_title(f"{e} (no data)")
+            ax.set_title(f"{EVENT_LABELS[e]} (no data)")
             continue
         ax.hist(arr, bins=bins, color=c, edgecolor="white", linewidth=0.4)
-        ax.set_title(f"{e}  (n={arr.size:,})", fontsize=11)
+        ax.set_title(f"{EVENT_LABELS[e]}  (n={arr.size:,})", fontsize=11)
         ax.set_xlabel("frequency")
         ax.set_ylabel("count")
         mean_v = arr.mean()
@@ -303,9 +304,9 @@ def _save_combined_tree_hist(
     """4-panel figure with tree structure distributions."""
     datasets = [
         (host_taxa,  "Host leaves per file",        "# leaves"),
-        (para_taxa,  "Parasite leaves per file",     "# leaves"),
+        (para_taxa,  "Symbiont leaves per file",     "# leaves"),
         (host_len,   "Host alignment length",        "sequence length"),
-        (para_len,   "Parasite alignment length",    "sequence length"),
+        (para_len,   "Symbiont alignment length",    "sequence length"),
     ]
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
     axes = axes.flatten()
@@ -427,7 +428,7 @@ def main():
     # ── Print summary ────────────────────────────────────────────────────
     print("── Tree structure ──────────────────────────────────────────────")
     _print_stats("Host leaves   ", summarize(host_taxa))
-    _print_stats("Parasite leaves", summarize(para_taxa))
+    _print_stats("Symbiont leaves", summarize(para_taxa))
     _print_stats("Host seq length ", summarize(host_len))
     _print_stats("Para seq length ", summarize(para_len))
 
@@ -448,11 +449,11 @@ def main():
     # Individual plots (one per metric)
     _save_hist(host_taxa, "Host leaves per file",     "# leaves",
                os.path.join(args.out_dir, "host_taxa.png"),        args.bins)
-    _save_hist(para_taxa, "Parasite leaves per file", "# leaves",
+    _save_hist(para_taxa, "Symbiont leaves per file", "# leaves",
                os.path.join(args.out_dir, "parasite_taxa.png"),    args.bins)
     _save_hist(host_len,  "Host alignment length",    "sequence length",
                os.path.join(args.out_dir, "host_seq_len.png"),     args.bins)
-    _save_hist(para_len,  "Parasite alignment length","sequence length",
+    _save_hist(para_len,  "Symbiont alignment length","sequence length",
                os.path.join(args.out_dir, "parasite_seq_len.png"), args.bins)
     for e in EVENT_NAMES:
         _save_hist(event_vals[e], f"{e} frequency distribution", "frequency",

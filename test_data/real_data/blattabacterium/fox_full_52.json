@@ -1,0 +1,18 @@
+{
+  "description": "Fox on the cockroach / Blattabacterium data: all 52 pairs, complete alignments (fox predict default, no column cap).",
+  "date": "2026-10-28",
+  "input": "test_data/real_data/blattabacterium/Datasets/blattabacterium.tgl",
+  "pairs": 52,
+  "host_columns": 3736,
+  "symbiont_columns": 35310,
+  "command": "python -m fox predict --tgl test_data/real_data/blattabacterium/Datasets/blattabacterium.tgl",
+  "environment": "base Anaconda, PyTorch 2.6.0, CPU (Apple M4 Pro, default threads)",
+  "time_seconds": 357.5,
+  "peak_memory_gb": 16.2,
+  "predictions": {
+    "Speciation": 0.7048,
+    "HGT": 0.1567,
+    "Loss": 0.1056,
+    "Duplication": 0.0329
+  }
+}

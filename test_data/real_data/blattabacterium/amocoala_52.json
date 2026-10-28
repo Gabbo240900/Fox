@@ -1,0 +1,17 @@
+{
+  "description": "AmoCoala on the figure-1 trees pruned to the 52 pairs (fig1_52.nex), round 3; frequencies normalised per accepted vector, mean and population SD.",
+  "settings": "-N 2000 -M 100 -R 3 -t 0.1,0.25,0.25 -threads 10",
+  "accepted_vectors": 50,
+  "mean": {
+    "Speciation": 0.5426,
+    "HGT": 0.2879,
+    "Loss": 0.1451,
+    "Duplication": 0.0245
+  },
+  "sd": {
+    "Speciation": 0.2509,
+    "HGT": 0.1844,
+    "Loss": 0.0789,
+    "Duplication": 0.0244
+  }
+}

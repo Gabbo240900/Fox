@@ -159,7 +159,7 @@ def main(argv=None):
     reports = translate_tgl(args.src, args.dst, tables, (args.frame, args.frame))
     for name, r in zip(("host", "parasite"), reports):
         print(f"{name}: genetic code {r['table']}, frame {r['frame']}, protein length {r['length']} "
-              f"(Fox reads the first {MAX_SEQ_LEN}), dropped stop-codon columns {r['dropped_stop_columns']}")
+              f"(Fox was trained on {MAX_SEQ_LEN}), dropped stop-codon columns {r['dropped_stop_columns']}")
         if r["internal_stops"]:
             print(f"  internal stops -> X (frameshift or bad sequence): {r['internal_stops']}")
     print(f"wrote {args.dst}")

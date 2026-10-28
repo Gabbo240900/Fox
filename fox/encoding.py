@@ -22,9 +22,14 @@ def encode_sequence(sequence: str, max_len: int = MAX_SEQ_LEN) -> torch.Tensor:
     return torch.tensor(encoded, dtype=torch.long)
 
 
-def encode_msa(msa: dict) -> torch.Tensor:
-    """Dict {name: sequence} -> [N, max_len] token tensor (row order = dict order)."""
-    return torch.stack([encode_sequence(seq) for seq in msa.values()])
+def encode_msa(msa: dict, max_len: int = MAX_SEQ_LEN) -> torch.Tensor:
+    """Dict {name: sequence} -> [N, max_len] token tensor (row order = dict order).
+
+    max_len=None keeps every column (length of the longest sequence).
+    """
+    if max_len is None:
+        max_len = max(len(seq) for seq in msa.values())
+    return torch.stack([encode_sequence(seq, max_len) for seq in msa.values()])
 
 
 def jukes_cantor_dist(msa: torch.Tensor) -> torch.Tensor:

@@ -9,9 +9,10 @@ Each of the study's 55 pairs is a cockroach species and the symbiont strain take
 from it, so the links are one-to-one. The two .phy files label the same pair
 differently (e.g. Anallacta_methanoides / 57_Anallacta_SC), so the table below maps
 each pair name to its label in each file; 3 pairs with no unambiguous label are
-dropped (52 left). Outgroups and all-gap columns are removed. Fox takes at most 50
-hosts, so 50 of the 52 pairs are used (drawn with seed 1). The .tgl holds the full
-alignments; Fox reads the first 250 columns.
+dropped (52 left). Outgroups and all-gap columns are removed. All 52 pairs are
+written, with the full alignments (3,736 host and 35,310 symbiont columns). This is
+more hosts and columns than Fox was trained on (50 hosts, 250 columns); Fox reads the
+whole input and warns.
 
 Real data: no trees and no labels. Pre-encode with
   python training/pre_encoder.py --src test_data/real_data/blattabacterium/Datasets \
@@ -20,10 +21,8 @@ Real data: no trees and no labels. Pre-encode with
 Run from the repository root: python test_data/real_data/blattabacterium/make_tgl.py
 """
 import os
-import random
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-N_PAIRS = 50
 
 
 def read_phy(path):
@@ -82,7 +81,7 @@ host_aa = read_phy(os.path.join(HERE, "Cockroaches_AminoAcid_Outgrp.phy"))
 sym_aa = read_phy(os.path.join(HERE, "Blattabacterium_AminoAcids_Outgrp.phy"))
 host = strip_gap_columns({n: host_aa[HOST_LABEL[n]] for n in names})
 sym = strip_gap_columns({n: sym_aa[SYM_LABEL[n]] for n in names})
-pairs = sorted(random.Random(1).sample(names, N_PAIRS))
+pairs = sorted(names)
 
 lines = ["#NEXUS", "BEGIN HOST;", "\tALIGNMENT * Host1 = '"]
 lines += [f"\t{n}  {host[n]}" for n in pairs]
@@ -97,6 +96,5 @@ os.makedirs(out_dir, exist_ok=True)
 out = os.path.join(out_dir, "blattabacterium.tgl")
 with open(out, "w") as f:
     f.write("\n".join(lines))
-print(f"{len(names)} pairs (dropped {[n for n in SYM_LABEL if SYM_LABEL[n] is None]}); "
-      f"wrote {out} with {N_PAIRS} (left out {sorted(set(names) - set(pairs))}); host alignment "
-      f"{len(host[pairs[0]])} aa, symbiont alignment {len(sym[pairs[0]])} aa (Fox reads the first 250)")
+print(f"wrote {out}: {len(pairs)} pairs (dropped {[n for n in SYM_LABEL if SYM_LABEL[n] is None]}); "
+      f"host alignment {len(host[pairs[0]])} aa, symbiont alignment {len(sym[pairs[0]])} aa")

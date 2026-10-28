@@ -6,7 +6,17 @@ import sys
 import warnings
 
 from .core import predict_tgl
-from .encoding import EVENT_NAMES
+from .encoding import EVENT_NAMES, MAX_SEQ_LEN
+
+
+def _max_columns(value):
+    """'all' -> None (read every column), otherwise a positive int."""
+    if value.lower() == "all":
+        return None
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer or 'all'")
+    return n
 
 
 def _add_predict_parser(sub):
@@ -17,6 +27,10 @@ def _add_predict_parser(sub):
     p.add_argument("--device", default="cpu", help="cpu | cuda | mps.")
     p.add_argument("--simulated", action="store_true",
                    help="Simulated .tgl: drop lost-gene leaves and the root row, as in training.")
+    p.add_argument("--max-columns", type=_max_columns, default=None, metavar="N|all",
+                   help=f"Read only the first N alignment columns (default: all). Fox was trained "
+                        f"on {MAX_SEQ_LEN} columns; longer inputs run with a warning and need "
+                        f"more time and memory.")
     p.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
     return p
 
@@ -36,6 +50,7 @@ def main(argv=None):
                 ckpt_path=args.ckpt,
                 device=args.device,
                 drop_lost=args.simulated,
+                max_columns=args.max_columns,
             )
         except (OSError, ValueError, KeyError) as e:
             print(f"fox: error: {e}", file=sys.stderr)

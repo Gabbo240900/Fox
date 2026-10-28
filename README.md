@@ -37,7 +37,7 @@ Example: `[0.84, 0.05, 0.01, 0.11]` → this host/symbiont pair evolved mostly b
 
 Architecture (see [training/model.py](training/model.py)):
 
-- **MSAEmbedder** — amino-acid tokens → one-hot → linear projection. Vocabulary: 23 tokens (20 AAs + gap + UNK + PAD). Max sequence length: 250.
+- **MSAEmbedder** — amino-acid tokens → one-hot → linear projection. Vocabulary: 23 tokens (20 AAs + gap + UNK + PAD). Trained on 250 columns; at inference any length is accepted.
 - **PairEmbedder** — PAD-aware mean pooling per sequence, then an outer sum that seeds the pair track from the host/symbiont mapping.
 - **Axial attention blocks** — alternating row / column attention over each MSA, with an asymmetric pair-bias track that links host and symbiont.
 - **Pair-token blocks** — one token per host↔symbiont pair (built from both leaf embeddings), plus a host and a symbiont summary token, mixed by self-attention. Attention between two pairs is biased by their host distance, their symbiont distance and whether they share a host, so the model sees which symbiont sits in which host.
@@ -183,6 +183,7 @@ Dominant: Speciation (71.1%)
 |------|---------|---------|
 | `--tgl` | required | input `.tgl` bundle (host MSA + symbiont MSA + mapping) |
 | `--simulated` | off | simulated `.tgl` only: drop lost-gene leaves and the root row, as in training |
+| `--max-columns` | all | read only the first N alignment columns (`N` or `all`); Fox was trained on 250, longer inputs run with a warning and need more time and memory |
 | `--json` | off | emit JSON instead of the table (for scripting) |
 | `--ckpt` | repo `fox.ckpt` | use a different checkpoint |
 | `--device` | `cpu` | `cpu`, `cuda`, or `mps` |
@@ -216,7 +217,7 @@ python -m fox.translate in.tgl out_aa.tgl --host-table 2 --para-table 5   # e.g.
 
 The reading frame is picked automatically (fewest stop codons); gene-boundary stop codons are dropped. Needs Biopython: `pip install -e ".[translate]"` (or `pip install biopython`).
 
-**Tree size.** Fox was trained on 15–50 hosts. It runs on more, but `fox predict` warns that the result is outside the training range. Bad input (missing file, no alignment blocks, no checkpoint) stops with a one-line `fox: error: …` and exit code 1.
+**Input size.** Fox was trained on 15–50 hosts, at most 142 symbionts and 250-column alignments. It reads the whole input whatever its size, and `fox predict` warns when it exceeds any of these, since the result is then outside the training range. Time and memory grow with the alignment length (full cockroach alignments, 3,736 + 35,310 columns: about 8 min and 18 GB on CPU); `--max-columns N` reads only the first N columns. Bad input (missing file, no alignment blocks, no checkpoint) stops with a one-line `fox: error: …` and exit code 1.
 
 **Checkpoint not found?** If `fox.ckpt` was moved, or you installed outside the repo, point Fox at it: `export FOX_CKPT=/path/to/fox.ckpt`, or pass `--ckpt`.
 
@@ -229,7 +230,7 @@ Open [`test_model.ipynb`](test_model.ipynb). It covers:
    python training/pre_encoder.py --src test_data/Datasets --dst test_data/fox_data
    ```
 2. The comparison with AmoCoala on an independent test set simulated with treeducken (not Fox's training simulator, see [Independent test set](#independent-test-set-treeducken)): Fox alone, Fox vs AmoCoala (3 rounds, `-N 2000 -M 100 -t 0.1,0.25,0.25`, at most 90 minutes per dataset: 92 of the 100 datasets finished, the 8 slowest are listed in `skipped.json`), and error vs tree size.
-3. The cockroach / *Blattabacterium* real-data test (a strongly cospeciating system): one `.tgl` with the full alignments, pre-encoded like the synthetic data; Fox reads the first 250 amino acids.
+3. The cockroach / *Blattabacterium* real-data test (a strongly cospeciating system): one `.tgl` with the full alignments (3,736 host and 35,310 symbiont columns). The Fox vs AmoCoala cells use the pre-encoded copy, which holds the first 250 columns; a later section reruns Fox on longer windows up to the full alignments (about 8 min and 18 GB on CPU at full length, `RUN_LONGEST = False` skips it).
 4. Robustness checks on the AsymmeTree test set: alignment length, and invariance to the row order of the MSAs.
 5. Sensitivity to the host–symbiont links: the links are shuffled while the sequences stay the same (cockroach data and the AsymmeTree test set), to check that Fox uses the associations.
 

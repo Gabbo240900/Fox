@@ -67,6 +67,13 @@ def _check_input(
         )
 
 
+def _cap(msa: Dict[str, str], max_columns: Optional[int]) -> Optional[int]:
+    """max_columns, but never more than the longest sequence of this alignment."""
+    if max_columns is None:
+        return None
+    return min(max_columns, max(len(seq) for seq in msa.values()))
+
+
 def _infer(
     host_msa: Dict[str, str],
     sym_msa: Dict[str, str],
@@ -75,8 +82,10 @@ def _infer(
     device: str,
     max_columns: Optional[int] = None,
 ) -> Dict[str, float]:
-    host_tok = encode_msa(host_msa, max_columns)
-    sym_tok = encode_msa(sym_msa, max_columns)
+    # Each side stops at its own length: a max_columns above it would only add
+    # PAD columns, which shift the prediction slightly when there are thousands.
+    host_tok = encode_msa(host_msa, _cap(host_msa, max_columns))
+    sym_tok = encode_msa(sym_msa, _cap(sym_msa, max_columns))
     host_dist = jukes_cantor_dist(host_tok)
     sym_dist = jukes_cantor_dist(sym_tok)
 

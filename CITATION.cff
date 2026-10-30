@@ -4,8 +4,10 @@ title: "Fox"
 abstract: "Transformer model that infers host-symbiont cophylogenetic event frequencies (cospeciation, host switch, loss, duplication) directly from a pair of multiple sequence alignments."
 type: software
 version: 1.0.0
+date-released: 2026-10-30
 license: MIT
 repository-code: "https://github.com/Gabbo240900/Fox"
+doi: "10.5281/zenodo.23815278"
 authors:
   - family-names: Di Palma
     given-names: Gabriele

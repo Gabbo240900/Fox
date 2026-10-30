@@ -1,5 +1,7 @@
 <h1><img src="assets/fox_logo.png" alt="Fox logo" width="120" align="right"><br>Fox<br clear="right"></h1>
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23815278.svg)](https://doi.org/10.5281/zenodo.23815278) [![bioRxiv](https://img.shields.io/badge/bioRxiv-10.64898%2F2026.10.29.762770-b31b1b)](https://doi.org/10.64898/2026.10.29.762770)
+
 
 Transformer model that infers host–symbiont **cophylogenetic event frequencies** — Speciation, Host-switch / HGT, Loss, Duplication — straight from a pair of multiple sequence alignments (MSAs).
 
@@ -651,6 +653,8 @@ If you use Fox, please cite the preprint:
 ```
 
 Citation metadata is also in [`CITATION.cff`](CITATION.cff) (GitHub's "Cite this repository" button).
+
+The code and the released checkpoint are archived on Zenodo: https://doi.org/10.5281/zenodo.23815278 (this DOI always resolves to the latest release).
 
 ## License
 

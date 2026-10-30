@@ -17,7 +17,9 @@ Feed Fox two MSAs (one for the host taxa, one for the symbiont taxa) plus a host
 6. [Training — local](#training--local)
 7. [Training — external GPU / cluster](#training--external-gpu--cluster)
 8. [Training outputs](#training-outputs)
-9. [Other folders](#other-folders)
+9. [Reproducing the paper](#reproducing-the-paper)
+10. [Other folders](#other-folders)
+11. [Citation](#citation)
 
 ---
 
@@ -586,6 +588,39 @@ ckpt["hparams"]    # env-var snapshot used for the run
 
 ---
 
+## Reproducing the paper
+
+Where each figure and table of the [preprint](https://doi.org/10.64898/2026.10.29.762770) comes from. "Notebook" means a section of [`test_model.ipynb`](test_model.ipynb); output paths are relative to the repo root. Event names follow the code (`Speciation` = cospeciation, `HGT` = host switch).
+
+**Main text**
+
+| Paper item | Content | Source | Output |
+|---|---|---|---|
+| Table 1 | Validation metrics on AsymmeTree data | `results/val_predictions.csv` (end of the released training run) | — |
+| Figure 1 | Predicted vs. true frequencies, validation set | `training/post_process.py` on `results/*_predictions.csv` | `results/plots/scatter_<event>.png` |
+| Table 2, Figure 2 | Fox on the AsymmeTree held-out test set (n = 100) | Notebook: *Evaluate Fox on Asymmetree* | `test_data/fox_predictions.png` |
+| Table 3, Figure 3 | Fox on the treeducken test set (n = 100) | Notebook: *Evaluate Fox on a new tree generator (treeducken)* | `test_data/treeducken/fox_predictions_treeducken.png` |
+| Table 4, Figure 4 | Fox vs. AmoCoala on the 92 finished treeducken datasets | Notebook: *AmoCoala comparison on treeducken data* (AmoCoala results in `test_data/treeducken/amocoala_3rounds/`) | `test_data/treeducken/amocoala_vs_fox.png` |
+| Table 5, Figure 5 | Cockroach–*Blattabacterium*, Fox vs. AmoCoala | Notebook: *Real data: cockroaches and Blattabacterium* and *AmoCoala on the published trees*; stored values in `test_data/real_data/blattabacterium/fox_full_52.json` and `amocoala_52.json` | `test_data/real_data/blattabacterium/blattabacterium_fox_vs_amocoala.png` |
+| Figure 6 | Fox architecture | Diagram, drawn by hand from [`training/model.py`](training/model.py) | — |
+| Table 6 | AsymmeTree simulation priors | [`generate_data/generate_trees.py`](generate_data/generate_trees.py) (see [Generating training data](#generating-training-data)) | — |
+
+**Supplementary material**
+
+| Paper item | Content | Source | Output |
+|---|---|---|---|
+| Supp. Table 1 | Training configuration of the released model | `hparams` stored in `fox.ckpt` (see [Settings of the released model](#settings-of-the-released-model)) | — |
+| Supp. Table 2 | Predictions with original vs. shuffled host–symbiont links | Notebook: *Sensitivity to the host–symbiont links* | — |
+| Supp. Figures 1, 2 | Training-data event-frequency and tree-structure distributions | `generate_data/analyze_data.py` on the training `.pt` set (not distributed, see [Generating training data](#generating-training-data)) | `<out_dir>/event_frequencies_combined.png`, `<out_dir>/tree_structure_combined.png` |
+| Supp. Figure 3 | 2-D density of predicted vs. true, validation set | `training/post_process.py` on `results/*_predictions.csv` | `results/plots/density_<event>.png` |
+| Supp. Figures 4, 6, 7, Supp. Table 4 | Fox vs. AmoCoala error vs. tree size (treeducken) | Notebook: *Performance vs. tree size (Fox vs AmoCoala)* | `test_data/treeducken/error_vs_treesize_{per_event,scatter,binned}.png` |
+| Supp. Figure 5, Supp. Table 3 | Accuracy vs. alignment length | Notebook: *Robustness to alignment length* | `test_data/error_vs_seqlen.png` |
+| Supp. Figure 8, Supp. Table 5 | Invariance to MSA row order | Notebook: *Permutation invariance of the MSA row order* | `test_data/permutation_invariance.png` |
+
+Numbering follows bioRxiv v1. The notebook is shipped without saved outputs: run it top to bottom to regenerate everything above (the AmoCoala cells reuse the stored AmoCoala runs unless you delete them).
+
+---
+
 ## Other folders
 
 - **`test_data/Datasets/`** — 100 held-out simulated `.tgl` files for benchmarking, made with the current simulator (no lost-gene leaves).
@@ -601,13 +636,21 @@ ckpt["hparams"]    # env-var snapshot used for the run
 
 ## Citation
 
-```
-@unpublished{Fox2026,
-  title  = {Fox: Transformer-based inference of cophylogenetic event frequencies},
-  author = {Di Palma, Gabriele},
-  year   = {2026}
+If you use Fox, please cite the preprint:
+
+> Di Palma G, Jacob L, Matias C, Sinaimeri B. Fox: Predicting rates of host-symbiont co-evolution events with association-aware attention. *bioRxiv* (2026). https://doi.org/10.64898/2026.10.29.762770
+
+```bibtex
+@article{DiPalma2026Fox,
+  title   = {Fox: Predicting rates of host-symbiont co-evolution events with association-aware attention},
+  author  = {Di Palma, Gabriele and Jacob, Laurent and Matias, Catherine and Sinaimeri, Blerina},
+  journal = {bioRxiv},
+  year    = {2026},
+  doi     = {10.64898/2026.10.29.762770}
 }
 ```
+
+Citation metadata is also in [`CITATION.cff`](CITATION.cff) (GitHub's "Cite this repository" button).
 
 ## License
 

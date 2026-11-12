@@ -302,7 +302,7 @@ Each `.pt` holds `host_msa`, `para_msa`, `host_dist`, `para_dist`, `mappings`, a
 
 Full pipeline: trees → alignments → pre-encoded `.pt` → bucket metadata.
 
-> **Training data availability.** The released model was trained on roughly 1.5 million simulated host/symbiont datasets (80/20 train/validation split). The set is too large to distribute, so it is not included in this repository or its archive. It can be regenerated with the pipeline below: the simulation scripts, parameter priors (e.g. `generate_data/generated_trees/hogenom_alphas.txt`) and pre-encoding steps are all here. The held-out test data used in the paper is included under [`test_data/`](test_data/).
+> **Training data availability.** The released model was trained on roughly 1.5 million simulated host/symbiont datasets (80/20 train/validation split). The set is too large to distribute, so it is not included in this repository or its archive. It can be regenerated with the pipeline below: the simulation scripts, parameter priors (e.g. `generate_data/generated_trees/hogenom_alphas.txt`) and pre-encoding steps are all here. The held-out test data used in the paper is included under [`test_data/`](test_data/) and is also deposited on Dryad as `test_data.zip` (see [Data availability](#data-availability)).
 
 ### 1. Simulate paired host/symbiont trees (AsymmeTree)
 
@@ -625,6 +625,12 @@ Numbering follows bioRxiv v1. The notebook is shipped without saved outputs: run
 
 ## Other folders
 
+> `test_data/` is also archived on Dryad as **`test_data.zip`** (see [Data availability](#data-availability)). The zip has the same folder layout as below but leaves out the `.png` plots: the notebook regenerates them. Unzip it at the repository root so the paths below resolve:
+>
+> ```bash
+> unzip test_data.zip -d .
+> ```
+
 - **`test_data/Datasets/`** — 100 held-out simulated `.tgl` files for benchmarking, made with the current simulator (no lost-gene leaves).
 - **`test_data/fox_data/`** — those datasets pre-encoded as `.pt` for the notebook (`training/pre_encoder.py`).
 - **`test_data/treeducken/`** — the independent treeducken test set: `Datasets/` (100 `.tgl` with MSAs), `fox_data/` (those pre-encoded as `.pt` for Fox), `amocoala_3rounds/` (AmoCoala, 3 rounds; 92 datasets finished, the 8 that hit the 90-minute limit are in `skipped.json`), and `amocoala_data/` (an earlier 1-round run, no longer used by the notebook). The notebook writes the treeducken comparison plots here.
@@ -655,6 +661,13 @@ If you use Fox, please cite the preprint:
 Citation metadata is also in [`CITATION.cff`](CITATION.cff) (GitHub's "Cite this repository" button).
 
 The code and the released checkpoint are archived on Zenodo: https://doi.org/10.5281/zenodo.23815278 (this DOI always resolves to the latest release).
+
+## Data availability
+
+- **Code and model checkpoint** — this repository, archived on Zenodo: https://doi.org/10.5281/zenodo.23815278.
+- **Test data** — `test_data.zip` on Dryad: https://doi.org/10.5061/dryad.XXXXXXX. It holds the full `test_data/` folder described in [Other folders](#other-folders): the 100 AsymmeTree test datasets (`.tgl` and pre-encoded `.pt`), the 100 treeducken test datasets with the AmoCoala runs, and the cockroach–*Blattabacterium* real-data files with the stored Fox and AmoCoala results. Figure images (`.png`) are not included; run `test_model.ipynb` to regenerate them. The same files are also in this repository under [`test_data/`](test_data/).
+- **Training data** — not distributed (about 1.5 million simulated datasets); regenerate it with the pipeline in [Generating training data](#generating-training-data).
+- **Third-party data** — the cockroach and *Blattabacterium* alignments come from Arab et al. (2020), Dryad doi:10.5061/dryad.v6wwpzgqw (CC0).
 
 ## License
 
